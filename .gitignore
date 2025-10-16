@@ -1,0 +1,103 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+ENV/
+env/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.pytest_cache/
+htmlcov/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmyp.json
+.pytype/
+
+# Project-specific
+data/*/state_snapshots/*.json
+data/*/memory/
+logs/*.log
+output/
+outputs/
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+*.tmp
+*.temp
+.temp/
+tmp/
+
+# Environment variables (keep .env.example)
+.env
+
+# Large model files
+*.bin
+*.h5
+*.ckpt
+*.pth
+
+# API keys and secrets
+secrets.yaml
+api_keys.json
+
+# Generated documentation
+docs/_build/
+site/
+
+# Poetry
+poetry.lock
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
