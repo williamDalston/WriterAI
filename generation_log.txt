@@ -1,0 +1,29 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/williamalston/Desktop/WriterAI/prometheus_novel/interfaces/cli/main.py", line 316, in <module>
+    main()
+  File "/Users/williamalston/Desktop/WriterAI/prometheus_novel/interfaces/cli/main.py", line 312, in main
+    asyncio.run(cli.run())
+  File "/Users/williamalston/anaconda3/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/Users/williamalston/anaconda3/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamalston/anaconda3/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/Users/williamalston/Desktop/WriterAI/prometheus_novel/interfaces/cli/main.py", line 127, in run
+    await self._handle_generate(parsed_args)
+  File "/Users/williamalston/Desktop/WriterAI/prometheus_novel/interfaces/cli/main.py", line 228, in _handle_generate
+    await run_pipeline(
+  File "/Users/williamalston/Desktop/WriterAI/prometheus_novel/pipeline.py", line 29, in run_pipeline
+    state = PrometheusState.load_from_yaml(config_path)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/williamalston/anaconda3/lib/python3.11/site-packages/pydantic/_internal/_model_construction.py", line 262, in __getattr__
+    raise AttributeError(item)
+AttributeError: load_from_yaml. Did you mean: 'load_from_disk'?
+
+🚀 Starting novel generation pipeline...
+📁 Config: configs/the_last_verse_of_the_mountain.yaml

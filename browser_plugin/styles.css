@@ -1,0 +1,23 @@
+/* Blooming Rewrite Engine 2.0 - Content Script Styles */
+
+#blooming-suggestion-popup {
+    font-family: Arial, sans-serif;
+    z-index: 999999 !important;
+}
+
+.blooming-highlight {
+    background-color: #FFF9C4 !important;
+    border-bottom: 2px dashed #4CAF50 !important;
+    cursor: pointer !important;
+}
+
+.blooming-suggestion-accepted {
+    background-color: #C8E6C9 !important;
+    animation: blooming-fade 2s ease-out;
+}
+
+@keyframes blooming-fade {
+    from { background-color: #C8E6C9; }
+    to { background-color: transparent; }
+}
+

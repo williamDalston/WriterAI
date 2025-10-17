@@ -27,6 +27,28 @@ WriterAI is an intelligent novel generation pipeline that takes your story conce
 - **🔄 Resume Capability**: Continue from any checkpoint
 - **🌐 Multiple Interfaces**: CLI, API, and web dashboard
 
+## 📤 Kindle-Ready Export
+
+**NEW!** Your novels are now exported in **Kindle Direct Publishing (KDP)** ready format:
+
+✅ **6x9 inch .docx format** - Industry standard  
+✅ **Table of Contents** - Auto-generated  
+✅ **Chapter Titles** - Professionally formatted  
+✅ **Perfect formatting** - Ready to upload directly to Amazon KDP  
+
+```bash
+# Export in all formats (Markdown + Kindle .docx)
+python prometheus_novel/export_all_formats.py \
+  --state data/your_novel/state_snapshots/latest_state_*.json \
+  --title "Your Novel Title" \
+  --author "Your Name"
+```
+
+📚 **See `KINDLE_EXPORT_GUIDE.md` for complete details**  
+⚡ **See `QUICK_EXPORT_REFERENCE.md` for quick commands**
+
+---
+
 ## 🚀 Quick Start
 
 ### Installation
