@@ -4,26 +4,14 @@ services:
     env: python
     region: oregon
     plan: free
-    buildCommand: "cd prometheus_novel && pip install poetry && poetry install --no-dev"
-    startCommand: "cd prometheus_novel && poetry run uvicorn interfaces.web.app:app --host 0.0.0.0 --port $PORT"
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
+    startCommand: "cd prometheus_novel && uvicorn interfaces.web.app:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
-      - key: POETRY_VERSION
-        value: 1.7.1
       - key: OPENAI_API_KEY
         sync: false
       - key: WRITERAI_API_KEY
         generateValue: true
-      - key: DATABASE_URL
-        fromDatabase:
-          name: writerai-db
-          property: connectionString
-    healthCheckPath: /api/v2/health
-    
-  - type: pserv
-    name: writerai-db
-    env: docker
-    plan: free
-    region: oregon
+    healthCheckPath: /
 
