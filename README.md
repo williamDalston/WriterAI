@@ -21,11 +21,13 @@ WriterAI is an intelligent novel generation pipeline that takes your story conce
 - **🚀 Easy Project Creation**: Paste your idea and get started in seconds
 - **🎯 12-Stage Pipeline**: From concept to publication-ready manuscript
 - **🧠 Intelligent Memory**: Maintains consistency across the entire novel
+- **🧾 Source-Aware Planning**: Upload lyrics, research packets, or outlines and the planning stages will reference them directly
 - **💰 Cost-Aware**: Budget tracking and smart model routing
 - **🎨 Genre Templates**: Optimized workflows for sci-fi, fantasy, mystery, and more
 - **📊 Quality Assurance**: Automated continuity audits and style validation
 - **🔄 Resume Capability**: Continue from any checkpoint
 - **🌐 Multiple Interfaces**: CLI, API, and web dashboard
+- **⚙️ Auto-Start Pipeline**: Optionally kick off the Blooming rewrite pipeline immediately after project creation
 
 ## 📤 Kindle-Ready Export
 
