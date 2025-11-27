@@ -8,7 +8,8 @@
     "storage"
   ],
   "host_permissions": [
-    "ws://localhost:8765/*"
+    "ws://localhost:8080/*",
+    "http://localhost:8080/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -20,9 +21,15 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "css": ["styles.css"]
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "styles.css"
+      ]
     }
   ],
   "background": {
@@ -34,4 +41,3 @@
     "128": "icons/icon128.png"
   }
 }
-

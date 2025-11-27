@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -11,38 +12,45 @@
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             margin: 0;
         }
+
         .header {
             text-align: center;
             padding: 10px 0;
             border-bottom: 2px solid #4CAF50;
             margin-bottom: 15px;
         }
+
         .header h1 {
             margin: 0;
             font-size: 18px;
             color: #333;
         }
+
         .header p {
             margin: 5px 0 0 0;
             font-size: 12px;
             color: #666;
         }
+
         .connection-status {
             padding: 10px;
             border-radius: 5px;
             margin-bottom: 15px;
             text-align: center;
         }
+
         .connected {
             background: #E8F5E9;
             color: #2E7D32;
             border: 1px solid #4CAF50;
         }
+
         .disconnected {
             background: #FFEBEE;
             color: #C62828;
             border: 1px solid #F44336;
         }
+
         .button {
             width: 100%;
             padding: 10px;
@@ -55,25 +63,30 @@
             cursor: pointer;
             transition: background 0.3s;
         }
+
         .button:hover {
             background: #45a049;
         }
+
         .button:disabled {
             background: #ccc;
             cursor: not-allowed;
         }
+
         .settings {
             margin-top: 15px;
             padding: 10px;
             background: #f5f5f5;
             border-radius: 5px;
         }
+
         .settings label {
             display: block;
             margin: 8px 0 3px 0;
             font-size: 12px;
             color: #666;
         }
+
         .settings select {
             width: 100%;
             padding: 5px;
@@ -82,19 +95,25 @@
         }
     </style>
 </head>
+
 <body>
     <div class="header">
         <h1>🌸 Blooming Rewrite Engine</h1>
         <p>AI-Powered Writing Assistant</p>
     </div>
-    
+
     <div id="status" class="connection-status disconnected">
         ❌ Not Connected
     </div>
-    
+
     <button id="connect-btn" class="button">Connect to Server</button>
     <button id="request-suggestions-btn" class="button" disabled>Get Suggestions</button>
-    
+
+    <div style="margin: 15px 0; border-top: 1px solid #ddd;"></div>
+
+    <button id="create-project-btn" class="button" style="background: #2196F3;" disabled>Create New Project</button>
+    <button id="save-idea-btn" class="button" style="background: #9C27B0;" disabled>Save as Idea</button>
+
     <div class="settings">
         <label for="authenticity-level">Authenticity Level:</label>
         <select id="authenticity-level">
@@ -103,7 +122,7 @@
             <option value="premium">Premium</option>
             <option value="expert">Expert</option>
         </select>
-        
+
         <label for="rewrite-mode">Rewrite Mode:</label>
         <select id="rewrite-mode">
             <option value="draft">Draft</option>
@@ -112,8 +131,8 @@
             <option value="experimental">Experimental</option>
         </select>
     </div>
-    
+
     <script src="popup.js"></script>
 </body>
-</html>
 
+</html>

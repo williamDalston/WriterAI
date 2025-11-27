@@ -164,9 +164,22 @@
 
 ### APIs & Databases
 
+- **[docs/API.md](prometheus_novel/docs/API.md)** - Complete API documentation
+  - Authentication guide
+  - All endpoints with examples
+  - Error codes and handling
+  - Usage examples in multiple languages
 - **docs/ARCHITECTURE.md** - API design
 - **prometheus_lib/utils/ideas_db.py** - Database code
 - **interfaces/api/app.py** - API implementation
+
+### Genre & Templates
+
+- **[docs/GENRE_BLENDING.md](prometheus_novel/docs/GENRE_BLENDING.md)** - Genre blending guide
+  - How to combine multiple genres
+  - Popular genre combinations
+  - Examples and best practices
+  - Technical implementation details
 
 ---
 
@@ -250,6 +263,11 @@ Read:
 - Old implementations
 - Replacement guide
 - Reference only
+
+**docs/archive/status_updates/** (60+ files):
+- Historical status update files
+- Development progress tracking
+- Archived for reference only
 
 **examples/** (1 file):
 - Ready-to-use novel idea example

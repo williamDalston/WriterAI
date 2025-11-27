@@ -4,54 +4,102 @@
 let websocket = null;
 let connected = false;
 
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', function () {
     const connectBtn = document.getElementById('connect-btn');
     const suggestBtn = document.getElementById('request-suggestions-btn');
+    const createProjectBtn = document.getElementById('create-project-btn');
+    const saveIdeaBtn = document.getElementById('save-idea-btn');
     const statusDiv = document.getElementById('status');
-    
+
     // Connect button handler
-    connectBtn.addEventListener('click', function() {
+    connectBtn.addEventListener('click', function () {
         if (connected) {
             disconnect();
         } else {
             connect();
         }
     });
-    
+
     // Suggest button handler
-    suggestBtn.addEventListener('click', function() {
+    suggestBtn.addEventListener('click', function () {
         requestSuggestions();
     });
-    
+
+    // Create Project button handler
+    createProjectBtn.addEventListener('click', function () {
+        sendSelection('create_project');
+    });
+
+    // Save Idea button handler
+    saveIdeaBtn.addEventListener('click', function () {
+        sendSelection('save_idea');
+    });
+
     // Check initial connection status
     checkConnectionStatus();
 });
 
+function sendSelection(actionType) {
+    if (!connected || !websocket) {
+        alert('Not connected to server');
+        return;
+    }
+
+    chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+        chrome.tabs.sendMessage(tabs[0].id, {
+            action: 'get-selected-text'
+        }, function (response) {
+            if (response && response.text) {
+                const message = {
+                    type: actionType,
+                    text: response.text,
+                    source_url: tabs[0].url,
+                    title: tabs[0].title
+                };
+                websocket.send(JSON.stringify(message));
+
+                // Show feedback
+                const btn = actionType === 'create_project' ?
+                    document.getElementById('create-project-btn') :
+                    document.getElementById('save-idea-btn');
+
+                const originalText = btn.textContent;
+                btn.textContent = 'Sent!';
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                }, 2000);
+            } else {
+                alert('Please select some text first.');
+            }
+        });
+    });
+}
+
 function connect() {
     try {
-        websocket = new WebSocket('ws://localhost:8765');
-        
-        websocket.onopen = function() {
+        websocket = new WebSocket('ws://localhost:8080/ws');
+
+        websocket.onopen = function () {
             connected = true;
             updateConnectionStatus(true);
             console.log('Connected to Blooming Rewrite Engine');
         };
-        
-        websocket.onmessage = function(event) {
+
+        websocket.onmessage = function (event) {
             handleMessage(JSON.parse(event.data));
         };
-        
-        websocket.onerror = function(error) {
+
+        websocket.onerror = function (error) {
             console.error('WebSocket error:', error);
             updateConnectionStatus(false);
         };
-        
-        websocket.onclose = function() {
+
+        websocket.onclose = function () {
             connected = false;
             updateConnectionStatus(false);
             console.log('Disconnected from server');
         };
-        
+
     } catch (error) {
         console.error('Connection failed:', error);
         alert('Failed to connect. Make sure the WebSocket server is running.');
@@ -71,17 +119,23 @@ function updateConnectionStatus(isConnected) {
     const statusDiv = document.getElementById('status');
     const connectBtn = document.getElementById('connect-btn');
     const suggestBtn = document.getElementById('request-suggestions-btn');
-    
+    const createProjectBtn = document.getElementById('create-project-btn');
+    const saveIdeaBtn = document.getElementById('save-idea-btn');
+
     if (isConnected) {
         statusDiv.className = 'connection-status connected';
         statusDiv.textContent = '✅ Connected';
         connectBtn.textContent = 'Disconnect';
         suggestBtn.disabled = false;
+        createProjectBtn.disabled = false;
+        saveIdeaBtn.disabled = false;
     } else {
         statusDiv.className = 'connection-status disconnected';
         statusDiv.textContent = '❌ Not Connected';
         connectBtn.textContent = 'Connect to Server';
         suggestBtn.disabled = true;
+        createProjectBtn.disabled = true;
+        saveIdeaBtn.disabled = true;
     }
 }
 
@@ -90,12 +144,12 @@ function requestSuggestions() {
         alert('Not connected to server');
         return;
     }
-    
+
     // Send message to content script to get selected text
-    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+    chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
         chrome.tabs.sendMessage(tabs[0].id, {
             action: 'get-selected-text'
-        }, function(response) {
+        }, function (response) {
             if (response && response.text) {
                 // Send to WebSocket server
                 const message = {
@@ -106,7 +160,7 @@ function requestSuggestions() {
                         rewrite_mode: document.getElementById('rewrite-mode').value
                     }
                 };
-                
+
                 websocket.send(JSON.stringify(message));
             }
         });
@@ -118,7 +172,7 @@ function handleMessage(message) {
         console.log('Session ID:', message.session_id);
     } else if (message.type === 'suggestion') {
         // Forward suggestion to content script
-        chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+        chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
             chrome.tabs.sendMessage(tabs[0].id, {
                 action: 'show-suggestion',
                 suggestion: message.suggestion
