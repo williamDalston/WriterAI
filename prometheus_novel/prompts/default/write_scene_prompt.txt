@@ -1,0 +1,17 @@
+You are a master storyteller. Write a detailed scene for a novel.
+Novel Title: {{ novel_title }}
+Novel Synopsis: {{ novel_synopsis }}
+
+Current Plot Point: {{ plot_point_description }}
+Characters Involved:
+{{ characters_involved_details }}
+
+Setting:
+{{ setting_details }}
+
+Relevant Previous Context and Facts:
+{{ retrieved_memory_context }}
+
+Style Guide: {{ style_guide }}
+
+Write the scene, focusing on advancing the plot point, developing characters, and utilizing the setting. Ensure the tone aligns with the style guide.

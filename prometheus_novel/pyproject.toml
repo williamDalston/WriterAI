@@ -1,0 +1,55 @@
+[tool.poetry]
+name = "prometheus-novel"
+version = "0.1.0"
+description = "Agentic novel generation pipeline"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+pydantic = "^2.5.3" # Pydantic v2
+pyyaml = "^6.0.1" # For loading YAML configs
+openai = "^1.10.0" # For OpenAI LLM client
+google-generativeai = "^0.3.0" # For Gemini LLM client
+aiohttp = "^3.9.3" # For async HTTP requests
+tenacity = "^8.2.3" # For retries
+jinja2 = "^3.1.3" # For prompt templating
+langchain = "^0.1.0" # Core LangChain utilities (if used, otherwise remove)
+langgraph = "^0.0.30" # For orchestration (adjust version as needed)
+chromadb = "^0.4.22" # Example vector database
+sentence-transformers = "^2.2.2" # For embeddings and re-ranking
+uvicorn = "^0.27.0" # For running FastAPI
+fastapi = "^0.109.0" # For API layer
+redis = "^5.0.1" # For external caching (if used)
+# filelock = "^3.13.1" # For file locking (if using local files for state/DB)
+
+[tool.poetry.group.dev.dependencies]
+mypy = "^1.8.0" # For static type checking
+ruff = "^0.2.1" # For linting and formatting
+pytest = "^8.0.0" # For testing
+pytest-asyncio = "^0.23.5" # For testing async code
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.mypy]
+# MyPy configuration
+# enforce 100% type coverage for new code
+disallow_untyped_defs = true
+no_implicit_optional = true
+warn_return_any = true
+warn_unused_ignores = true
+show_error_codes = true
+# strict = true # Consider enabling strict mode gradually
+
+[tool.ruff]
+# Ruff configuration (linting and formatting)
+line-length = 120
+select = ["E", "F", "W", "I", "N", "D", "UP", "B", "C4", "A"] # Common lint rules
+ignore = ["D100", "D104", "D105", "D107"] # Ignore missing docstrings for modules/functions/classes (adjust as needed)
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"] # Allow unused imports in __init__.py
+"tests/*" = ["D"] # Don't enforce docstrings in tests
+

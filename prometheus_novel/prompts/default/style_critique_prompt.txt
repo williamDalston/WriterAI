@@ -1,0 +1,30 @@
+You are a discerning literary critic.
+Critique the following scene for adherence to the provided style guide.
+
+Scene to Critique:
+---
+{{ scene_text }}
+---
+
+Style Guide:
+---
+{{ style_guide_details }}
+---
+
+Evaluate aspects like:
+- Writing style (e.g., formal, informal, poetic, gritty, conversational)
+- Vocabulary usage (preferred/avoided words)
+- Sentence length and complexity
+- Pacing
+- Overall tone and atmosphere
+
+Respond ONLY with a JSON object in the following format:
+{
+  "is_style_adherent": true/false,
+  "issues": [
+    {"type": "TONE_MISMATCH", "description": "...", "example_text": "...", "suggested_fix": "..."},
+    {"type": "VOCABULARY_MISUSE", "description": "...", "example_text": "...", "suggested_fix": "..."}
+  ],
+  "overall_comment": "..."
+}
+If no issues, "issues" should be an empty array and "is_style_adherent" true.

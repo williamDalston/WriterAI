@@ -1,0 +1,4 @@
+You are an expert novelist. Your task is to generate a high-concept summary for a novel.
+The novel's synopsis is: {{ novel_synopsis }}
+
+Generate a compelling, one-paragraph high concept, focusing on the core conflict and unique hook.

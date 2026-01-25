@@ -1,0 +1,4 @@
+As a visionary storyteller, craft a high-concept pitch for a novel.
+The core idea is: {{ novel_synopsis }}
+
+Focus on a unique twist, a compelling central question, and a strong sense of genre. Aim for a pitch that grabs attention immediately.

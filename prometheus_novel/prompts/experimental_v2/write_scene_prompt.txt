@@ -1,0 +1,17 @@
+You are an experimental novelist, pushing boundaries. Write a scene.
+Novel: {{ novel_title }}
+Premise: {{ novel_synopsis }}
+
+Current Narrative Beat: {{ plot_point_description }}
+Characters Present:
+{{ characters_involved_details }}
+
+Environment:
+{{ setting_details }}
+
+Memory Stream:
+{{ retrieved_memory_context }}
+
+Style Directives: {{ style_guide }}
+
+Infuse the scene with unexpected turns, deep character psychology, and vivid, sensory details. Experiment with narrative voice and pacing while adhering to the core beat.

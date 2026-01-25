@@ -29,7 +29,7 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
 
 function connectToServer() {
     try {
-        websocket = new WebSocket('ws://localhost:8765');
+        websocket = new WebSocket('ws://localhost:8080/ws');
         
         websocket.onopen = function() {
             connected = true;
