@@ -295,6 +295,97 @@ def validate_config(config: Dict) -> Dict:
     }
 
 
+def extract_json_robust(text: str, expect_array: bool = False) -> Any:
+    """Robustly extract JSON from LLM response text.
+
+    Handles common LLM output issues:
+    - JSON wrapped in markdown code blocks
+    - Explanatory text before/after JSON
+    - Multiple JSON objects (takes first complete one)
+    - Trailing commas (removes them)
+    """
+    import re
+
+    # Remove markdown code blocks
+    text = re.sub(r'```json\s*', '', text)
+    text = re.sub(r'```\s*', '', text)
+
+    # Try to find JSON structure
+    if expect_array:
+        # Look for array
+        match = re.search(r'\[\s*\{.*\}\s*\]', text, re.DOTALL)
+        if match:
+            json_str = match.group(0)
+        else:
+            # Try to find any array
+            match = re.search(r'\[.*\]', text, re.DOTALL)
+            json_str = match.group(0) if match else text
+    else:
+        # Look for object
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        json_str = match.group(0) if match else text
+
+    # Fix common JSON issues
+    # Remove trailing commas before } or ]
+    json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
+
+    # Try to parse
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        logger.warning(f"JSON parse failed: {e}. Returning raw text.")
+        if expect_array:
+            return [{"raw": text}]
+        return {"raw": text}
+
+
+# ============================================================================
+# STAGE ORDERING RATIONALE & PRESERVATION CONSTRAINTS
+# ============================================================================
+# The prose refinement stages are ordered carefully to prevent later stages
+# from undoing earlier work:
+#
+# 1. dialogue_polish - Dialogue-focused first (doesn't touch prose)
+# 2. motif_infusion - Additive content (adds, doesn't rewrite)
+# 3. chapter_hooks - Targeted endings only (last 2-3 paragraphs)
+# 4. human_passes - De-AI-ification (removes AI tells)
+# 5. voice_humanization - Emotional texture (with preservation constraints)
+# 6. prose_polish - Final line-level polish (strict preservation mode)
+# 7. quality_audit - Validation (can trigger re-run if fails)
+#
+# Each later stage includes PRESERVATION_CONSTRAINTS to prevent regression.
+
+PRESERVATION_CONSTRAINTS = """
+=== CRITICAL: PRESERVATION CONSTRAINTS ===
+You MUST NOT re-introduce any of the following AI tell patterns that were
+previously removed. Before outputting, verify NONE of these appear:
+
+AI TELLS TO AVOID (automatic rejection if found):
+- "I couldn't help but", "I found myself", "Something about X made me"
+- "I noticed that", "I realized that", "I felt a sense of"
+- "suddenly", "in that moment", "before I knew it"
+- "a whirlwind of emotions", "electricity coursed through"
+- "my heart skipped a beat", "butterflies in my stomach"
+- "incredibly", "absolutely", "utterly", "completely", "truly"
+- "seemed to", "appeared to", "managed to", "proceeded to"
+- "began to", "started to"
+- "I felt [emotion]", "I was [emotion]"
+- "a mix of [emotion] and [emotion]"
+
+PROSE PATTERNS TO PRESERVE (do not overwrite):
+- Short punchy sentences (keep them short)
+- Sentence fragments (intentional, leave them)
+- Em-dash interruptions (preserve these)
+- Trailing off... (intentional, preserve)
+- Contradictory emotions (keep the messiness)
+- Character-specific vocabulary (don't normalize)
+
+IF YOU ADD NEW TEXT, verify it:
+- Contains no AI tells from the list above
+- Matches the existing voice and rhythm
+- Doesn't add flowery metaphors or purple prose
+"""
+
 # HUMANIZATION TECHNIQUES - From speech prompt system
 HUMANIZATION_PRINCIPLES = """
 === SENTENCE RHYTHM ===
@@ -392,7 +483,7 @@ class PipelineState:
     total_cost_usd: float = 0.0
 
     def calculate_targets(self):
-        """Calculate word count targets based on target_length."""
+        """Calculate word count targets based on target_length and genre."""
         length_map = {
             "short (30k)": 30000,
             "standard (60k)": 60000,
@@ -402,13 +493,35 @@ class PipelineState:
         target_length = self.config.get("target_length", "standard (60k)")
         self.target_words = length_map.get(target_length, 60000)
 
+        # Genre-aware pacing (words per chapter)
+        genre = self.config.get("genre", "").lower()
+        genre_pacing = {
+            "romance": 2200,       # Tight pacing, frequent POV switches
+            "dark romance": 2200,
+            "mafia": 2400,
+            "thriller": 2500,      # Standard pacing
+            "mystery": 2800,       # Slower revelation
+            "fantasy": 3500,       # World-heavy, slower pace
+            "sci-fi": 3200,        # World-building intensive
+            "literary": 3000,      # Character-focused, slower
+            "horror": 2300,        # Quick scares, tight chapters
+            "ya": 2000,            # Younger readers, shorter chapters
+        }
+
+        # Find matching genre pacing
+        self.words_per_chapter = 2500  # Default
+        for genre_key, words in genre_pacing.items():
+            if genre_key in genre:
+                self.words_per_chapter = words
+                break
+
         # Calculate structure
-        self.words_per_chapter = 2500  # Industry standard
-        self.target_chapters = self.target_words // self.words_per_chapter
+        self.target_chapters = max(self.target_words // self.words_per_chapter, 10)
         self.scenes_per_chapter = 3  # 3-4 scenes per chapter
         self.words_per_scene = self.words_per_chapter // self.scenes_per_chapter
 
-        logger.info(f"Targets: {self.target_words} words, {self.target_chapters} chapters, "
+        logger.info(f"Targets for {genre or 'general'}: {self.target_words} words, "
+                   f"{self.target_chapters} chapters @ {self.words_per_chapter} words/chapter, "
                    f"{self.words_per_scene} words/scene")
 
     def save(self):
@@ -484,26 +597,41 @@ class PipelineState:
 class PipelineOrchestrator:
     """Orchestrates the 12-stage novel generation pipeline."""
 
+    # Stage ordering is CRITICAL - see PRESERVATION_CONSTRAINTS comment above
+    # Later prose stages include constraints to prevent undoing earlier work
     STAGES = [
+        # === PLANNING PHASE ===
         "high_concept",
         "world_building",
         "beat_sheet",
-        "emotional_architecture",   # NEW: Map emotional arc across story
+        "emotional_architecture",   # Map emotional arc across story
         "character_profiles",
         "master_outline",
-        "trope_integration",        # NEW: Ensure genre tropes are placed
+        "trope_integration",        # Ensure genre tropes are placed
+
+        # === DRAFTING PHASE ===
         "scene_drafting",
-        "scene_expansion",          # NEW: Expand short scenes to target
+        "scene_expansion",          # Expand short scenes to target
         "continuity_audit",
         "continuity_fix",
         "self_refinement",
+
+        # === PROSE REFINEMENT PHASE (Order matters!) ===
+        # 1. Additive stages FIRST (add content before polishing)
+        "motif_infusion",           # Adds thematic elements to prose/dialogue
+        "chapter_hooks",            # Only touches last 2-3 paragraphs of chapters
+        # 2. Dialogue polish (AFTER additive, so new dialogue gets polished)
+        "dialogue_polish",
+        # 3. Humanization stages (de-AI-ify, AFTER all content is finalized)
         "human_passes",
-        "dialogue_polish",          # NEW: Dialogue-specific enhancement
-        "voice_humanization",
-        "motif_infusion",
-        "chapter_hooks",
+        "voice_humanization",       # Includes preservation constraints
+        # 4. Final polish (strict preservation mode)
         "prose_polish",
-        "quality_audit",            # NEW: Comprehensive final validation
+        # 5. Safety net: surgical AI tell removal (catches any that slipped through)
+        "final_deai",
+
+        # === VALIDATION PHASE ===
+        "quality_audit",            # Can trigger iteration if fails
         "output_validation"
     ]
 
@@ -528,9 +656,45 @@ class PipelineOrchestrator:
         "motif_infusion": "claude",
         "chapter_hooks": "claude",
         "prose_polish": "claude",
+        "final_deai": "gpt",                 # Fast surgical replacement (no creativity needed)
         "quality_audit": "gemini",           # Long context for full audit
         "output_validation": "gpt"
     }
+
+    # Temperature settings per stage type
+    # Lower = more deterministic (planning), Higher = more creative (prose)
+    STAGE_TEMPERATURES = {
+        # Planning stages - need consistency (0.3-0.5)
+        "high_concept": 0.4,
+        "world_building": 0.4,
+        "beat_sheet": 0.3,
+        "emotional_architecture": 0.5,
+        "character_profiles": 0.5,
+        "master_outline": 0.3,
+        "trope_integration": 0.4,
+
+        # Creative stages - need variety (0.7-0.9)
+        "scene_drafting": 0.85,
+        "scene_expansion": 0.8,
+        "dialogue_polish": 0.75,
+        "voice_humanization": 0.8,
+        "motif_infusion": 0.7,
+        "chapter_hooks": 0.75,
+        "prose_polish": 0.7,
+
+        # Analytical stages - need precision (0.2-0.4)
+        "continuity_audit": 0.2,
+        "continuity_fix": 0.4,
+        "self_refinement": 0.5,
+        "human_passes": 0.6,
+        "final_deai": 0.3,
+        "quality_audit": 0.2,
+        "output_validation": 0.2
+    }
+
+    def get_temperature_for_stage(self, stage_name: str) -> float:
+        """Get appropriate temperature for a stage."""
+        return self.STAGE_TEMPERATURES.get(stage_name, 0.7)
 
     def __init__(self, project_path: Path, llm_client=None, llm_clients: Dict = None):
         self.project_path = project_path
@@ -597,6 +761,19 @@ class PipelineOrchestrator:
         with open(config_file) as f:
             config = yaml.safe_load(f)
 
+        # VALIDATE CONFIG before proceeding
+        validation = validate_config(config)
+        if not validation["valid"]:
+            for error in validation["errors"]:
+                logger.error(f"Config error: {error}")
+            raise ValueError(f"Invalid config: {', '.join(validation['errors'])}")
+
+        if validation["warnings"]:
+            for warning in validation["warnings"]:
+                logger.warning(f"Config warning: {warning}")
+
+        logger.info(f"Config validated: {validation['completeness']:.0f}% complete")
+
         self.state = PipelineState(
             project_name=config.get("project_name", "untitled"),
             project_path=self.project_path,
@@ -610,7 +787,7 @@ class PipelineOrchestrator:
         return self.state
 
     async def run(self, stages: Optional[List[str]] = None, resume: bool = False):
-        """Run the pipeline."""
+        """Run the pipeline with quality-driven iteration support."""
         await self.initialize(resume=resume)
 
         stages_to_run = stages or self.STAGES
@@ -632,6 +809,34 @@ class PipelineOrchestrator:
                 if result.status == StageStatus.FAILED:
                     await self._emit("on_stage_error", stage_name, result.error)
                     break
+
+                # Handle iteration if quality_audit indicates it's needed
+                if stage_name == "quality_audit" and result.output:
+                    audit_output = result.output
+                    if audit_output.get("needs_iteration") and audit_output.get("stages_to_rerun"):
+                        stages_to_rerun = audit_output["stages_to_rerun"]
+                        logger.info(f"Quality audit triggered iteration. Re-running: {stages_to_rerun}")
+
+                        # Re-run the problematic stages
+                        for rerun_stage in stages_to_rerun:
+                            logger.info(f"  Re-running stage: {rerun_stage}")
+                            await self._emit("on_stage_start", f"{rerun_stage}_iteration", -1)
+
+                            rerun_result = await self._run_stage(rerun_stage)
+                            self.state.stage_results.append(rerun_result)
+                            self.state.total_tokens += rerun_result.tokens_used
+                            self.state.total_cost_usd += rerun_result.cost_usd
+
+                            await self._emit("on_stage_complete", f"{rerun_stage}_iteration", rerun_result)
+
+                        # Re-run prose polish after fixes
+                        if "human_passes" in stages_to_rerun or "scene_expansion" in stages_to_rerun:
+                            logger.info("  Re-running prose_polish after fixes")
+                            polish_result = await self._run_stage("prose_polish")
+                            self.state.stage_results.append(polish_result)
+                            self.state.total_tokens += polish_result.tokens_used
+
+                        self.state.save()
 
             except Exception as e:
                 logger.error(f"Stage {stage_name} failed: {e}")
@@ -671,6 +876,7 @@ class PipelineOrchestrator:
             "motif_infusion": self._stage_motif_infusion,
             "chapter_hooks": self._stage_chapter_hooks,
             "prose_polish": self._stage_prose_polish,
+            "final_deai": self._stage_final_deai,
             "quality_audit": self._stage_quality_audit,
             "output_validation": self._stage_output_validation
         }
@@ -870,11 +1076,8 @@ Respond in JSON format."""
 
         client = self.get_client_for_stage("world_building")
         if client:
-            response = await client.generate(prompt)
-            try:
-                self.state.world_bible = json.loads(response.content)
-            except json.JSONDecodeError:
-                self.state.world_bible = {"raw": response.content}
+            response = await client.generate(prompt, temperature=0.4)
+            self.state.world_bible = extract_json_robust(response.content, expect_array=False)
             return self.state.world_bible, response.input_tokens + response.output_tokens
 
         # Mock response
@@ -935,11 +1138,8 @@ Respond as a JSON array of beats."""
 
         client = self.get_client_for_stage("beat_sheet")
         if client:
-            response = await client.generate(prompt)
-            try:
-                self.state.beat_sheet = json.loads(response.content)
-            except json.JSONDecodeError:
-                self.state.beat_sheet = [{"beat": response.content}]
+            response = await client.generate(prompt, temperature=0.3)
+            self.state.beat_sheet = extract_json_robust(response.content, expect_array=True)
             return self.state.beat_sheet, response.input_tokens + response.output_tokens
 
         # Mock response
@@ -1522,10 +1722,11 @@ Begin directly with the narrative. The opening should:
 Write the complete scene:"""
 
                 if client:
-                    # Calculate max tokens based on target words (1 token ≈ 0.75 words)
-                    # Add buffer for comprehensive scenes
-                    max_tokens = max(int(self.state.words_per_scene * 1.8), 2000)
-                    response = await client.generate(prompt, max_tokens=max_tokens)
+                    # Calculate max tokens based on target words (1 token ≈ 1.2-1.4 words)
+                    # Use 2.5x multiplier for buffer and comprehensive scenes
+                    max_tokens = max(int(self.state.words_per_scene * 2.5), 2500)
+                    temp = self.get_temperature_for_stage("scene_drafting")
+                    response = await client.generate(prompt, max_tokens=max_tokens, temperature=temp)
                     scenes.append({
                         "chapter": chapter_num,
                         "scene_number": scene_num,
@@ -1665,7 +1866,7 @@ Score and improve across these dimensions:
 Provide the improved scene:"""
 
             if client:
-                response = await client.generate(prompt, max_tokens=2500)
+                response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                 refined_scenes.append({
                     **scene,
                     "content": response.content,
@@ -1716,7 +1917,7 @@ For each issue found, provide:
 Respond in JSON format with "issues" array and "passed" boolean."""
 
         if client:
-            response = await client.generate(prompt, max_tokens=4000)
+            response = await client.generate(prompt, max_tokens=4000, temperature=0.2)  # Analytical
             try:
                 audit_report = json.loads(response.content)
             except json.JSONDecodeError:
@@ -1801,7 +2002,7 @@ Only change what's necessary to fix the issue.
 FIXED SCENE:"""
 
                     if client:
-                        response = await client.generate(prompt, max_tokens=2500)
+                        response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                         fixed_scenes[i] = {
                             **scene,
                             "content": response.content,
@@ -1888,7 +2089,7 @@ a skilled human author, not generated by an AI. Every sentence should
 feel considered, not produced:"""
 
             if client:
-                response = await client.generate(prompt, max_tokens=2500)
+                response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                 enhanced_scenes.append({
                     **scene,
                     "content": response.content,
@@ -1908,6 +2109,11 @@ feel considered, not produced:"""
         polished_scenes = []
         total_tokens = 0
         config = self.state.config
+        guidance = config.get("strategic_guidance", {})
+
+        # Get dialogue bank from strategic guidance
+        dialogue_bank = guidance.get("dialogue_bank", "")
+        cultural_notes = guidance.get("cultural_notes", "")
 
         for scene in (self.state.scenes or []):
             pov = scene.get("pov", "protagonist")
@@ -1916,6 +2122,10 @@ feel considered, not produced:"""
 
 === CHARACTER PROFILES ===
 {json.dumps(self.state.characters, indent=2) if self.state.characters else 'Not available'}
+
+{f"=== DIALOGUE BANK (Use these patterns/phrases) ===" + chr(10) + dialogue_bank if dialogue_bank else ""}
+
+{f"=== CULTURAL/SETTING NOTES ===" + chr(10) + cultural_notes if cultural_notes else ""}
 
 === DIALOGUE QUALITY CHECKLIST ===
 
@@ -1963,7 +2173,7 @@ Rewrite with polished, authentic dialogue. Keep all non-dialogue prose intact.
 Focus ONLY on improving the dialogue and adding physical beats between lines:"""
 
             if client:
-                response = await client.generate(prompt, max_tokens=2500)
+                response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                 polished_scenes.append({
                     **scene,
                     "content": response.content,
@@ -1991,8 +2201,10 @@ Focus ONLY on improving the dialogue and adding physical beats between lines:"""
         for scene in (self.state.scenes or []):
             pov = scene.get("pov", "protagonist")
 
-            prompt = f"""You are a literary prose stylist. Transform this scene with emotional
+            prompt = f"""You are a literary prose stylist. Enhance this scene with emotional
 authenticity and unpredictability that marks genuinely human writing.
+
+{PRESERVATION_CONSTRAINTS}
 
 === VOICE TARGETS ===
 WRITING STYLE: {writing_style}
@@ -2037,15 +2249,18 @@ Humans oscillate between emotional states. Add:
 - Physical beats between lines
 - Misunderstandings and cross-purposes
 
-=== SCENE TO TRANSFORM ===
+=== SCENE TO ENHANCE ===
 {scene.get('content', '')}
 
-Rewrite with emotional depth and human unpredictability. The prose
-should feel like it came from a mind that oscillates, contradicts
-itself, and experiences the world with messy authenticity:"""
+ENHANCE (don't fully rewrite) with emotional depth and human unpredictability.
+Preserve existing sentence structures and voice. Add emotional texture where
+missing, but do NOT change working prose. The prose should feel like it came
+from a mind that oscillates and experiences the world with messy authenticity.
+
+BEFORE OUTPUTTING: Verify no AI tells from PRESERVATION CONSTRAINTS appear:"""
 
             if client:
-                response = await client.generate(prompt, max_tokens=2500)
+                response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                 humanized_scenes.append({
                     **scene,
                     "content": response.content,
@@ -2073,30 +2288,36 @@ itself, and experiences the world with messy authenticity:"""
         aesthetic = guidance.get("aesthetic_guide", "")
 
         for scene in (self.state.scenes or []):
-            prompt = f"""You are a literary editor specializing in thematic depth. Weave motifs and themes into this scene.
+            prompt = f"""You are a literary editor specializing in thematic depth. SUBTLY ADD motifs
+and themes to this scene. This is an ADDITIVE pass - you should add small touches,
+not rewrite existing prose.
+
+{PRESERVATION_CONSTRAINTS}
 
 THEMES TO REINFORCE: {themes}
 RECURRING MOTIFS: {motifs}
 CENTRAL QUESTION: {central_question}
 AESTHETIC GUIDE: {aesthetic}
 
-SCENE TO ENHANCE:
+SCENE TO ENHANCE (add to, don't rewrite):
 {scene.get('content', '')}
 
-Subtly weave in thematic elements:
-1. Layer motifs naturally into descriptions and dialogue
-2. Echo themes through character choices and observations
-3. Use sensory details that reinforce the aesthetic palette
-4. Add symbolic resonance without being heavy-handed
-5. Connect to the central question through subtext
-6. Plant seeds that pay off in later scenes
+=== ADDITIVE MOTIF TECHNIQUES (minimal intervention) ===
+1. Add 1-2 sensory details per scene that echo motifs
+2. Slip a thematic reference into existing dialogue naturally
+3. Add a single symbolic object or observation
+4. Plant one seed that pays off later
+5. DO NOT rewrite entire paragraphs - touch lightly
 
-The motifs should feel organic, not forced. A reader shouldn't notice them consciously, but should FEEL them.
+The motifs should feel organic, not forced. A reader shouldn't notice them
+consciously, but should FEEL them. If a scene already has good thematic
+resonance, leave it mostly unchanged.
 
+BEFORE OUTPUTTING: Verify no AI tells from PRESERVATION CONSTRAINTS appear.
 Provide the enhanced scene:"""
 
             if client:
-                response = await client.generate(prompt, max_tokens=2500)
+                response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                 infused_scenes.append({
                     **scene,
                     "content": response.content,
@@ -2142,6 +2363,9 @@ Provide the enhanced scene:"""
                     # This is the last scene of the chapter - ensure it has a hook
                     prompt = f"""This is the final scene of Chapter {chapter_num}. Ensure it ends with a POWERFUL HOOK.
 
+IMPORTANT: Only modify the LAST 2-3 paragraphs. Keep everything else EXACTLY as-is.
+Do NOT introduce AI tells (see list below).
+
 {hook_guidance}
 
 A great chapter-ending hook can be:
@@ -2161,7 +2385,7 @@ Keep the rest of the scene intact. The hook should feel organic, not forced.
 
 ENHANCED SCENE:"""
 
-                    response = await client.generate(prompt, max_tokens=2500)
+                    response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                     hooked_scenes.append({
                         **scene,
                         "content": response.content,
@@ -2192,15 +2416,26 @@ ENHANCED SCENE:"""
         for scene in (self.state.scenes or []):
             pov = scene.get("pov", "protagonist")
 
-            prompt = f"""You are a master prose editor performing the final polish on a novel scene.
-Go through EVERY SENTENCE and consider whether it could be improved for maximum effect.
+            prompt = f"""You are a master prose editor performing the FINAL polish on a novel scene.
+This is the LAST pass before publication. Previous stages have established voice and removed
+AI tells. Your job is SUBTLE REFINEMENT only - do NOT undo prior work.
+
+{PRESERVATION_CONSTRAINTS}
+
+=== STRICT PRESERVATION MODE ===
+- DO NOT change sentence structures that work
+- DO NOT normalize character-specific vocabulary
+- DO NOT smooth out intentional roughness/fragments
+- DO NOT add flowery metaphors or purple prose
+- DO NOT introduce any AI tell patterns
+- ONLY make improvements that are clearly better
 
 === STYLE TARGETS ===
 WRITING STYLE: {writing_style}
 TONE: {tone}
 INFLUENCES: {influences}
 
-=== RHETORICAL DEVICES TO CONSIDER ===
+=== RHETORICAL DEVICES TO CONSIDER (use sparingly) ===
 {devices_text}
 
 === LINE-BY-LINE POLISH CHECKLIST ===
@@ -2244,20 +2479,22 @@ INFLUENCES: {influences}
 {scene.get('content', '')}
 
 === INSTRUCTIONS ===
-Go through line by line. Make subtle adjustments for:
-- Stronger word choices
-- Better rhythm and flow
-- More precise imagery
-- Strategic use of rhetorical devices
-- Maximum emotional impact
+Go through line by line. Make ONLY improvements that are clearly better:
+- Swap a weak word for a stronger one (but keep voice)
+- Fix rhythm that reads awkwardly aloud
+- Sharpen an imprecise image
+- Add a rhetorical device where it fits naturally
 
-The changes should be subtle refinements, not a full rewrite. Polish, don't transform.
-Maintain the character voice and emotional content while elevating the craft.
+MOST SENTENCES SHOULD STAY UNCHANGED. Only touch what needs it.
+If in doubt, leave it alone. Preserve the existing voice absolutely.
+
+BEFORE OUTPUTTING: Scan for AI tells from PRESERVATION CONSTRAINTS.
+If you accidentally introduced any, remove them.
 
 POLISHED SCENE:"""
 
             if client:
-                response = await client.generate(prompt, max_tokens=2500)
+                response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                 polished_scenes.append({
                     **scene,
                     "content": response.content,
@@ -2270,6 +2507,119 @@ POLISHED SCENE:"""
 
         self.state.scenes = polished_scenes
         return {"scenes_polished": len(polished_scenes)}, total_tokens
+
+    async def _stage_final_deai(self) -> tuple:
+        """Final surgical pass to remove any AI tells that slipped through.
+
+        This is a safety net that runs after prose_polish. Instead of rewriting
+        entire paragraphs, it does targeted find-and-replace for known AI patterns.
+        For complex cases, it asks the LLM to rewrite ONLY the problematic sentence.
+        """
+        client = self.get_client_for_stage("final_deai")
+        cleaned_scenes = []
+        total_tokens = 0
+        fixes_made = 0
+
+        # Patterns that can be surgically replaced without LLM
+        SURGICAL_REPLACEMENTS = {
+            # Filter phrases - often can just be deleted
+            "I couldn't help but notice": "",
+            "I found myself": "I",
+            "I noticed that": "",
+            "I realized that": "",
+            "I felt a sense of": "I felt",
+            "Something about it made me": "It made me",
+
+            # Weak constructions
+            "seemed to": "",
+            "appeared to": "",
+            "managed to": "",
+            "proceeded to": "",
+            "began to": "",
+            "started to": "",
+
+            # Hollow intensifiers (remove entirely)
+            " incredibly ": " ",
+            " absolutely ": " ",
+            " utterly ": " ",
+            " completely ": " ",
+            " totally ": " ",
+            " truly ": " ",
+            " genuinely ": " ",
+
+            # Purple prose simplifications
+            "a whirlwind of emotions": "confusion",
+            "time seemed to stop": "everything stilled",
+            "electricity coursed through": "heat rushed through",
+            "my heart skipped a beat": "my breath caught",
+            "butterflies in my stomach": "nerves",
+            "flooded with": "felt",
+            "overwhelmed by": "hit by",
+        }
+
+        for scene in (self.state.scenes or []):
+            content = scene.get("content", "")
+            original_content = content
+            scene_fixes = 0
+
+            # Apply surgical replacements
+            for pattern, replacement in SURGICAL_REPLACEMENTS.items():
+                if pattern.lower() in content.lower():
+                    # Case-insensitive replacement
+                    import re
+                    content = re.sub(
+                        re.escape(pattern),
+                        replacement,
+                        content,
+                        flags=re.IGNORECASE
+                    )
+                    scene_fixes += 1
+
+            # Clean up any double spaces created by deletions
+            content = re.sub(r'  +', ' ', content)
+            content = re.sub(r' +\.', '.', content)
+            content = re.sub(r' +,', ',', content)
+
+            # Check if any complex AI tells remain that need LLM help
+            remaining_tells = count_ai_tells(content)
+
+            if remaining_tells["total_tells"] > 0 and client:
+                # Get the specific problematic sentences
+                problem_patterns = list(remaining_tells["patterns_found"].keys())[:5]
+
+                prompt = f"""You are doing a SURGICAL edit. Find sentences containing these AI tell patterns
+and rewrite ONLY those specific sentences. Do NOT change anything else.
+
+PATTERNS TO FIX: {problem_patterns}
+
+RULES:
+- Only change sentences that contain the patterns above
+- Keep the meaning, just remove the AI tell
+- Preserve surrounding sentences EXACTLY
+- If a sentence is fine, leave it alone
+
+TEXT:
+{content}
+
+OUTPUT the full text with only the problematic sentences fixed:"""
+
+                response = await client.generate(prompt, max_tokens=3000)
+                content = response.content
+                total_tokens += response.input_tokens + response.output_tokens
+                scene_fixes += remaining_tells["total_tells"]
+
+            if scene_fixes > 0:
+                fixes_made += scene_fixes
+
+            cleaned_scenes.append({
+                **scene,
+                "content": content,
+                "deai_fixes": scene_fixes
+            })
+
+        self.state.scenes = cleaned_scenes
+        logger.info(f"Final de-AI pass: {fixes_made} fixes made across {len(cleaned_scenes)} scenes")
+        return {"fixes_made": fixes_made, "scenes_processed": len(cleaned_scenes)}, total_tokens
 
     async def _stage_quality_audit(self) -> tuple:
         """Comprehensive quality audit before final output."""
@@ -2406,6 +2756,42 @@ POLISHED SCENE:"""
         logger.info(f"Quality Audit: {len(audit_results['issues'])} issues found")
         for issue in audit_results["issues"]:
             logger.warning(f"  [{issue['severity']}] {issue['message']}")
+
+        # Determine if iteration is needed and which stages to re-run
+        audit_results["needs_iteration"] = False
+        audit_results["stages_to_rerun"] = []
+
+        if audit_results["issues"]:
+            high_severity = [i for i in audit_results["issues"] if i["severity"] == "high"]
+            medium_severity = [i for i in audit_results["issues"] if i["severity"] == "medium"]
+
+            for issue in high_severity + medium_severity:
+                if issue["type"] == "word_count" and word_pct < 80:
+                    # Need more content - re-run scene_expansion
+                    if "scene_expansion" not in audit_results["stages_to_rerun"]:
+                        audit_results["stages_to_rerun"].append("scene_expansion")
+                        audit_results["needs_iteration"] = True
+
+                elif issue["type"] == "ai_tells":
+                    # AI tells too high - re-run human_passes
+                    if "human_passes" not in audit_results["stages_to_rerun"]:
+                        audit_results["stages_to_rerun"].append("human_passes")
+                        audit_results["needs_iteration"] = True
+
+                elif issue["type"] == "scene_length":
+                    # Short scenes - re-run scene_expansion
+                    if "scene_expansion" not in audit_results["stages_to_rerun"]:
+                        audit_results["stages_to_rerun"].append("scene_expansion")
+                        audit_results["needs_iteration"] = True
+
+            # Track iteration count to prevent infinite loops
+            iteration_count = getattr(self.state, '_quality_iterations', 0)
+            if iteration_count >= 2:
+                logger.warning("Max quality iterations (2) reached. Proceeding with current output.")
+                audit_results["needs_iteration"] = False
+                audit_results["max_iterations_reached"] = True
+            else:
+                self.state._quality_iterations = iteration_count + 1
 
         return audit_results, total_tokens
 

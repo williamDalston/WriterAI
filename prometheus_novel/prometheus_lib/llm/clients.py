@@ -6,16 +6,137 @@ Provides async wrappers for various LLM providers with:
 - Token counting and cost estimation
 - Streaming support
 - Error handling and fallbacks
+- Rate limiting protection
+- Timeout enforcement
 """
 
 import os
 import asyncio
 import logging
+import random
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, List, AsyncIterator
-from dataclasses import dataclass
+from typing import Any, Dict, Optional, List, AsyncIterator, Callable
+from dataclasses import dataclass, field
+from functools import wraps
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# RETRY AND TIMEOUT CONFIGURATION
+# ============================================================================
+DEFAULT_TIMEOUT_SECONDS = 120  # 2 minutes per request
+MAX_RETRIES = 3
+INITIAL_RETRY_DELAY = 1.0  # seconds
+MAX_RETRY_DELAY = 30.0  # seconds
+RETRY_MULTIPLIER = 2.0
+
+# Rate limiting: simple token bucket
+REQUESTS_PER_MINUTE = 50
+_request_timestamps: Dict[str, List[float]] = {}
+
+
+async def rate_limit_check(provider: str):
+    """Simple rate limiting - wait if too many recent requests."""
+    import time
+    now = time.time()
+    window = 60  # 1 minute window
+
+    if provider not in _request_timestamps:
+        _request_timestamps[provider] = []
+
+    # Clean old timestamps
+    _request_timestamps[provider] = [
+        ts for ts in _request_timestamps[provider] if now - ts < window
+    ]
+
+    # Check if we need to wait
+    if len(_request_timestamps[provider]) >= REQUESTS_PER_MINUTE:
+        oldest = _request_timestamps[provider][0]
+        wait_time = window - (now - oldest) + 0.1
+        if wait_time > 0:
+            logger.warning(f"Rate limit: waiting {wait_time:.1f}s for {provider}")
+            await asyncio.sleep(wait_time)
+
+    _request_timestamps[provider].append(now)
+
+
+class LLMError(Exception):
+    """Base exception for LLM errors."""
+    pass
+
+
+class RateLimitError(LLMError):
+    """Rate limit exceeded."""
+    pass
+
+
+class TimeoutError(LLMError):
+    """Request timed out."""
+    pass
+
+
+class AuthenticationError(LLMError):
+    """Invalid API key."""
+    pass
+
+
+def with_retry(func: Callable):
+    """Decorator to add retry logic with exponential backoff."""
+    @wraps(func)
+    async def wrapper(self, *args, **kwargs):
+        last_error = None
+        delay = INITIAL_RETRY_DELAY
+
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                # Apply rate limiting
+                provider = self.__class__.__name__.replace("Client", "").lower()
+                await rate_limit_check(provider)
+
+                # Apply timeout
+                timeout = kwargs.pop('timeout', DEFAULT_TIMEOUT_SECONDS)
+                result = await asyncio.wait_for(
+                    func(self, *args, **kwargs),
+                    timeout=timeout
+                )
+                return result
+
+            except asyncio.TimeoutError:
+                last_error = TimeoutError(f"Request timed out after {timeout}s")
+                logger.warning(f"Timeout on attempt {attempt + 1}/{MAX_RETRIES + 1}")
+
+            except Exception as e:
+                error_str = str(e).lower()
+                last_error = e
+
+                # Don't retry auth errors
+                if "401" in error_str or "unauthorized" in error_str or "invalid api key" in error_str:
+                    raise AuthenticationError(f"Authentication failed: {e}")
+
+                # Rate limit - longer backoff
+                if "429" in error_str or "rate limit" in error_str:
+                    delay = min(delay * 3, MAX_RETRY_DELAY)
+                    logger.warning(f"Rate limited, waiting {delay}s")
+
+                # Server error - standard backoff
+                elif "500" in error_str or "502" in error_str or "503" in error_str:
+                    logger.warning(f"Server error on attempt {attempt + 1}")
+
+                else:
+                    # Unknown error - log and retry
+                    logger.warning(f"Error on attempt {attempt + 1}: {e}")
+
+            if attempt < MAX_RETRIES:
+                # Add jitter to prevent thundering herd
+                jitter = random.uniform(0, delay * 0.1)
+                await asyncio.sleep(delay + jitter)
+                delay = min(delay * RETRY_MULTIPLIER, MAX_RETRY_DELAY)
+
+        # All retries exhausted
+        raise last_error or LLMError("Max retries exceeded")
+
+    return wrapper
 
 
 @dataclass
@@ -100,7 +221,7 @@ class OpenAIClient(BaseLLMClient):
         temperature: float = 0.7,
         **kwargs
     ) -> LLMResponse:
-        """Generate text using OpenAI API."""
+        """Generate text using OpenAI API with retry logic."""
         await self._ensure_initialized()
 
         # Build messages
@@ -120,27 +241,63 @@ class OpenAIClient(BaseLLMClient):
                 finish_reason="stop"
             )
 
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                **kwargs
-            )
+        # Apply rate limiting
+        await rate_limit_check("openai")
 
-            return LLMResponse(
-                content=response.choices[0].message.content,
-                model=response.model,
-                input_tokens=response.usage.prompt_tokens,
-                output_tokens=response.usage.completion_tokens,
-                finish_reason=response.choices[0].finish_reason,
-                raw_response=response
-            )
+        # Retry loop with exponential backoff
+        last_error = None
+        delay = INITIAL_RETRY_DELAY
+        timeout = kwargs.pop('timeout', DEFAULT_TIMEOUT_SECONDS)
 
-        except Exception as e:
-            logger.error(f"OpenAI API error: {e}")
-            raise
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                response = await asyncio.wait_for(
+                    self.client.chat.completions.create(
+                        model=self.model_name,
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        **kwargs
+                    ),
+                    timeout=timeout
+                )
+
+                return LLMResponse(
+                    content=response.choices[0].message.content,
+                    model=response.model,
+                    input_tokens=response.usage.prompt_tokens,
+                    output_tokens=response.usage.completion_tokens,
+                    finish_reason=response.choices[0].finish_reason,
+                    raw_response=response
+                )
+
+            except asyncio.TimeoutError:
+                last_error = TimeoutError(f"OpenAI request timed out after {timeout}s")
+                logger.warning(f"Timeout on attempt {attempt + 1}/{MAX_RETRIES + 1}")
+
+            except Exception as e:
+                error_str = str(e).lower()
+                last_error = e
+
+                # Don't retry auth errors
+                if "401" in error_str or "invalid api key" in error_str:
+                    raise AuthenticationError(f"OpenAI authentication failed: {e}")
+
+                # Rate limit - longer backoff
+                if "429" in error_str or "rate limit" in error_str:
+                    delay = min(delay * 3, MAX_RETRY_DELAY)
+                    logger.warning(f"Rate limited by OpenAI, waiting {delay}s")
+                else:
+                    logger.warning(f"OpenAI error on attempt {attempt + 1}: {e}")
+
+            if attempt < MAX_RETRIES:
+                jitter = random.uniform(0, delay * 0.1)
+                await asyncio.sleep(delay + jitter)
+                delay = min(delay * RETRY_MULTIPLIER, MAX_RETRY_DELAY)
+
+        # All retries exhausted
+        logger.error(f"OpenAI API failed after {MAX_RETRIES + 1} attempts: {last_error}")
+        raise last_error or LLMError("OpenAI max retries exceeded")
 
     async def generate_stream(
         self,
