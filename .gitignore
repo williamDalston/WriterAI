@@ -101,3 +101,7 @@ poetry.lock
 .AppleDouble
 .LSOverride
 
+# Windows artifacts
+nul
+NUL
+
