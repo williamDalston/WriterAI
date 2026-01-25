@@ -28,8 +28,10 @@ except ImportError:
     import yaml
 
 from prometheus_lib.utils.logging_config import setup_logging
+import logging
 
-logger = setup_logging("writerai.cli")
+setup_logging()
+logger = logging.getLogger("writerai.cli")
 
 # ANSI colors for terminal output
 class Colors:
@@ -46,38 +48,32 @@ class Colors:
 def print_banner():
     """Print the WriterAI banner."""
     banner = f"""
-{Colors.CYAN}╔══════════════════════════════════════════════════════════════╗
-║                                                                ║
-║   {Colors.BOLD}██     ██ ██████  ██ ████████ ███████ ██████   █████  ██{Colors.END}{Colors.CYAN}  ║
-║   {Colors.BOLD}██     ██ ██   ██ ██    ██    ██      ██   ██ ██   ██ ██{Colors.END}{Colors.CYAN}  ║
-║   {Colors.BOLD}██  █  ██ ██████  ██    ██    █████   ██████  ███████ ██{Colors.END}{Colors.CYAN}  ║
-║   {Colors.BOLD}██ ███ ██ ██   ██ ██    ██    ██      ██   ██ ██   ██ ██{Colors.END}{Colors.CYAN}  ║
-║   {Colors.BOLD} ███ ███  ██   ██ ██    ██    ███████ ██   ██ ██   ██ ██{Colors.END}{Colors.CYAN}  ║
-║                                                                ║
-║           {Colors.GREEN}AI-Powered Novel Generation System{Colors.CYAN}               ║
-╚══════════════════════════════════════════════════════════════╝{Colors.END}
+{Colors.CYAN}================================================================
+                      {Colors.BOLD}WriterAI{Colors.END}{Colors.CYAN}
+          {Colors.GREEN}AI-Powered Novel Generation System{Colors.CYAN}
+================================================================{Colors.END}
 """
     print(banner)
 
 
 def print_success(msg: str):
     """Print success message."""
-    print(f"{Colors.GREEN}✓ {msg}{Colors.END}")
+    print(f"{Colors.GREEN}[OK] {msg}{Colors.END}")
 
 
 def print_error(msg: str):
     """Print error message."""
-    print(f"{Colors.FAIL}✗ {msg}{Colors.END}")
+    print(f"{Colors.FAIL}[ERROR] {msg}{Colors.END}")
 
 
 def print_info(msg: str):
     """Print info message."""
-    print(f"{Colors.BLUE}ℹ {msg}{Colors.END}")
+    print(f"{Colors.BLUE}[INFO] {msg}{Colors.END}")
 
 
 def print_warning(msg: str):
     """Print warning message."""
-    print(f"{Colors.WARNING}⚠ {msg}{Colors.END}")
+    print(f"{Colors.WARNING}[WARN] {msg}{Colors.END}")
 
 
 # ============================================================================

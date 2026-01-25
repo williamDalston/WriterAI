@@ -313,7 +313,7 @@ class GeminiClient(BaseLLMClient):
 class AnthropicClient(BaseLLMClient):
     """Anthropic Claude API client wrapper."""
 
-    def __init__(self, model_name: str = "claude-3-5-sonnet-20241022"):
+    def __init__(self, model_name: str = "claude-sonnet-4-20250514"):
         super().__init__(model_name)
         self.client = None
         self.api_key = os.getenv("ANTHROPIC_API_KEY")

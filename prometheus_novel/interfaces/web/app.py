@@ -29,9 +29,11 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from prometheus_lib.utils.logging_config import setup_logging
+import logging
 
 # Setup logging
-logger = setup_logging("writerai.web")
+setup_logging()
+logger = logging.getLogger("writerai.web")
 
 # ============================================================================
 # WebSocket Connection Manager
@@ -1199,12 +1201,39 @@ def get_seed_html() -> str:
             <p>Fill in what you have, skip what you don't. AI will expand the rest into a complete novel blueprint.</p>
         </section>
 
-        <!-- Quick Fill Option -->
-        <div class="quick-fill">
-            <h4>Quick Option: Paste Everything at Once</h4>
-            <p>Have a detailed brief from another LLM? Paste it here and we'll parse it automatically.</p>
-            <textarea id="quickPaste" placeholder="Paste your story brief here... We'll extract what we can."></textarea>
-            <button class="btn btn-secondary" onclick="parseQuickPaste()" style="margin-top: 10px;">Parse &amp; Fill Form</button>
+        <!-- JSON Template Section -->
+        <div class="quick-fill" style="position: relative;">
+            <h4>Copy This JSON Template to Your LLM</h4>
+            <p>1. Click "Copy Template" below. 2. Paste to ChatGPT/Claude with your story idea. 3. Paste the filled JSON back here.</p>
+            <button class="copy-template-btn" onclick="copyTemplate()" id="copyBtn">Copy Template</button>
+            <pre id="jsonTemplate" style="background: rgba(0,0,0,0.5); padding: 15px; border-radius: 8px; font-size: 0.85rem; overflow-x: auto; max-height: 400px; overflow-y: auto; margin: 15px 0; color: #a78bfa;">{
+  "idea": "YOUR CORE STORY IDEA HERE (required - everything else is optional)",
+  "title": "",
+  "genre": "sci-fi | fantasy | mystery | thriller | romance | horror | literary | historical",
+  "tone": "",
+  "target_length": "novella (30k) | standard (60k) | epic (100k+)",
+  "setting": "",
+  "world_rules": "",
+  "key_locations": "",
+  "protagonist": "Name, age, role. Traits. Goals. What blocks them.",
+  "antagonist": "",
+  "other_characters": "",
+  "premise": "The central 'what if' question",
+  "central_conflict": "",
+  "key_plot_points": "Opening: ...\\nInciting incident: ...\\nMidpoint: ...\\nLow point: ...\\nClimax: ...",
+  "subplots": "",
+  "themes": "",
+  "central_question": "",
+  "motifs": "",
+  "writing_style": "",
+  "influences": "",
+  "avoid": ""
+}</pre>
+            <div style="margin-top: 15px;">
+                <label style="color: #a78bfa; font-weight: 600;">Paste Filled JSON Here:</label>
+                <textarea id="quickPaste" placeholder='{"idea": "...", "title": "...", ...}' style="font-family: monospace; min-height: 120px;"></textarea>
+                <button class="btn btn-primary" onclick="parseJSON()" style="margin-top: 10px;">Parse JSON &amp; Fill Form</button>
+            </div>
         </div>
 
         <form id="seedForm">
@@ -1467,20 +1496,60 @@ def get_seed_html() -> str:
             content.classList.toggle('collapsed');
         }
 
-        function parseQuickPaste() {
-            const text = document.getElementById('quickPaste').value;
-            if (!text.trim()) return;
+        function copyTemplate() {
+            const template = document.getElementById('jsonTemplate').textContent;
+            navigator.clipboard.writeText(template).then(() => {
+                const btn = document.getElementById('copyBtn');
+                btn.textContent = 'Copied!';
+                btn.style.background = '#10b981';
+                setTimeout(() => {
+                    btn.textContent = 'Copy Template';
+                    btn.style.background = '#374151';
+                }, 2000);
+            });
+        }
 
-            // Simple parsing - look for labeled sections
+        function parseJSON() {
+            const text = document.getElementById('quickPaste').value.trim();
+            if (!text) {
+                alert('Please paste the filled JSON first.');
+                return;
+            }
+
+            try {
+                // Try to parse as JSON
+                const data = JSON.parse(text);
+
+                let filledCount = 0;
+                fields.forEach(field => {
+                    if (data[field] && data[field].trim() && !data[field].includes('YOUR ') && !data[field].includes('...')) {
+                        document.getElementById(field).value = data[field].trim();
+                        filledCount++;
+                    }
+                });
+
+                updateProgress();
+                document.getElementById('quickPaste').value = '';
+                alert('Success! Filled ' + filledCount + ' fields from JSON.');
+
+            } catch (e) {
+                // Not valid JSON - try regex fallback
+                console.log('JSON parse failed, trying regex fallback:', e);
+                parseQuickPasteFallback(text);
+            }
+        }
+
+        function parseQuickPasteFallback(text) {
+            // Fallback: look for labeled sections
             const patterns = {
-                'idea': /(?:idea|concept|premise|synopsis|story)[:\\s]+([\\s\\S]*?)(?=\\n(?:[A-Z][A-Z_]+:|$))/i,
+                'idea': /(?:idea|concept|premise|synopsis|story)[:\\s]+([\\s\\S]*?)(?=\\n(?:[A-Z][a-z_]+:|$))/i,
                 'title': /(?:title)[:\\s]+(.+)/i,
                 'genre': /(?:genre)[:\\s]+(.+)/i,
                 'tone': /(?:tone)[:\\s]+(.+)/i,
-                'setting': /(?:setting)[:\\s]+([\\s\\S]*?)(?=\\n(?:[A-Z][A-Z_]+:|$))/i,
-                'protagonist': /(?:protagonist|main character)[:\\s]+([\\s\\S]*?)(?=\\n(?:[A-Z][A-Z_]+:|$))/i,
-                'antagonist': /(?:antagonist|villain)[:\\s]+([\\s\\S]*?)(?=\\n(?:[A-Z][A-Z_]+:|$))/i,
-                'themes': /(?:themes?)[:\\s]+([\\s\\S]*?)(?=\\n(?:[A-Z][A-Z_]+:|$))/i,
+                'setting': /(?:setting)[:\\s]+([\\s\\S]*?)(?=\\n(?:[A-Z][a-z_]+:|$))/i,
+                'protagonist': /(?:protagonist|main character)[:\\s]+([\\s\\S]*?)(?=\\n(?:[A-Z][a-z_]+:|$))/i,
+                'antagonist': /(?:antagonist|villain)[:\\s]+([\\s\\S]*?)(?=\\n(?:[A-Z][a-z_]+:|$))/i,
+                'themes': /(?:themes?)[:\\s]+([\\s\\S]*?)(?=\\n(?:[A-Z][a-z_]+:|$))/i,
             };
 
             let foundAny = false;
@@ -1492,14 +1561,13 @@ def get_seed_html() -> str:
                 }
             }
 
-            // If no patterns matched, put everything in idea
             if (!foundAny) {
                 document.getElementById('idea').value = text;
             }
 
             updateProgress();
             document.getElementById('quickPaste').value = '';
-            alert('Form filled! Review and adjust as needed.');
+            alert('Form filled using text parsing. Review and adjust as needed.');
         }
 
         function clearForm() {
