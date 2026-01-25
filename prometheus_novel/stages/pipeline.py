@@ -286,19 +286,119 @@ class PipelineOrchestrator:
             )
 
     # ========================================================================
+    # Context Building Helpers
+    # ========================================================================
+
+    def _build_story_context(self) -> str:
+        """Build comprehensive context from config including strategic guidance."""
+        config = self.state.config
+        guidance = config.get("strategic_guidance", {})
+
+        context_parts = []
+
+        # Core story elements
+        context_parts.append(f"TITLE: {config.get('title', 'Untitled')}")
+        context_parts.append(f"GENRE: {config.get('genre', 'literary')}")
+        if config.get("tone"):
+            context_parts.append(f"TONE: {config.get('tone')}")
+        context_parts.append(f"TARGET LENGTH: {config.get('target_length', 'standard (60k)')}")
+
+        # Synopsis/Idea
+        if config.get("synopsis"):
+            context_parts.append(f"\nCORE IDEA:\n{config.get('synopsis')}")
+
+        # Characters
+        if config.get("protagonist"):
+            context_parts.append(f"\nPROTAGONIST:\n{config.get('protagonist')}")
+        if config.get("antagonist"):
+            context_parts.append(f"\nANTAGONIST:\n{config.get('antagonist')}")
+        if config.get("other_characters"):
+            context_parts.append(f"\nOTHER CHARACTERS:\n{config.get('other_characters')}")
+
+        # World
+        if config.get("setting"):
+            context_parts.append(f"\nSETTING:\n{config.get('setting')}")
+        if config.get("world_rules"):
+            context_parts.append(f"\nWORLD RULES:\n{config.get('world_rules')}")
+        if config.get("key_locations"):
+            context_parts.append(f"\nKEY LOCATIONS:\n{config.get('key_locations')}")
+
+        # Plot
+        if config.get("premise"):
+            context_parts.append(f"\nPREMISE:\n{config.get('premise')}")
+        if config.get("central_conflict"):
+            context_parts.append(f"\nCENTRAL CONFLICT:\n{config.get('central_conflict')}")
+        if config.get("key_plot_points"):
+            context_parts.append(f"\nKEY PLOT POINTS:\n{config.get('key_plot_points')}")
+        if config.get("subplots"):
+            context_parts.append(f"\nSUBPLOTS:\n{config.get('subplots')}")
+
+        # Themes
+        if config.get("themes"):
+            context_parts.append(f"\nTHEMES:\n{config.get('themes')}")
+        if config.get("central_question"):
+            context_parts.append(f"\nCENTRAL QUESTION: {config.get('central_question')}")
+        if config.get("motifs"):
+            context_parts.append(f"\nMOTIFS:\n{config.get('motifs')}")
+
+        # Style
+        if config.get("writing_style"):
+            context_parts.append(f"\nWRITING STYLE:\n{config.get('writing_style')}")
+        if config.get("influences"):
+            context_parts.append(f"\nINFLUENCES: {config.get('influences')}")
+        if config.get("avoid"):
+            context_parts.append(f"\nAVOID:\n{config.get('avoid')}")
+
+        return "\n".join(context_parts)
+
+    def _build_strategic_guidance(self) -> str:
+        """Build strategic guidance context for enhanced generation."""
+        guidance = self.state.config.get("strategic_guidance", {})
+        if not any(guidance.values()):
+            return ""
+
+        parts = ["\n=== STRATEGIC GUIDANCE (Use to inform writing) ==="]
+
+        if guidance.get("market_positioning"):
+            parts.append(f"\nMARKET POSITIONING:\n{guidance.get('market_positioning')}")
+
+        if guidance.get("beat_sheet"):
+            parts.append(f"\nPACING BEAT SHEET:\n{guidance.get('beat_sheet')}")
+
+        if guidance.get("aesthetic_guide"):
+            parts.append(f"\nAESTHETIC GUIDE:\n{guidance.get('aesthetic_guide')}")
+
+        if guidance.get("tropes"):
+            parts.append(f"\nTROPES TO EXECUTE:\n{guidance.get('tropes')}")
+
+        if guidance.get("dialogue_bank"):
+            parts.append(f"\nDIALOGUE BANK:\n{guidance.get('dialogue_bank')}")
+
+        if guidance.get("cultural_notes"):
+            parts.append(f"\nCULTURAL NOTES:\n{guidance.get('cultural_notes')}")
+
+        if guidance.get("pacing_notes"):
+            parts.append(f"\nPACING NOTES:\n{guidance.get('pacing_notes')}")
+
+        if guidance.get("commercial_notes"):
+            parts.append(f"\nCOMMERCIAL NOTES:\n{guidance.get('commercial_notes')}")
+
+        return "\n".join(parts)
+
+    # ========================================================================
     # Stage Implementations
     # ========================================================================
 
     async def _stage_high_concept(self) -> tuple:
         """Generate high concept from synopsis."""
         config = self.state.config
-        synopsis = config.get("synopsis", "")
-        genre = config.get("genre", "literary")
+        story_context = self._build_story_context()
+        strategic = self._build_strategic_guidance()
 
         prompt = f"""You are an expert novelist. Generate a compelling high-concept summary for a novel.
 
-Genre: {genre}
-Synopsis: {synopsis}
+{story_context}
+{strategic}
 
 Create a powerful one-paragraph high concept that captures:
 1. The unique hook or twist
@@ -320,19 +420,31 @@ High Concept:"""
     async def _stage_world_building(self) -> tuple:
         """Build world bible."""
         config = self.state.config
+        story_context = self._build_story_context()
+        strategic = self._build_strategic_guidance()
 
-        prompt = f"""Create a world bible for this novel:
+        # Use provided setting info if available
+        existing_setting = config.get("setting", "")
+        existing_rules = config.get("world_rules", "")
+        existing_locations = config.get("key_locations", "")
 
-Title: {config.get('title', 'Untitled')}
-Genre: {config.get('genre', 'literary')}
+        prompt = f"""Create a comprehensive world bible for this novel. Expand on any provided details.
+
+{story_context}
+
 High Concept: {self.state.high_concept}
+{strategic}
 
-Include:
-1. Setting (time, place, atmosphere)
-2. World Rules (what's possible/impossible)
-3. Key Locations (3-5 important places)
-4. Social Structure (if relevant)
-5. Technology/Magic System (if relevant)
+{"EXISTING SETTING TO EXPAND: " + existing_setting if existing_setting else ""}
+{"EXISTING RULES TO EXPAND: " + existing_rules if existing_rules else ""}
+{"EXISTING LOCATIONS TO EXPAND: " + existing_locations if existing_locations else ""}
+
+Create a detailed world bible including:
+1. Setting (time, place, atmosphere, sensory details)
+2. World Rules (what's possible/impossible, systems)
+3. Key Locations (5-7 important places with vivid descriptions)
+4. Social Structure (hierarchy, factions, power dynamics)
+5. Culture/Customs (relevant cultural details for authenticity)
 
 Respond in JSON format."""
 
@@ -355,37 +467,49 @@ Respond in JSON format."""
     async def _stage_beat_sheet(self) -> tuple:
         """Create story beat sheet."""
         config = self.state.config
+        story_context = self._build_story_context()
+        strategic = self._build_strategic_guidance()
+        guidance = config.get("strategic_guidance", {})
 
-        prompt = f"""Create a detailed beat sheet for this novel using the 3-act structure.
+        # Use provided beat sheet as reference if available
+        user_beats = guidance.get("beat_sheet", "") or config.get("key_plot_points", "")
 
-Title: {config.get('title', 'Untitled')}
-Genre: {config.get('genre', 'literary')}
+        prompt = f"""Create a detailed beat sheet for this novel. Follow any provided pacing guidance closely.
+
+{story_context}
+
 High Concept: {self.state.high_concept}
+World Bible: {json.dumps(self.state.world_bible, indent=2) if self.state.world_bible else 'Not yet created'}
+{strategic}
 
-Include these beats:
-ACT 1 (Setup - 25%):
-- Opening Image
-- Theme Stated
-- Setup
-- Catalyst (Inciting Incident at 8-12%)
-- Debate
+{"USER-PROVIDED PLOT BEATS TO INCORPORATE:\n" + user_beats if user_beats else ""}
 
-ACT 2A (Confrontation - 25%):
-- Break into Two
-- B Story
-- Fun and Games
-- Midpoint
+Create a beat sheet with percentage markers (for a {config.get('target_length', '60k word')} novel):
 
-ACT 2B (Complication - 25%):
-- Bad Guys Close In
-- All Is Lost
-- Dark Night of the Soul
+ACT 1 (Setup - 0-25%):
+- Opening Image (0-1%): First impression, sets tone
+- Theme Stated (5%): Core theme hinted
+- Setup (1-10%): Normal world established
+- Catalyst/Inciting Incident (10%): The disruption
+- Debate (10-25%): Resistance to change
 
-ACT 3 (Resolution - 25%):
-- Break into Three
-- Finale
-- Final Image
+ACT 2A (Confrontation - 25-50%):
+- Break into Two (25%): Enters new world
+- B Story (30%): Secondary storyline begins
+- Fun and Games (30-50%): Promise of premise
+- Midpoint (50%): Major shift/revelation
 
+ACT 2B (Complication - 50-75%):
+- Bad Guys Close In (50-75%): Stakes escalate
+- All Is Lost (75%): Lowest point
+- Dark Night of the Soul (75-80%): Emotional pit
+
+ACT 3 (Resolution - 75-100%):
+- Break into Three (80%): New plan/insight
+- Finale (80-99%): Climax and resolution
+- Final Image (100%): Mirror of opening
+
+For each beat, include: name, percentage, scene description, emotional beat, and any tropes to execute.
 Respond as a JSON array of beats."""
 
         if self.llm_client:
@@ -408,25 +532,42 @@ Respond as a JSON array of beats."""
     async def _stage_character_profiles(self) -> tuple:
         """Develop character profiles."""
         config = self.state.config
-        archetypes = config.get("archetypes", ["protagonist", "antagonist", "mentor"])
+        story_context = self._build_story_context()
+        strategic = self._build_strategic_guidance()
+        guidance = config.get("strategic_guidance", {})
 
-        prompt = f"""Create detailed character profiles for this novel.
+        # Use provided character info
+        protagonist_info = config.get("protagonist", "")
+        antagonist_info = config.get("antagonist", "")
+        other_chars = config.get("other_characters", "")
+        dialogue_bank = guidance.get("dialogue_bank", "")
+        cultural_notes = guidance.get("cultural_notes", "")
 
-Title: {config.get('title', 'Untitled')}
-Genre: {config.get('genre', 'literary')}
+        prompt = f"""Create detailed character profiles for this novel. Expand on any provided character info.
+
+{story_context}
+
 High Concept: {self.state.high_concept}
-Archetypes needed: {', '.join(archetypes)}
+World Bible: {json.dumps(self.state.world_bible, indent=2) if self.state.world_bible else 'Not yet created'}
+{strategic}
+
+{"PROVIDED PROTAGONIST INFO TO EXPAND:\n" + protagonist_info if protagonist_info else ""}
+{"PROVIDED ANTAGONIST INFO TO EXPAND:\n" + antagonist_info if antagonist_info else ""}
+{"PROVIDED OTHER CHARACTERS TO EXPAND:\n" + other_chars if other_chars else ""}
+{"DIALOGUE PATTERNS/PHRASES TO USE:\n" + dialogue_bank if dialogue_bank else ""}
+{"CULTURAL AUTHENTICITY NOTES:\n" + cultural_notes if cultural_notes else ""}
 
 For each character include:
 1. Name
 2. Role/Archetype
-3. Physical Description
-4. Personality Traits (strengths, flaws)
-5. Backstory
-6. Goals and Motivations
-7. Character Arc
-8. Voice/Speech Patterns
-9. Relationships to Other Characters
+3. Physical Description (detailed, vivid)
+4. Personality Traits (strengths, flaws, quirks)
+5. Backstory (formative events)
+6. Goals and Motivations (external and internal)
+7. Character Arc (start state -> end state)
+8. Voice/Speech Patterns (unique phrases, vocabulary, rhythm)
+9. Signature Behaviors (habits, tells)
+10. Relationships to Other Characters
 
 Respond as a JSON array of character objects."""
 

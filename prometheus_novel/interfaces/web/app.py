@@ -98,16 +98,25 @@ class AppState:
 
     def load_projects(self):
         """Load existing projects from disk."""
+        import yaml
         projects_dir = PROJECT_ROOT / "data" / "projects"
         if projects_dir.exists():
             for project_path in projects_dir.iterdir():
                 if project_path.is_dir():
                     config_file = project_path / "config.yaml"
                     if config_file.exists():
+                        # Read status from config file
+                        try:
+                            with open(config_file, 'r') as f:
+                                config = yaml.safe_load(f) or {}
+                            status = config.get("status", "ready")
+                        except Exception:
+                            status = "ready"
+
                         self.projects[project_path.name] = {
                             "name": project_path.name,
                             "path": str(project_path),
-                            "status": "ready"
+                            "status": status
                         }
         logger.info(f"Loaded {len(self.projects)} projects")
 
@@ -281,6 +290,37 @@ async def start_generation(project_name: str, background_tasks: BackgroundTasks)
     return {"status": "started", "generation_id": generation_id}
 
 
+@app.get("/api/v2/projects/{project_name}/export")
+async def export_project(project_name: str, sample: bool = True):
+    """Export project to Word document for Kindle."""
+    from fastapi.responses import FileResponse
+
+    if project_name not in app_state.projects:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_path = Path(app_state.projects[project_name]["path"])
+
+    try:
+        from prometheus_novel.export.docx_exporter import KDPExporter
+        exporter = KDPExporter(project_path)
+
+        if sample:
+            output_path = exporter.export_sample()
+        else:
+            output_path = exporter.export()
+
+        logger.info(f"Exported project {project_name} to {output_path}")
+
+        return FileResponse(
+            path=str(output_path),
+            filename=output_path.name,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+    except Exception as e:
+        logger.error(f"Export failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+
+
 @app.get("/api/v2/ideas")
 async def list_ideas():
     """List all saved ideas."""
@@ -383,7 +423,19 @@ async def create_project_from_seed(request: Request, background_tasks: Backgroun
             "critic_model": "gpt-4o-mini",
             "fallback_model": "gpt-3.5-turbo"
         },
-        "status": "seeded"
+        "status": "seeded",
+
+        # Strategic guidance - passed to pipeline for context
+        "strategic_guidance": {
+            "market_positioning": seed_data.get("market_positioning", ""),
+            "beat_sheet": seed_data.get("beat_sheet", ""),
+            "aesthetic_guide": seed_data.get("aesthetic_guide", ""),
+            "tropes": seed_data.get("tropes", ""),
+            "dialogue_bank": seed_data.get("dialogue_bank", ""),
+            "cultural_notes": seed_data.get("cultural_notes", ""),
+            "pacing_notes": seed_data.get("pacing_notes", ""),
+            "commercial_notes": seed_data.get("commercial_notes", "")
+        }
     }
 
     # Save config
@@ -700,7 +752,28 @@ def get_projects_html() -> str:
             padding: 4px 12px; border-radius: 20px; font-size: 0.85rem;
         }
         .status-ready { background: #10b981; color: #fff; }
+        .status-seeded { background: #3b82f6; color: #fff; }
         .status-generating { background: #f59e0b; color: #fff; }
+        .status-completed { background: #10b981; color: #fff; }
+        .project-actions { display: flex; gap: 10px; align-items: center; }
+        .btn-generate {
+            background: #10b981; color: #fff; border: none;
+            padding: 8px 16px; border-radius: 6px; cursor: pointer;
+            font-weight: 600; font-size: 0.9rem; transition: background 0.2s;
+        }
+        .btn-generate:hover { background: #059669; }
+        .btn-generate:disabled { background: #374151; cursor: not-allowed; }
+        .btn-download {
+            background: #3b82f6; color: #fff; border: none;
+            padding: 8px 16px; border-radius: 6px; cursor: pointer;
+            font-weight: 600; font-size: 0.9rem; transition: background 0.2s;
+            text-decoration: none; display: inline-block;
+        }
+        .btn-download:hover { background: #2563eb; }
+        .progress-indicator {
+            display: none; color: #f59e0b; font-size: 0.85rem;
+        }
+        .progress-indicator.active { display: block; }
     </style>
 </head>
 <body>
@@ -787,17 +860,106 @@ def get_projects_html() -> str:
             }
 
             list.innerHTML = data.projects.map(p => `
-                <div class="project-card">
+                <div class="project-card" id="project-${p.name}">
                     <div>
                         <h3>${p.name}</h3>
                         <p style="color: #9ca3af;">${p.path}</p>
+                        <p class="progress-indicator" id="progress-${p.name}"></p>
                     </div>
-                    <span class="project-status status-${p.status}">${p.status}</span>
+                    <div class="project-actions">
+                        <span class="project-status status-${p.status}" id="status-${p.name}">${p.status}</span>
+                        <a href="/api/v2/projects/${p.name}/export?sample=true" class="btn-download" download>
+                            Download .docx
+                        </a>
+                        <button class="btn-generate" id="btn-${p.name}" onclick="startGeneration('${p.name}')"
+                            ${p.status === 'generating' ? 'disabled' : ''}>
+                            ${p.status === 'generating' ? 'Generating...' : 'Generate'}
+                        </button>
+                    </div>
                 </div>
             `).join('');
         }
 
         loadProjects();
+
+        // WebSocket for real-time progress updates
+        const ws = new WebSocket('ws://' + window.location.host + '/ws');
+        ws.onopen = () => console.log('Connected to WriterAI');
+        ws.onmessage = (e) => {
+            const data = JSON.parse(e.data);
+            console.log('WS message:', data);
+
+            if (data.type === 'generation_progress') {
+                const progress = document.getElementById('progress-' + data.project);
+                const status = document.getElementById('status-' + data.project);
+                if (progress) {
+                    progress.classList.add('active');
+                    progress.textContent = 'Stage: ' + data.stage + ' (' + data.progress + '%)';
+                }
+                if (status) {
+                    status.className = 'project-status status-generating';
+                    status.textContent = 'generating';
+                }
+            } else if (data.type === 'generation_complete') {
+                const progress = document.getElementById('progress-' + data.project);
+                const status = document.getElementById('status-' + data.project);
+                const btn = document.getElementById('btn-' + data.project);
+                if (progress) {
+                    progress.classList.remove('active');
+                }
+                if (status) {
+                    status.className = 'project-status status-completed';
+                    status.textContent = 'completed';
+                }
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = 'Generate';
+                }
+                alert('Generation complete for: ' + data.project);
+            }
+        };
+
+        async function startGeneration(projectName) {
+            const btn = document.getElementById('btn-' + projectName);
+            const status = document.getElementById('status-' + projectName);
+            const progress = document.getElementById('progress-' + projectName);
+
+            if (!confirm('Start novel generation for "' + projectName + '"? This will use API credits.')) {
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = 'Starting...';
+            status.className = 'project-status status-generating';
+            status.textContent = 'generating';
+            progress.classList.add('active');
+            progress.textContent = 'Initializing...';
+
+            try {
+                const response = await fetch('/api/v2/projects/' + projectName + '/generate', {
+                    method: 'POST'
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log('Generation started:', result);
+                    btn.textContent = 'Generating...';
+                } else {
+                    const error = await response.json();
+                    alert('Failed to start generation: ' + (error.detail || 'Unknown error'));
+                    btn.disabled = false;
+                    btn.textContent = 'Generate';
+                    status.className = 'project-status status-seeded';
+                    status.textContent = 'seeded';
+                    progress.classList.remove('active');
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+                btn.disabled = false;
+                btn.textContent = 'Generate';
+                progress.classList.remove('active');
+            }
+        }
     </script>
 </body>
 </html>
@@ -1203,36 +1365,49 @@ def get_seed_html() -> str:
 
         <!-- JSON Template Section -->
         <div class="quick-fill" style="position: relative;">
-            <h4>Copy This JSON Template to Your LLM</h4>
-            <p>1. Click "Copy Template" below. 2. Paste to ChatGPT/Claude with your story idea. 3. Paste the filled JSON back here.</p>
-            <button class="copy-template-btn" onclick="copyTemplate()" id="copyBtn">Copy Template</button>
-            <pre id="jsonTemplate" style="background: rgba(0,0,0,0.5); padding: 15px; border-radius: 8px; font-size: 0.85rem; overflow-x: auto; max-height: 400px; overflow-y: auto; margin: 15px 0; color: #a78bfa;">{
-  "idea": "YOUR CORE STORY IDEA HERE (required - everything else is optional)",
-  "title": "",
+            <h4>Quick Fill: Copy Template to LLM, Paste Back Filled</h4>
+            <p>1. Click "Copy Template" 2. Paste to ChatGPT/Claude with your story idea 3. Paste filled JSON back and click Parse</p>
+            <button class="copy-template-btn" id="copyBtn" onclick="copyTemplate()">Copy Template</button>
+            <pre id="jsonTemplate" style="background: rgba(0,0,0,0.5); padding: 15px; border-radius: 8px; font-size: 0.8rem; overflow-x: auto; max-height: 400px; overflow-y: auto; margin: 15px 0; color: #a78bfa; white-space: pre-wrap;">{
+  "idea": "REQUIRED: Your core story concept in 1-3 sentences",
+  "title": "Working title for the novel",
   "genre": "sci-fi | fantasy | mystery | thriller | romance | horror | literary | historical",
-  "tone": "",
+  "tone": "dark, hopeful, gritty, whimsical, satirical, etc.",
   "target_length": "novella (30k) | standard (60k) | epic (100k+)",
-  "setting": "",
-  "world_rules": "",
-  "key_locations": "",
-  "protagonist": "Name, age, role. Traits. Goals. What blocks them.",
-  "antagonist": "",
-  "other_characters": "",
-  "premise": "The central 'what if' question",
-  "central_conflict": "",
-  "key_plot_points": "Opening: ...\\nInciting incident: ...\\nMidpoint: ...\\nLow point: ...\\nClimax: ...",
-  "subplots": "",
-  "themes": "",
-  "central_question": "",
-  "motifs": "",
-  "writing_style": "",
-  "influences": "",
-  "avoid": ""
+
+  "setting": "Time, place, atmosphere. Be specific.",
+  "world_rules": "What's possible/impossible? Magic system? Technology? Society rules?",
+  "key_locations": "Important places where scenes happen. List 3-5.",
+
+  "protagonist": "Name, age, role, personality, goal, flaw, what blocks them",
+  "antagonist": "Name, role, motivation, methods, relationship to protagonist",
+  "other_characters": "Supporting cast with names, roles, relationships",
+
+  "premise": "The central 'what if' of your story",
+  "central_conflict": "The main tension driving the plot",
+  "key_plot_points": "Opening, inciting incident, midpoint, low point, climax, resolution",
+  "subplots": "Secondary storylines (romance, mystery, character arcs)",
+
+  "themes": "Core ideas explored (identity, power, love, redemption, etc.)",
+  "central_question": "The philosophical question the story asks",
+  "motifs": "Recurring symbols, images, or patterns",
+
+  "writing_style": "POV, tense, prose style, pacing preferences",
+  "influences": "Comparable books, authors, or media that inspire this story",
+  "avoid": "Tropes, elements, or approaches you do NOT want",
+
+  "market_positioning": "Target subgenre, reader expectations, comp titles, keywords",
+  "beat_sheet": "Opening (5%): setup. Inciting (10%): disruption. Threshold (25%): point of no return. Midpoint (50%): major shift. Low point (75%): all is lost. Climax (85%): confrontation. Resolution (95%): new equilibrium.",
+  "aesthetic_guide": "Fashion brands, luxury items, sensory details (smells, sounds, textures)",
+  "tropes": "List key tropes with when/how to execute them",
+  "dialogue_bank": "Signature phrases, endearments, power lines for characters",
+  "cultural_notes": "Specific cultural details, terminology, customs needed",
+  "commercial_notes": "Series potential, blurb hooks, chapter structure, mobile-first tips"
 }</pre>
             <div style="margin-top: 15px;">
                 <label style="color: #a78bfa; font-weight: 600;">Paste Filled JSON Here:</label>
-                <textarea id="quickPaste" placeholder='{"idea": "...", "title": "...", ...}' style="font-family: monospace; min-height: 120px;"></textarea>
-                <button class="btn btn-primary" onclick="parseJSON()" style="margin-top: 10px;">Parse JSON &amp; Fill Form</button>
+                <textarea id="quickPaste" placeholder='Paste the JSON filled by your LLM here...' style="font-family: monospace; min-height: 120px;"></textarea>
+                <button class="btn btn-primary" id="parseBtn" style="margin-top: 10px;" onclick="parseJSON()">Parse JSON &amp; Fill Form</button>
             </div>
         </div>
 
@@ -1410,6 +1585,46 @@ def get_seed_html() -> str:
                     </div>
                 </div>
             </div>
+
+            <!-- Strategic Guidance (from LLM analysis) -->
+            <div class="section">
+                <div class="section-header" onclick="toggleSection(this)">
+                    <h3>Strategic Guidance</h3>
+                    <span class="badge" id="badge-strategic">Optional</span>
+                </div>
+                <div class="section-content">
+                    <p class="label-hint" style="margin-bottom: 20px; color: #9ca3af;">These fields capture market insights, craft guidance, and commercial notes to help the AI write more effectively.</p>
+
+                    <div class="form-group">
+                        <label>Market Positioning</label>
+                        <textarea id="market_positioning" name="market_positioning" placeholder="Target subgenre (e.g., Dark Bratva Romance), reader expectations, comparable titles, KU optimization notes..."></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Beat Sheet / Pacing Notes</label>
+                        <textarea id="beat_sheet" name="beat_sheet" class="large" placeholder="Opening (0-5%): Setup normal world...&#10;Inciting incident (10%): ...&#10;Threshold (25%): Enters new world...&#10;Midpoint (50%): Major shift...&#10;Low point (75%): All is lost...&#10;Climax (85%): ...&#10;Resolution: HEA/HFN..."></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Aesthetic Guide (Fashion, Luxury, Sensory)</label>
+                        <textarea id="aesthetic_guide" name="aesthetic_guide" class="large" placeholder="Fashion: Brioni suits, D&G dresses, fur coats...&#10;Luxury: G-Wagon, Beluga vodka, penthouse...&#10;Smells: leather, gunpowder, cologne...&#10;Sounds: vault-door thud, accented whispers...&#10;Textures: silk, cold metal, rough hands..."></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Tropes to Execute</label>
+                        <textarea id="tropes" name="tropes" class="large" placeholder="- Touch Her and Die: Before 50%, calm violence, immediate caretaking after&#10;- Who Did This To You: Cold rage, tends wound himself&#10;- Forced Proximity / Golden Cage: Luxurious captivity&#10;- Praise Kink: Specific to her body/actions, not generic"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Dialogue Bank</label>
+                        <textarea id="dialogue_bank" name="dialogue_bank" class="large" placeholder="Praise phrases: 'You take me so well', 'Good girl', 'Look at you...'&#10;Endearments: Zolotse (gold), Kotyonek (kitten), Moya dusha (my soul)&#10;Power lines: 'Touch her and I burn your world down'"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Cultural Notes</label>
+                        <textarea id="cultural_notes" name="cultural_notes" placeholder="Bratva hierarchy: Pakhan (boss), Brigadier (captain), Vor (thief)...&#10;Russian customs, language, stoicism, cultural details for authenticity..."></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Commercial Notes</label>
+                        <textarea id="commercial_notes" name="commercial_notes" placeholder="Series potential, blurb hooks, mobile-first writing (short paragraphs), chapter cliffhangers, keyword strategy..."></textarea>
+                    </div>
+                </div>
+            </div>
         </form>
     </div>
 
@@ -1417,8 +1632,9 @@ def get_seed_html() -> str:
     <div class="progress-bar">
         <div class="progress-inner">
             <div class="progress-stats">
-                <span id="filledCount">0</span> of 21 fields filled |
-                AI will generate <span id="aiCount">21</span> sections
+                <span id="filledCount">0</span> fields filled |
+                AI will expand <span id="aiCount">21</span> story sections |
+                <span style="color: #6b7280;">+ strategic guidance</span>
             </div>
             <div class="btn-group">
                 <button class="btn btn-secondary" onclick="clearForm()">Clear All</button>
@@ -1442,8 +1658,8 @@ def get_seed_html() -> str:
     </div>
 
     <script>
-        // Track form state
-        const fields = [
+        // Track form state - core story fields
+        const coreFields = [
             'idea', 'title', 'genre', 'tone', 'target_length',
             'setting', 'world_rules', 'key_locations',
             'protagonist', 'antagonist', 'other_characters',
@@ -1452,14 +1668,30 @@ def get_seed_html() -> str:
             'writing_style', 'influences', 'avoid'
         ];
 
+        // Strategic guidance fields
+        const strategicFields = [
+            'market_positioning', 'beat_sheet', 'aesthetic_guide',
+            'tropes', 'dialogue_bank', 'cultural_notes', 'commercial_notes'
+        ];
+
+        const fields = [...coreFields, ...strategicFields];
+
         function updateProgress() {
-            let filled = 0;
-            fields.forEach(field => {
+            let coreFilled = 0;
+            let strategicFilled = 0;
+
+            coreFields.forEach(field => {
                 const el = document.getElementById(field);
-                if (el && el.value && el.value.trim()) filled++;
+                if (el && el.value && el.value.trim()) coreFilled++;
             });
-            document.getElementById('filledCount').textContent = filled;
-            document.getElementById('aiCount').textContent = 21 - filled;
+            strategicFields.forEach(field => {
+                const el = document.getElementById(field);
+                if (el && el.value && el.value.trim()) strategicFilled++;
+            });
+
+            const totalFilled = coreFilled + strategicFilled;
+            document.getElementById('filledCount').textContent = totalFilled;
+            document.getElementById('aiCount').textContent = (coreFields.length - coreFilled);
 
             // Update section badges
             updateSectionBadge('badge-basic', ['title', 'genre', 'tone', 'target_length']);
@@ -1468,6 +1700,7 @@ def get_seed_html() -> str:
             updateSectionBadge('badge-plot', ['premise', 'central_conflict', 'key_plot_points', 'subplots']);
             updateSectionBadge('badge-themes', ['themes', 'central_question', 'motifs']);
             updateSectionBadge('badge-style', ['writing_style', 'influences', 'avoid']);
+            updateSectionBadge('badge-strategic', strategicFields);
         }
 
         function updateSectionBadge(badgeId, fieldIds) {
@@ -1498,15 +1731,45 @@ def get_seed_html() -> str:
 
         function copyTemplate() {
             const template = document.getElementById('jsonTemplate').textContent;
-            navigator.clipboard.writeText(template).then(() => {
-                const btn = document.getElementById('copyBtn');
-                btn.textContent = 'Copied!';
-                btn.style.background = '#10b981';
-                setTimeout(() => {
-                    btn.textContent = 'Copy Template';
-                    btn.style.background = '#374151';
-                }, 2000);
-            });
+
+            // Try modern clipboard API first
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(template).then(() => {
+                    showCopySuccess();
+                }).catch(err => {
+                    console.log('Clipboard API failed, trying fallback:', err);
+                    copyFallback(template);
+                });
+            } else {
+                copyFallback(template);
+            }
+        }
+
+        function copyFallback(text) {
+            // Fallback for older browsers or HTTP contexts
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.left = '-9999px';
+            document.body.appendChild(textarea);
+            textarea.select();
+            try {
+                document.execCommand('copy');
+                showCopySuccess();
+            } catch (err) {
+                alert('Copy failed. Please select the template text manually and copy.');
+            }
+            document.body.removeChild(textarea);
+        }
+
+        function showCopySuccess() {
+            const btn = document.getElementById('copyBtn');
+            btn.textContent = 'Copied!';
+            btn.style.background = '#10b981';
+            setTimeout(() => {
+                btn.textContent = 'Copy Template';
+                btn.style.background = '#374151';
+            }, 2000);
         }
 
         function parseJSON() {
@@ -1516,58 +1779,109 @@ def get_seed_html() -> str:
                 return;
             }
 
+            // Clean the input
+            let cleanText = text;
+
+            // Remove markdown code blocks (``` or ```json)
+            var codeBlockRe = /^`{3}[a-z]*\\n?/;
+            var endBlockRe = /\\n?`{3}$/;
+            if (codeBlockRe.test(cleanText)) {
+                cleanText = cleanText.replace(codeBlockRe, '').replace(endBlockRe, '');
+            }
+            cleanText = cleanText.trim();
+
+            // Fix common LLM JSON mistakes
+            // Fix empty values like "key":, -> "key": ""
+            cleanText = cleanText.replace(/:\\s*,/g, ': "",');
+            cleanText = cleanText.replace(/:\\s*}/g, ': ""}');
+            // Fix trailing commas before } or ]
+            cleanText = cleanText.replace(/,\\s*}/g, '}');
+            cleanText = cleanText.replace(/,\\s*]/g, ']');
+
+            console.log('Attempting to parse:', cleanText.substring(0, 200) + '...');
+
             try {
-                // Try to parse as JSON
-                const data = JSON.parse(text);
+                const data = JSON.parse(cleanText);
+                console.log('Parsed successfully. Keys:', Object.keys(data));
 
                 let filledCount = 0;
+                const results = [];
+
                 fields.forEach(field => {
-                    if (data[field] && data[field].trim() && !data[field].includes('YOUR ') && !data[field].includes('...')) {
-                        document.getElementById(field).value = data[field].trim();
-                        filledCount++;
+                    const el = document.getElementById(field);
+                    if (!el) {
+                        console.warn('No form element for field:', field);
+                        return;
                     }
+
+                    let value = data[field];
+
+                    // Skip if not present
+                    if (value === undefined || value === null) {
+                        return;
+                    }
+
+                    // Convert objects/arrays to string
+                    if (typeof value === 'object') {
+                        if (Array.isArray(value)) {
+                            value = value.map(item => {
+                                if (typeof item === 'object') {
+                                    return Object.entries(item).map(([k,v]) => k + ': ' + v).join(', ');
+                                }
+                                return String(item);
+                            }).join('\\n');
+                        } else {
+                            value = Object.entries(value).map(([k,v]) => {
+                                if (typeof v === 'object') {
+                                    return k + ': ' + JSON.stringify(v);
+                                }
+                                return k + ': ' + v;
+                            }).join('\\n');
+                        }
+                    }
+
+                    // Convert to string
+                    value = String(value).trim();
+
+                    // Skip template placeholders - check for common placeholder patterns
+                    const placeholderStarts = [
+                        'REQUIRED:', 'Working title', 'Time, place', 'Important places',
+                        'Name, age', 'Name, role', 'Supporting cast', 'The central',
+                        'Opening, inciting', 'Secondary storylines', 'Core ideas',
+                        'The philosophical', 'Recurring symbols', 'POV, tense',
+                        'Comparable books', 'Tropes, elements', 'Target subgenre',
+                        'Opening (5%)', 'Fashion brands', 'List key tropes',
+                        'Signature phrases', 'Specific cultural', 'Series potential'
+                    ];
+                    const isPlaceholder = value === '' ||
+                        value.includes(' | ') ||
+                        value.indexOf('possible') === 6 ||
+                        placeholderStarts.some(p => value.startsWith(p));
+
+                    if (isPlaceholder) {
+                        console.log('Skipping placeholder for:', field);
+                        return;
+                    }
+
+                    el.value = value;
+                    filledCount++;
+                    results.push(field);
+                    console.log('Filled:', field);
                 });
 
                 updateProgress();
                 document.getElementById('quickPaste').value = '';
-                alert('Success! Filled ' + filledCount + ' fields from JSON.');
+
+                if (filledCount > 0) {
+                    alert('Success! Filled ' + filledCount + ' fields: ' + results.join(', '));
+                } else {
+                    alert('No fields were filled. Make sure you filled in the template values (not just left the placeholders).');
+                }
 
             } catch (e) {
-                // Not valid JSON - try regex fallback
-                console.log('JSON parse failed, trying regex fallback:', e);
-                parseQuickPasteFallback(text);
+                console.error('JSON parse error:', e);
+                alert('JSON parsing failed: ' + e.message + '. Make sure the text is valid JSON format.');
             }
-        }
-
-        function parseQuickPasteFallback(text) {
-            // Fallback: look for labeled sections
-            const patterns = {
-                'idea': /(?:idea|concept|premise|synopsis|story)[:\\s]+([\\s\\S]*?)(?=\\n(?:[A-Z][a-z_]+:|$))/i,
-                'title': /(?:title)[:\\s]+(.+)/i,
-                'genre': /(?:genre)[:\\s]+(.+)/i,
-                'tone': /(?:tone)[:\\s]+(.+)/i,
-                'setting': /(?:setting)[:\\s]+([\\s\\S]*?)(?=\\n(?:[A-Z][a-z_]+:|$))/i,
-                'protagonist': /(?:protagonist|main character)[:\\s]+([\\s\\S]*?)(?=\\n(?:[A-Z][a-z_]+:|$))/i,
-                'antagonist': /(?:antagonist|villain)[:\\s]+([\\s\\S]*?)(?=\\n(?:[A-Z][a-z_]+:|$))/i,
-                'themes': /(?:themes?)[:\\s]+([\\s\\S]*?)(?=\\n(?:[A-Z][a-z_]+:|$))/i,
-            };
-
-            let foundAny = false;
-            for (const [field, pattern] of Object.entries(patterns)) {
-                const match = text.match(pattern);
-                if (match && match[1]) {
-                    document.getElementById(field).value = match[1].trim();
-                    foundAny = true;
-                }
-            }
-
-            if (!foundAny) {
-                document.getElementById('idea').value = text;
-            }
-
-            updateProgress();
-            document.getElementById('quickPaste').value = '';
-            alert('Form filled using text parsing. Review and adjust as needed.');
         }
 
         function clearForm() {
@@ -1607,7 +1921,7 @@ def get_seed_html() -> str:
                 if (response.ok) {
                     document.getElementById('projectPath').textContent = result.project_path;
                     document.getElementById('fieldStats').textContent =
-                        `${result.fields_provided} fields provided, ${result.fields_total - result.fields_provided} will be AI-generated`;
+                        result.fields_provided + ' fields provided, ' + (result.fields_total - result.fields_provided) + ' will be AI-generated';
                     document.getElementById('successModal').classList.add('show');
                 } else {
                     alert('Error: ' + (result.detail || 'Unknown error'));
@@ -1622,7 +1936,7 @@ def get_seed_html() -> str:
             clearForm();
         }
 
-        // Add event listeners
+        // Add event listeners for form fields
         fields.forEach(field => {
             const el = document.getElementById(field);
             if (el) {
@@ -1630,8 +1944,13 @@ def get_seed_html() -> str:
             }
         });
 
+        // Add button event listeners
+        document.getElementById('copyBtn').addEventListener('click', copyTemplate);
+        document.getElementById('parseBtn').addEventListener('click', parseJSON);
+
         // Initial update
         updateProgress();
+        console.log('WriterAI Seed page initialized. Fields tracked:', fields.length);
     </script>
 </body>
 </html>
