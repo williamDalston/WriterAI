@@ -524,47 +524,125 @@ async def websocket_endpoint(websocket: WebSocket):
 # ============================================================================
 
 async def run_generation(project_name: str, generation_id: str):
-    """Run novel generation in background."""
+    """Run novel generation in background using the real 12-stage pipeline."""
+    import yaml
+
     try:
-        stages = [
-            "high_concept", "world_building", "beat_sheet",
-            "character_profiles", "scene_planning", "drafting",
-            "self_refinement", "continuity_audit", "polish"
-        ]
+        # Get project path
+        project_info = app_state.projects.get(project_name)
+        if not project_info:
+            raise ValueError(f"Project not found: {project_name}")
 
-        for i, stage in enumerate(stages):
+        project_path = Path(project_info["path"])
+
+        # Load project config to get model preference
+        config_file = project_path / "config.yaml"
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f) or {}
+
+        # Get model defaults from config
+        model_defaults = config.get("model_defaults", {})
+        api_model = model_defaults.get("api_model", "gpt-4o-mini")
+        critic_model = model_defaults.get("critic_model", "claude-sonnet-4-20250514")
+        fallback_model = model_defaults.get("fallback_model", "gemini-2.0-flash")
+
+        # Create LLM clients for smart multi-model routing
+        # Each model type is used for stages that match its strengths
+        from prometheus_novel.prometheus_lib.llm.clients import OpenAIClient, AnthropicClient, GeminiClient
+
+        llm_clients = {}
+
+        # GPT - fast/cheap for bulk drafting and structural work
+        llm_clients["gpt"] = OpenAIClient(api_model)
+        logger.info(f"Initialized GPT client: {api_model}")
+
+        # Claude - nuanced prose, character work, polish
+        llm_clients["claude"] = AnthropicClient(critic_model)
+        logger.info(f"Initialized Claude client: {critic_model}")
+
+        # Gemini - long context for world-building, continuity
+        llm_clients["gemini"] = GeminiClient(fallback_model)
+        logger.info(f"Initialized Gemini client: {fallback_model}")
+
+        # Default fallback client
+        from prometheus_novel.prometheus_lib.llm.clients import get_client
+        default_client = get_client(api_model)
+
+        # Import and run the pipeline with multi-model support
+        from prometheus_novel.stages.pipeline import PipelineOrchestrator
+
+        orchestrator = PipelineOrchestrator(
+            project_path,
+            llm_client=default_client,
+            llm_clients=llm_clients
+        )
+
+        # Register callbacks for progress updates
+        async def on_stage_start(stage_name, index):
+            progress = int((index / 12) * 100)
             app_state.active_generations[generation_id].update({
-                "current_stage": stage,
-                "progress": int((i / len(stages)) * 100)
+                "current_stage": stage_name,
+                "progress": progress
             })
-
-            # Broadcast progress
             await manager.broadcast({
                 "type": "generation_progress",
                 "generation_id": generation_id,
                 "project": project_name,
-                "stage": stage,
-                "progress": int((i / len(stages)) * 100)
+                "stage": stage_name,
+                "progress": progress
             })
 
-            # Simulate stage processing
-            await asyncio.sleep(1)
+        async def on_stage_complete(stage_name, result):
+            logger.info(f"Stage {stage_name} complete: {result.status.value}")
+
+        async def on_pipeline_complete(state):
+            logger.info(f"Pipeline complete! Total tokens: {state.total_tokens}, Cost: ${state.total_cost_usd:.4f}")
+
+        orchestrator.on("on_stage_start", on_stage_start)
+        orchestrator.on("on_stage_complete", on_stage_complete)
+        orchestrator.on("on_pipeline_complete", on_pipeline_complete)
+
+        # Run the pipeline
+        logger.info(f"Starting generation for {project_name} with model {api_model}")
+        final_state = await orchestrator.run()
+
+        # Update config with completed status
+        config["status"] = "completed"
+        with open(config_file, 'w', encoding='utf-8') as f:
+            yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+
+        # Export to Word document
+        from prometheus_novel.export.docx_exporter import KDPExporter
+        exporter = KDPExporter(project_path)
+        output_path = exporter.export()
+        logger.info(f"Novel exported to: {output_path}")
+
+        # Update project status in memory
+        app_state.projects[project_name]["status"] = "completed"
 
         app_state.active_generations[generation_id].update({
             "status": "completed",
-            "progress": 100
+            "progress": 100,
+            "output_file": str(output_path)
         })
 
         await manager.broadcast({
             "type": "generation_complete",
             "generation_id": generation_id,
-            "project": project_name
+            "project": project_name,
+            "output_file": str(output_path)
         })
 
     except Exception as e:
-        logger.error(f"Generation failed: {e}")
+        logger.error(f"Generation failed: {e}", exc_info=True)
         app_state.active_generations[generation_id].update({
             "status": "failed",
+            "error": str(e)
+        })
+        await manager.broadcast({
+            "type": "generation_error",
+            "generation_id": generation_id,
+            "project": project_name,
             "error": str(e)
         })
 
@@ -868,8 +946,9 @@ def get_projects_html() -> str:
                     </div>
                     <div class="project-actions">
                         <span class="project-status status-${p.status}" id="status-${p.name}">${p.status}</span>
-                        <a href="/api/v2/projects/${p.name}/export?sample=true" class="btn-download" download>
-                            Download .docx
+                        <a href="/api/v2/projects/${p.name}/export?sample=${p.status !== 'completed'}"
+                           class="btn-download" id="download-${p.name}" download>
+                            ${p.status === 'completed' ? 'Download Novel' : 'Download Seed'}
                         </a>
                         <button class="btn-generate" id="btn-${p.name}" onclick="startGeneration('${p.name}')"
                             ${p.status === 'generating' ? 'disabled' : ''}>
@@ -904,6 +983,7 @@ def get_projects_html() -> str:
                 const progress = document.getElementById('progress-' + data.project);
                 const status = document.getElementById('status-' + data.project);
                 const btn = document.getElementById('btn-' + data.project);
+                const downloadBtn = document.getElementById('download-' + data.project);
                 if (progress) {
                     progress.classList.remove('active');
                 }
@@ -915,7 +995,29 @@ def get_projects_html() -> str:
                     btn.disabled = false;
                     btn.textContent = 'Generate';
                 }
-                alert('Generation complete for: ' + data.project);
+                if (downloadBtn) {
+                    downloadBtn.href = '/api/v2/projects/' + data.project + '/export?sample=false';
+                    downloadBtn.textContent = 'Download Novel';
+                }
+                alert('Generation complete! Click "Download Novel" to get your book.');
+            } else if (data.type === 'generation_error') {
+                const progress = document.getElementById('progress-' + data.project);
+                const status = document.getElementById('status-' + data.project);
+                const btn = document.getElementById('btn-' + data.project);
+                if (progress) {
+                    progress.classList.remove('active');
+                    progress.textContent = 'Error: ' + data.error;
+                    progress.classList.add('active');
+                }
+                if (status) {
+                    status.className = 'project-status status-seeded';
+                    status.textContent = 'failed';
+                }
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = 'Retry';
+                }
+                alert('Generation failed: ' + data.error);
             }
         };
 
