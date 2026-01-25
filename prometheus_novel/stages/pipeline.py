@@ -29,6 +29,161 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
+# ============================================================================
+# RHETORICAL DEVICES BANK - For prose enhancement stages
+# ============================================================================
+RHETORICAL_DEVICES = {
+    # Sound & Rhythm
+    "alliteration": "Repeated consonant sounds at word beginnings",
+    "assonance": "Repetition of vowel sounds within words",
+    "meter": "Rhythmic patterns in prose for emphasis",
+
+    # Repetition Patterns
+    "anaphora": "Starting successive sentences/clauses with same word",
+    "epistrophe": "Ending successive phrases with same word",
+    "epizeuxis": "Immediate repetition for emphasis ('Never, never, never')",
+    "diacope": "Word repeated after brief interruption ('Bond. James Bond')",
+    "anadiplosis": "End of one phrase becomes start of next",
+    "epanalepsis": "Beginning and end echo each other (circularity)",
+
+    # Structure & Balance
+    "tricolon": "Three parallel elements (often ascending/descending)",
+    "isocolon": "Two grammatically parallel sentences",
+    "chiasmus": "Mirrored structure ('Fair is foul, foul is fair')",
+    "antithesis": "Contrasting ideas placed near each other",
+    "parallelism": "Similar grammatical structures for related ideas",
+    "periodic_sentence": "Meaning withheld until end for suspense",
+
+    # Word Play
+    "polyptoton": "Words from same root in succession ('watch the watchman')",
+    "syllepsis": "Word used in multiple senses ('took his hat and his leave')",
+    "zeugma": "One word carries across sentence parts",
+    "hendiadys": "'adjective noun' becomes 'noun and noun' (furious sound → sound and fury)",
+    "catachresis": "Using words in unusual ways (legs for chair supports)",
+
+    # Imagery & Figures
+    "metaphor": "Implicit comparison (A is B)",
+    "synesthesia": "One sense described in terms of another",
+    "personification": "Human qualities to inanimate things",
+    "metonymy": "Thing called by associated concept (crown for monarchy)",
+    "synecdoche": "Part stands for whole (wheels for car)",
+    "hyperbole": "Deliberate exaggeration for effect",
+    "litotes": "Affirming by denying opposite ('not bad' = good)",
+    "adynaton": "Impossible image for emphasis",
+
+    # Pacing & Drama
+    "aposiopesis": "Breaking off mid-sentence (trailing off...)",
+    "hyperbaton": "Unusual word order for emphasis",
+    "rhetorical_question": "Question that implies its answer",
+    "prolepsis": "Foreshadowing or anticipating objections",
+
+    # Lists & Accumulation
+    "merism": "Representing whole by naming parts",
+    "blazon": "Extended descriptive list",
+    "congeries": "Heaping of words/phrases for cumulative effect",
+    "parataxis": "Clauses placed side by side without conjunctions",
+    "hypotaxis": "Hierarchy of clauses (subordination)",
+}
+
+# ANTI-AI-TELL PATTERNS - Phrases that reveal AI authorship
+AI_TELL_PATTERNS = [
+    # Observation filters
+    "I couldn't help but",
+    "I found myself",
+    "Something about [X] made me",
+    "I noticed that",
+    "I realized that",
+    "I felt a sense of",
+    "I was struck by",
+
+    # Weak transitions
+    "suddenly",
+    "immediately",
+    "in that moment",
+    "before I knew it",
+    "without warning",
+
+    # Purple prose markers
+    "a whirlwind of emotions",
+    "time seemed to stop",
+    "electricity coursed through",
+    "my heart skipped a beat",
+    "butterflies in my stomach",
+    "a wave of [emotion]",
+    "flooded with",
+    "overwhelmed by",
+
+    # Hollow intensifiers
+    "incredibly",
+    "absolutely",
+    "utterly",
+    "completely",
+    "totally",
+    "truly",
+    "genuinely",
+
+    # AI favorite constructions
+    "couldn't quite",
+    "seemed to",
+    "appeared to",
+    "managed to",
+    "proceeded to",
+    "began to",
+    "started to",
+
+    # Telling instead of showing
+    "I felt [emotion]",
+    "I was [emotion]",
+    "a mix of [emotion] and [emotion]",
+    "I knew [character] felt",
+]
+
+# HUMANIZATION TECHNIQUES - From speech prompt system
+HUMANIZATION_PRINCIPLES = """
+=== SENTENCE RHYTHM ===
+- Use SHORT sentences for punch. Impact. Emphasis.
+- Let longer sentences breathe and flow, carrying the reader through complex
+  thoughts or descriptions with a rhythm that builds momentum.
+- Fragments work. Sometimes better than complete sentences.
+- Vary length deliberately: short-short-long, or long-short for contrast.
+
+=== IMPERFECTION AS AUTHENTICITY ===
+- Incomplete thoughts that trail off...
+- Interrupted dialogue with em-dashes—
+- Characters who miss obvious things
+- Contradictory emotions held simultaneously
+- Occasional sentence fragments or casual grammar
+- Thoughts that circle back to earlier ideas
+
+=== IMPLICITNESS OVER EXPLICITNESS ===
+- If something is implied, don't write it out
+- Let readers infer meaning from action and dialogue
+- Use subtext—what's NOT said matters
+- Trust the reader to connect the dots
+- Symbolic resonance over direct statement
+
+=== EMOTIONAL UNPREDICTABILITY ===
+- Humans oscillate between emotional states
+- Sudden tonal shifts (analytical to poetic, formal to casual)
+- Brief bursts of unexpected emotion
+- Contradictory feelings in the same moment
+- Vulnerability alternating with deflection
+
+=== FEWER EXPLICIT TRANSITIONS ===
+- Remove "however", "furthermore", "additionally"
+- Let ideas flow by juxtaposition
+- Trust reader to make connections
+- Abrupt shifts can be more powerful than smooth ones
+
+=== ORIGINAL PHRASING ===
+- Avoid clichés and stock expressions
+- Find fresh ways to express common feelings
+- Use unexpected metaphors and comparisons
+- Regional idioms or character-specific expressions
+- Sensory-specific rather than generic descriptions
+"""
+
+
 class StageStatus(Enum):
     """Pipeline stage status."""
     PENDING = "pending"
@@ -180,12 +335,13 @@ class PipelineOrchestrator:
         "master_outline",
         "scene_drafting",
         "continuity_audit",      # Check BEFORE polish passes
-        "continuity_fix",        # NEW: Actually fix issues found
+        "continuity_fix",        # Actually fix issues found
         "self_refinement",
-        "human_passes",
-        "voice_humanization",
+        "human_passes",          # Eliminate AI tells, add imperfection
+        "voice_humanization",    # Emotional unpredictability, tone shifts
         "motif_infusion",
-        "chapter_hooks",         # NEW: Ensure chapter endings hook
+        "chapter_hooks",         # Ensure chapter endings hook
+        "prose_polish",          # NEW: Line-by-line rhetorical enhancement
         "output_validation"
     ]
 
@@ -199,12 +355,13 @@ class PipelineOrchestrator:
         "master_outline": "gpt",     # Structural scene planning
         "scene_drafting": "gpt",     # Bulk generation (cost-effective)
         "continuity_audit": "gemini",  # Long context for consistency checks
-        "continuity_fix": "claude",  # NEW: Fix issues with nuance
+        "continuity_fix": "claude",  # Fix issues with nuance
         "self_refinement": "claude", # Quality prose improvement
-        "human_passes": "claude",    # Prose polish and humanization
-        "voice_humanization": "claude",  # Voice and style refinement
+        "human_passes": "claude",    # Anti-AI-tell, add human imperfection
+        "voice_humanization": "claude",  # Emotional unpredictability
         "motif_infusion": "claude",  # Thematic nuance
-        "chapter_hooks": "claude",   # NEW: Hook enhancement
+        "chapter_hooks": "claude",   # Hook enhancement
+        "prose_polish": "claude",    # NEW: Line-by-line rhetorical craft
         "output_validation": "gpt"   # Quick validation checks
     }
 
@@ -342,6 +499,7 @@ class PipelineOrchestrator:
             "voice_humanization": self._stage_voice_humanization,
             "motif_infusion": self._stage_motif_infusion,
             "chapter_hooks": self._stage_chapter_hooks,
+            "prose_polish": self._stage_prose_polish,
             "output_validation": self._stage_output_validation
         }
 
@@ -1240,7 +1398,7 @@ FIXED SCENE:"""
         return {"fixes_applied": fixes_applied, "issues_found": len(self.state.continuity_issues)}, total_tokens
 
     async def _stage_human_passes(self) -> tuple:
-        """Enhance prose quality to feel authentically human-written."""
+        """Eliminate AI tells and add authentic human imperfection to prose."""
         enhanced_scenes = []
         total_tokens = 0
         client = self.get_client_for_stage("human_passes")
@@ -1251,50 +1409,64 @@ FIXED SCENE:"""
         influences = config.get("influences", "")
         aesthetic = guidance.get("aesthetic_guide", "")
 
+        # Build AI tell patterns list for the prompt
+        ai_tells_sample = AI_TELL_PATTERNS[:20]  # First 20 patterns
+
         for scene in (self.state.scenes or []):
             pov = scene.get("pov", "protagonist")
 
-            prompt = f"""Make this scene feel authentically human-written, not AI-generated.
+            prompt = f"""Transform this scene to feel authentically human-written, not AI-generated.
 
 === VOICE TARGETS ===
 WRITING STYLE: {writing_style}
 INFLUENCES TO CHANNEL: {influences}
 
-=== HUMANIZATION TECHNIQUES ===
-1. Eliminate AI tells:
-   - Remove "I couldn't help but..."
-   - Remove "Something about [X] made me..."
-   - Remove "I found myself..."
-   - Remove excessive "suddenly" or "immediately"
-   - Remove purple prose and overwrought metaphors
+=== AI TELLS TO ELIMINATE (search and destroy) ===
+{chr(10).join('- "' + p + '"' for p in ai_tells_sample)}
+- Any "filter" phrases (felt, noticed, realized, saw that)
+- Purple prose and overwrought metaphors
+- Hollow intensifiers (incredibly, absolutely, utterly)
+- Weak constructions (seemed to, began to, managed to)
 
-2. Add human imperfection:
-   - Incomplete thoughts that trail off
-   - Interrupted dialogue
-   - Characters who miss obvious things
-   - Contradictory emotions held simultaneously
+=== HUMANIZATION PRINCIPLES ===
+{HUMANIZATION_PRINCIPLES}
 
-3. Visceral authenticity:
-   - Specific physical sensations (not generic "heart racing")
-   - Unique sensory details from the aesthetic palette:
-   {aesthetic}
-   - Body-specific reactions (throat tight, stomach hollow, etc.)
+=== SENTENCE RHYTHM TECHNIQUES ===
+- SHORT for impact. Punch. Emphasis.
+- Long sentences that flow and build momentum, carrying the reader through
+  complex emotional or descriptive territory with deliberate rhythm.
+- Fragments. For punch.
+- Vary deliberately: short-short-long creates a different feel than long-short-short.
 
-4. Rhythm and flow:
-   - Mix sentence lengths dramatically
-   - Use fragments for impact
-   - Let some sentences breathe long
-   - End paragraphs on strong words
+=== IMPERFECTION AS AUTHENTICITY ===
+- Incomplete thoughts that trail off...
+- Interrupted dialogue with em-dashes—
+- Thoughts that circle back to earlier ideas
+- Contradictory emotions in same moment
+- Characters who miss obvious things
 
-5. POV Depth ({pov}):
-   - Stay fully in their head
-   - Their specific vocabulary and thought patterns
-   - Their unique observations and biases
+=== IMPLICITNESS OVER EXPLICITNESS ===
+- If implied, don't write it out
+- Let readers infer from action/dialogue
+- Subtext matters more than text
+- Trust reader to connect dots
 
-=== SCENE TO HUMANIZE ===
+=== AESTHETIC PALETTE ===
+{aesthetic}
+
+=== POV DEPTH ({pov}) ===
+- Stay fully in their head
+- Their unique vocabulary and thought patterns
+- Their specific observations and biases
+- Body-specific reactions (throat tight, stomach hollow)
+- NOT generic (heart racing, butterflies)
+
+=== SCENE TO TRANSFORM ===
 {scene.get('content', '')}
 
-Rewrite with authentic human voice:"""
+Rewrite with authentic human voice. The text should pass as written by
+a skilled human author, not generated by an AI. Every sentence should
+feel considered, not produced:"""
 
             if client:
                 response = await client.generate(prompt, max_tokens=2500)
@@ -1312,7 +1484,7 @@ Rewrite with authentic human voice:"""
         return enhanced_scenes, total_tokens
 
     async def _stage_voice_humanization(self) -> tuple:
-        """Apply consistent voice signature using Claude's nuanced prose understanding."""
+        """Apply emotional unpredictability and authentic voice with tone shifts."""
         client = self.get_client_for_stage("voice_humanization")
         humanized_scenes = []
         total_tokens = 0
@@ -1323,29 +1495,60 @@ Rewrite with authentic human voice:"""
         influences = self.state.config.get("influences", "")
 
         for scene in (self.state.scenes or []):
-            prompt = f"""You are a prose stylist. Apply a consistent, human voice to this scene.
+            pov = scene.get("pov", "protagonist")
 
-VOICE GUIDELINES:
-- Writing Style: {writing_style}
-- Tone: {tone}
-- Influences: {influences}
+            prompt = f"""You are a literary prose stylist. Transform this scene with emotional
+authenticity and unpredictability that marks genuinely human writing.
 
-CHARACTER VOICES (maintain distinct speech patterns):
+=== VOICE TARGETS ===
+WRITING STYLE: {writing_style}
+TONE: {tone}
+INFLUENCES TO CHANNEL: {influences}
+POV CHARACTER: {pov}
+
+=== CHARACTER VOICES ===
 {json.dumps(self.state.characters, indent=2) if self.state.characters else 'Not available'}
 
-SCENE TO HUMANIZE:
+=== EMOTIONAL UNPREDICTABILITY ===
+Humans oscillate between emotional states. Add:
+- Sudden tonal shifts (analytical to poetic, formal to casual)
+- Brief bursts of unexpected emotion
+- Vulnerability alternating with deflection
+- Humor breaking tension (or heightening it)
+- Contradictory feelings in the same moment
+- Sarcasm, frustration, or quiet joy emerging naturally
+
+=== TONE SHIFTS & CONTRADICTIONS ===
+- Let the tone change within paragraphs
+- Move from sharp to soft, confident to doubtful
+- Don't maintain one emotional register throughout
+- Create moments of cognitive dissonance
+
+=== SUBTLE SHIFTS IN THOUGHT ===
+- Introduce digressions or non-linear thinking
+- Let thoughts wander and return
+- Abrupt mental pivots that feel natural
+- Personal reflections that interrupt narrative flow
+
+=== FEWER TRANSITIONS ===
+- Remove "however", "furthermore", "additionally"
+- Let ideas flow by juxtaposition
+- Trust the reader to make connections
+- Abrupt can be more powerful than smooth
+
+=== DIALOGUE AUTHENTICITY ===
+- Verbal tics unique to each character
+- Interruptions, overlapping, trailing off...
+- What's NOT said (subtext)
+- Physical beats between lines
+- Misunderstandings and cross-purposes
+
+=== SCENE TO TRANSFORM ===
 {scene.get('content', '')}
 
-Apply these humanization techniques:
-1. Vary sentence rhythm (mix short punchy with longer flowing)
-2. Add authentic speech patterns and verbal tics to dialogue
-3. Include physical beats and micro-reactions
-4. Layer in subtext and what's NOT said
-5. Make internal monologue feel genuine and specific
-6. Remove any robotic or formulaic phrasing
-7. Ensure prose matches the tone and style guidelines
-
-Provide the humanized scene:"""
+Rewrite with emotional depth and human unpredictability. The prose
+should feel like it came from a mind that oscillates, contradicts
+itself, and experiences the world with messy authenticity:"""
 
             if client:
                 response = await client.generate(prompt, max_tokens=2500)
@@ -1476,6 +1679,103 @@ ENHANCED SCENE:"""
 
         self.state.scenes = hooked_scenes
         return {"chapters_hooked": len(chapters), "scenes_processed": len(hooked_scenes)}, total_tokens
+
+    async def _stage_prose_polish(self) -> tuple:
+        """Final line-by-line polish using rhetorical devices for publication quality."""
+        client = self.get_client_for_stage("prose_polish")
+        polished_scenes = []
+        total_tokens = 0
+        config = self.state.config
+
+        writing_style = config.get("writing_style", "")
+        tone = config.get("tone", "")
+        influences = config.get("influences", "")
+
+        # Build rhetorical devices reference
+        devices_sample = list(RHETORICAL_DEVICES.items())[:15]  # Sample of devices
+        devices_text = "\n".join([f"- {name}: {desc}" for name, desc in devices_sample])
+
+        for scene in (self.state.scenes or []):
+            pov = scene.get("pov", "protagonist")
+
+            prompt = f"""You are a master prose editor performing the final polish on a novel scene.
+Go through EVERY SENTENCE and consider whether it could be improved for maximum effect.
+
+=== STYLE TARGETS ===
+WRITING STYLE: {writing_style}
+TONE: {tone}
+INFLUENCES: {influences}
+
+=== RHETORICAL DEVICES TO CONSIDER ===
+{devices_text}
+
+=== LINE-BY-LINE POLISH CHECKLIST ===
+
+1. WORD CHOICE:
+   - Is every word precisely chosen for effect?
+   - Can any weak verb be replaced with a stronger one?
+   - Are there fresher alternatives to common expressions?
+   - Does the vocabulary match the POV character ({pov})?
+
+2. SENTENCE STRUCTURE:
+   - Does sentence length vary for rhythm?
+   - Do important moments get short, punchy sentences?
+   - Are complex ideas given room to breathe in longer sentences?
+   - Is there at least one striking sentence construction per paragraph?
+
+3. SOUND & RHYTHM:
+   - Read aloud: does it flow naturally?
+   - Any accidental tongue-twisters or awkward sounds?
+   - Strategic use of alliteration or assonance?
+   - Do paragraph endings have punch?
+
+4. PRECISION:
+   - Are sensory details specific (not generic)?
+   - Is every image concrete and visualizable?
+   - Are emotions shown through physical sensation?
+   - Does every line do work (no padding)?
+
+5. RHETORICAL CRAFT:
+   - Are there opportunities for tricolon, chiasmus, or parallelism?
+   - Can any moment use antithesis or contrast?
+   - Strategic fragments for emphasis?
+   - Powerful periodic sentences that build to revelation?
+
+6. OPENING & CLOSING:
+   - Does the scene open with immediate engagement?
+   - Does the scene close with resonance or hook?
+   - Is the strongest moment positioned correctly?
+
+=== SCENE TO POLISH ===
+{scene.get('content', '')}
+
+=== INSTRUCTIONS ===
+Go through line by line. Make subtle adjustments for:
+- Stronger word choices
+- Better rhythm and flow
+- More precise imagery
+- Strategic use of rhetorical devices
+- Maximum emotional impact
+
+The changes should be subtle refinements, not a full rewrite. Polish, don't transform.
+Maintain the character voice and emotional content while elevating the craft.
+
+POLISHED SCENE:"""
+
+            if client:
+                response = await client.generate(prompt, max_tokens=2500)
+                polished_scenes.append({
+                    **scene,
+                    "content": response.content,
+                    "polished": True
+                })
+                total_tokens += response.input_tokens + response.output_tokens
+            else:
+                polished_scenes.append({**scene, "polished": True})
+                total_tokens += 100
+
+        self.state.scenes = polished_scenes
+        return {"scenes_polished": len(polished_scenes)}, total_tokens
 
     async def _stage_output_validation(self) -> tuple:
         """Final quality validation and output generation with comprehensive reporting."""
