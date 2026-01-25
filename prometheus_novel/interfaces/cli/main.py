@@ -395,6 +395,25 @@ def cmd_serve(args):
     uvicorn.run(app, host=args.host, port=args.port)
 
 
+def cmd_seed(args):
+    """Flexible story seed input."""
+    from prometheus_novel.interfaces.cli.seed import main as seed_main
+    # Pass through the args
+    import sys
+    original_argv = sys.argv
+    new_argv = ["writerai-seed"]
+    if args.mode:
+        new_argv.extend(["--mode", args.mode])
+    if args.file:
+        new_argv.extend(["--file", args.file])
+    if args.no_expand:
+        new_argv.append("--no-expand")
+    sys.argv = new_argv
+    result = seed_main()
+    sys.argv = original_argv
+    return result
+
+
 # ============================================================================
 # Main Entry Point
 # ============================================================================
@@ -440,6 +459,14 @@ def main():
     serve_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     serve_parser.add_argument("--port", type=int, default=8080, help="Port to bind to")
 
+    # seed command - flexible story input
+    seed_parser = subparsers.add_parser("seed", help="Seed a project with flexible story input")
+    seed_parser.add_argument("--mode", choices=["full", "guided", "minimal"],
+                             help="Input mode (skip menu)")
+    seed_parser.add_argument("--file", "-f", help="Load seed from template file")
+    seed_parser.add_argument("--no-expand", action="store_true",
+                             help="Don't use AI to expand missing sections")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -452,7 +479,8 @@ def main():
         "generate": cmd_generate,
         "compile": cmd_compile,
         "ideas": cmd_ideas,
-        "serve": cmd_serve
+        "serve": cmd_serve,
+        "seed": cmd_seed
     }
 
     handler = commands.get(args.command)
