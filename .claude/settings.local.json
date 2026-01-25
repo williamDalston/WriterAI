@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs ls:*)",
+      "Bash(ls:*)",
+      "Bash(python prometheus_novel_scaffold.py:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat: Complete WriterAI implementation - fully functional novel generation system\n\n- Run scaffold generator to create core prometheus_novel structure\n- Add FastAPI web dashboard with WebSocket support for real-time updates\n- Implement CLI interface with interactive mode and file-based input\n- Create 12-stage pipeline orchestrator with state management\n- Implement LLM clients \\(OpenAI, Gemini, Anthropic\\) with streaming support\n- Fix browser plugin port mismatch \\(now uses ws://localhost:8080/ws\\)\n- Update start scripts for Windows and Unix with proper error handling\n- Add testing infrastructure with pytest fixtures and unit/integration tests\n- Create .env.example template for environment configuration\n\nThe system now provides:\n- Web dashboard at http://localhost:8080\n- CLI commands: new, generate, compile, ideas, serve\n- 12-stage novel generation pipeline\n- Multi-provider LLM support with fallbacks\n- Browser extension for capturing ideas\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat: Add flexible seed command for story idea input\n\n- Add new ''seed'' command with three input modes:\n  - FULL: See complete template, paste everything at once\n  - GUIDED: Step-by-step prompts, skip any with Enter\n  - MINIMAL: Just give idea, AI expands the rest\n- Show complete template upfront so users know all options\n- Support file-based input for pre-generated templates\n- AI expansion fills in missing sections automatically\n- Creates project with full config from seed data\n\nUsage: python -m interfaces.cli.main seed\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit:*)",
+      "Bash(powershell -Command \"Move-Item -Path ''AGENT_*.md'' -Destination ''docs\\\\archive\\\\'' -Force; Move-Item -Path ''*COMPLETE*.md'',''*SUMMARY*.md'',''*REPORT*.md'',''*STATUS*.md'',''*PROGRESS*.md'' -Destination ''docs\\\\archive\\\\'' -Force -ErrorAction SilentlyContinue\")",
+      "Bash(powershell -Command:*)",
+      "Bash(test:*)",
+      "Bash(pip install:*)",
+      "Bash(python -m prometheus_novel.interfaces.cli.main:*)",
+      "Bash(python -m prometheus_novel.interfaces.web.app:*)",
+      "Bash(timeout:*)",
+      "Bash(ping:*)",
+      "Bash(curl:*)",
+      "Bash(tasklist /FI \"IMAGENAME eq python.exe\")",
+      "Bash(python:*)"
+    ]
+  }
+}
