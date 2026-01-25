@@ -138,6 +138,163 @@ AI_TELL_PATTERNS = [
     "I knew [character] felt",
 ]
 
+# ============================================================================
+# REQUIRED CONFIG FIELDS - Validation schema
+# ============================================================================
+REQUIRED_CONFIG_FIELDS = {
+    "project_name": str,
+    "title": str,
+    "synopsis": str,
+    "genre": str,
+    "protagonist": str,
+    "target_length": str
+}
+
+OPTIONAL_BUT_RECOMMENDED = [
+    "antagonist", "setting", "tone", "themes", "motifs",
+    "writing_style", "influences", "avoid", "key_plot_points"
+]
+
+
+# ============================================================================
+# GENRE-SPECIFIC TROPE CHECKLISTS
+# ============================================================================
+ROMANCE_TROPES = {
+    "touch_her_and_die": {
+        "description": "Hero violently protects heroine from threat",
+        "required_elements": [
+            "Heroine is threatened/touched by antagonist",
+            "Hero's violence is FAST and PRECISE (not rage-blind)",
+            "Hero tends to her wounds/comfort after",
+            "Hero shows vulnerability (concern, trembling)",
+            "Heroine sees him differently (dangerous FOR her, not TO her)",
+            "Intimacy/closeness follows naturally"
+        ],
+        "placement": "midpoint_50pct"
+    },
+    "forced_proximity": {
+        "description": "Characters must share space against their will",
+        "required_elements": [
+            "Physical closeness is unavoidable",
+            "Tension from proximity (not just plot)",
+            "Accidental touching/awareness",
+            "Internal conflict about attraction",
+            "Gradual comfort with closeness"
+        ],
+        "placement": "threshold_25pct"
+    },
+    "praise_kink": {
+        "description": "Hero verbally worships/praises heroine",
+        "required_elements": [
+            "Specific compliments (not generic 'beautiful')",
+            "Focus on what she's insecure about",
+            "Her physical reaction to praise",
+            "Repeated across multiple scenes",
+            "Escalates from public to intimate"
+        ],
+        "placement": "throughout"
+    },
+    "body_worship": {
+        "description": "Hero appreciates heroine's body she's insecure about",
+        "required_elements": [
+            "Hero notices curves/body specifically",
+            "Not just during intimacy (casual moments too)",
+            "Physical touch that celebrates her body",
+            "Her internal shift from shame to acceptance",
+            "He demands she display rather than hide"
+        ],
+        "placement": "throughout"
+    }
+}
+
+
+# ============================================================================
+# WORD COUNTING UTILITIES
+# ============================================================================
+def count_words_accurate(text: str) -> int:
+    """Accurately count words, excluding markdown and formatting."""
+    if not text:
+        return 0
+    # Remove markdown headers
+    text = re.sub(r'^#+\s+.*$', '', text, flags=re.MULTILINE)
+    # Remove scene breaks
+    text = re.sub(r'[⁂\*]{3,}', '', text)
+    # Remove markdown formatting
+    text = re.sub(r'[\*_\[\]`#]', '', text)
+    # Remove extra whitespace
+    text = re.sub(r'\s+', ' ', text)
+    # Split and count non-empty words
+    words = [w for w in text.split() if w.strip()]
+    return len(words)
+
+
+def validate_scene_length(scene: Dict, target_words: int, tolerance: float = 0.8) -> Dict:
+    """Check if scene meets word count target."""
+    content = scene.get("content", "")
+    actual_words = count_words_accurate(content)
+    min_words = int(target_words * tolerance)
+
+    return {
+        "scene": f"Ch{scene.get('chapter')}-S{scene.get('scene_number')}",
+        "actual": actual_words,
+        "target": target_words,
+        "min_required": min_words,
+        "meets_target": actual_words >= min_words,
+        "shortfall": max(0, min_words - actual_words)
+    }
+
+
+def count_ai_tells(text: str) -> Dict:
+    """Count AI tell patterns in text."""
+    text_lower = text.lower()
+    counts = {}
+    total = 0
+
+    for pattern in AI_TELL_PATTERNS:
+        # Handle patterns with placeholders
+        search_pattern = pattern.lower().replace("[x]", "").replace("[emotion]", "").replace("[character]", "")
+        count = text_lower.count(search_pattern)
+        if count > 0:
+            counts[pattern] = count
+            total += count
+
+    word_count = count_words_accurate(text)
+    ratio = total / (word_count / 1000) if word_count > 0 else 0
+
+    return {
+        "total_tells": total,
+        "tells_per_1000_words": round(ratio, 2),
+        "patterns_found": counts,
+        "word_count": word_count,
+        "acceptable": ratio < 2.0  # Less than 2 per 1000 words is acceptable
+    }
+
+
+def validate_config(config: Dict) -> Dict:
+    """Validate config has required fields."""
+    errors = []
+    warnings = []
+
+    for field, expected_type in REQUIRED_CONFIG_FIELDS.items():
+        if field not in config:
+            errors.append(f"Missing required field: {field}")
+        elif not config[field]:
+            errors.append(f"Empty required field: {field}")
+        elif not isinstance(config[field], expected_type):
+            errors.append(f"{field} should be {expected_type.__name__}")
+
+    for field in OPTIONAL_BUT_RECOMMENDED:
+        if field not in config or not config[field]:
+            warnings.append(f"Recommended field missing: {field}")
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "completeness": (len(config) / (len(REQUIRED_CONFIG_FIELDS) + len(OPTIONAL_BUT_RECOMMENDED))) * 100
+    }
+
+
 # HUMANIZATION TECHNIQUES - From speech prompt system
 HUMANIZATION_PRINCIPLES = """
 === SENTENCE RHYTHM ===
@@ -331,38 +488,48 @@ class PipelineOrchestrator:
         "high_concept",
         "world_building",
         "beat_sheet",
+        "emotional_architecture",   # NEW: Map emotional arc across story
         "character_profiles",
         "master_outline",
+        "trope_integration",        # NEW: Ensure genre tropes are placed
         "scene_drafting",
-        "continuity_audit",      # Check BEFORE polish passes
-        "continuity_fix",        # Actually fix issues found
+        "scene_expansion",          # NEW: Expand short scenes to target
+        "continuity_audit",
+        "continuity_fix",
         "self_refinement",
-        "human_passes",          # Eliminate AI tells, add imperfection
-        "voice_humanization",    # Emotional unpredictability, tone shifts
+        "human_passes",
+        "dialogue_polish",          # NEW: Dialogue-specific enhancement
+        "voice_humanization",
         "motif_infusion",
-        "chapter_hooks",         # Ensure chapter endings hook
-        "prose_polish",          # NEW: Line-by-line rhetorical enhancement
+        "chapter_hooks",
+        "prose_polish",
+        "quality_audit",            # NEW: Comprehensive final validation
         "output_validation"
     ]
 
     # Smart model routing - use the best model for each stage
     # gpt = fast/cheap bulk work, claude = nuanced prose, gemini = long context
     STAGE_MODELS = {
-        "high_concept": "gpt",       # Quick structural work
-        "world_building": "gemini",  # Long context for rich world details
-        "beat_sheet": "gpt",         # Structural plotting
-        "character_profiles": "claude",  # Nuanced character psychology
-        "master_outline": "gpt",     # Structural scene planning
-        "scene_drafting": "gpt",     # Bulk generation (cost-effective)
-        "continuity_audit": "gemini",  # Long context for consistency checks
-        "continuity_fix": "claude",  # Fix issues with nuance
-        "self_refinement": "claude", # Quality prose improvement
-        "human_passes": "claude",    # Anti-AI-tell, add human imperfection
-        "voice_humanization": "claude",  # Emotional unpredictability
-        "motif_infusion": "claude",  # Thematic nuance
-        "chapter_hooks": "claude",   # Hook enhancement
-        "prose_polish": "claude",    # NEW: Line-by-line rhetorical craft
-        "output_validation": "gpt"   # Quick validation checks
+        "high_concept": "gpt",
+        "world_building": "gemini",
+        "beat_sheet": "gpt",
+        "emotional_architecture": "claude",  # Nuanced emotional mapping
+        "character_profiles": "claude",
+        "master_outline": "gpt",
+        "trope_integration": "claude",       # Genre-aware trope placement
+        "scene_drafting": "gpt",
+        "scene_expansion": "claude",         # Expand short scenes
+        "continuity_audit": "gemini",
+        "continuity_fix": "claude",
+        "self_refinement": "claude",
+        "human_passes": "claude",
+        "dialogue_polish": "claude",         # Dialogue authenticity
+        "voice_humanization": "claude",
+        "motif_infusion": "claude",
+        "chapter_hooks": "claude",
+        "prose_polish": "claude",
+        "quality_audit": "gemini",           # Long context for full audit
+        "output_validation": "gpt"
     }
 
     def __init__(self, project_path: Path, llm_client=None, llm_clients: Dict = None):
@@ -489,17 +656,22 @@ class PipelineOrchestrator:
             "high_concept": self._stage_high_concept,
             "world_building": self._stage_world_building,
             "beat_sheet": self._stage_beat_sheet,
+            "emotional_architecture": self._stage_emotional_architecture,
             "character_profiles": self._stage_character_profiles,
             "master_outline": self._stage_master_outline,
+            "trope_integration": self._stage_trope_integration,
             "scene_drafting": self._stage_scene_drafting,
+            "scene_expansion": self._stage_scene_expansion,
             "continuity_audit": self._stage_continuity_audit,
             "continuity_fix": self._stage_continuity_fix,
             "self_refinement": self._stage_self_refinement,
             "human_passes": self._stage_human_passes,
+            "dialogue_polish": self._stage_dialogue_polish,
             "voice_humanization": self._stage_voice_humanization,
             "motif_infusion": self._stage_motif_infusion,
             "chapter_hooks": self._stage_chapter_hooks,
             "prose_polish": self._stage_prose_polish,
+            "quality_audit": self._stage_quality_audit,
             "output_validation": self._stage_output_validation
         }
 
@@ -779,6 +951,85 @@ Respond as a JSON array of beats."""
         ]
         return self.state.beat_sheet, 100
 
+    async def _stage_emotional_architecture(self) -> tuple:
+        """Map emotional arc across the entire story for proper pacing."""
+        config = self.state.config
+        client = self.get_client_for_stage("emotional_architecture")
+
+        prompt = f"""Design the emotional architecture for this novel.
+
+STORY CONCEPT: {self.state.high_concept}
+
+BEAT SHEET:
+{json.dumps(self.state.beat_sheet, indent=2)}
+
+PROTAGONIST: {config.get('protagonist', '')}
+THEMES: {config.get('themes', '')}
+CENTRAL QUESTION: {config.get('central_question', '')}
+
+=== EMOTIONAL ARCHITECTURE REQUIREMENTS ===
+
+1. MAP EMOTIONAL JOURNEY
+For the protagonist, define their emotional state at each story beat:
+- Opening (0-5%): Initial emotional baseline
+- Inciting Incident (10%): Disruption emotion
+- Threshold (25%): Fear/excitement of new world
+- Fun & Games (30-45%): Growing confidence/connection
+- Midpoint (50%): Major emotional shift (revelation/intimacy)
+- Bad Guys Close In (55-70%): Rising anxiety/stakes
+- All Is Lost (75%): Lowest emotional point (despair)
+- Dark Night (75-80%): Processing/internal struggle
+- Break Into Three (80%): New resolve
+- Finale (85-95%): Peak emotions (fear, love, triumph)
+- Resolution (95-100%): Emotional arrival/peace
+
+2. DEFINE EMOTIONAL PEAKS
+Identify 5-7 scenes that should be emotional HIGH points (10/10 intensity):
+- What emotion?
+- What triggers it?
+- How does it manifest physically?
+
+3. DEFINE EMOTIONAL TROUGHS
+Identify 3-4 scenes that are emotional REST points (3-5/10):
+- What allows the reader to breathe?
+- How does character process previous intensity?
+
+4. EMOTIONAL ARC RHYTHM
+Ensure rhythm: peak-rest-build-peak pattern
+- Never more than 3 high-intensity scenes consecutively
+- Recovery scenes between major emotional moments
+
+5. TRANSFORMATION MARKERS
+Identify 4-5 visible moments where character growth is SHOWN:
+- Early: What behavior shows starting state?
+- 25%: First sign of change
+- 50%: Significant shift visible
+- 75%: Growth tested by failure
+- End: New behavior that shows transformation complete
+
+Respond as JSON with emotional_beats, peaks, troughs, rhythm_check, and transformation_markers."""
+
+        if client:
+            response = await client.generate(prompt, max_tokens=2000)
+            try:
+                emotional_map = json.loads(response.content)
+            except json.JSONDecodeError:
+                json_match = re.search(r'\{.*\}', response.content, re.DOTALL)
+                if json_match:
+                    try:
+                        emotional_map = json.loads(json_match.group())
+                    except:
+                        emotional_map = {"raw": response.content}
+                else:
+                    emotional_map = {"raw": response.content}
+
+            # Store for use in later stages
+            self.state.config["emotional_architecture"] = emotional_map
+            return emotional_map, response.input_tokens + response.output_tokens
+
+        # Mock response
+        return {"emotional_beats": [], "peaks": [], "troughs": []}, 50
+
     async def _stage_character_profiles(self) -> tuple:
         """Develop character profiles."""
         config = self.state.config
@@ -972,6 +1223,104 @@ Respond as a JSON array of {self.state.target_chapters} chapter objects, each co
             {"chapter": 2, "scenes": [{"scene": 1, "goal": "...", "pov": hero_name}]}
         ]
         return self.state.master_outline, 100
+
+    async def _stage_trope_integration(self) -> tuple:
+        """Ensure genre-specific tropes are properly placed in the outline."""
+        config = self.state.config
+        client = self.get_client_for_stage("trope_integration")
+        genre = config.get("genre", "").lower()
+
+        # Get applicable tropes based on genre
+        applicable_tropes = {}
+        if "romance" in genre or "mafia" in genre:
+            applicable_tropes = ROMANCE_TROPES
+
+        # Get tropes from config market positioning
+        guidance = config.get("strategic_guidance", {})
+        market_pos = guidance.get("market_positioning", "").lower()
+
+        # Check which tropes are promised
+        tropes_to_check = []
+        for trope_key, trope_data in applicable_tropes.items():
+            trope_name = trope_key.replace("_", " ")
+            if trope_name in market_pos or trope_name in str(config).lower():
+                tropes_to_check.append((trope_key, trope_data))
+
+        if not tropes_to_check:
+            logger.info("No specific tropes to integrate")
+            return {"tropes_checked": 0}, 0
+
+        # Build trope checklist for the LLM
+        trope_info = []
+        for key, data in tropes_to_check:
+            trope_info.append(f"""
+TROPE: {key.replace('_', ' ').title()}
+Description: {data['description']}
+Placement: {data['placement']}
+Required Elements:
+{chr(10).join('- ' + elem for elem in data['required_elements'])}
+""")
+
+        prompt = f"""Review the master outline and ensure these genre tropes are properly integrated.
+
+GENRE: {genre}
+TARGET TROPES:
+{chr(10).join(trope_info)}
+
+CURRENT MASTER OUTLINE:
+{json.dumps(self.state.master_outline, indent=2)[:8000]}
+
+For EACH trope:
+1. Identify which scene(s) should execute it
+2. Verify all required elements are present in scene attributes
+3. If missing, specify what needs to be added
+
+Return JSON with:
+{{
+  "trope_placement": {{
+    "trope_name": {{
+      "scene_location": "ChX, SceneY",
+      "elements_present": ["element1", "element2"],
+      "elements_missing": ["element3"],
+      "additions_needed": "Specific instruction for scene"
+    }}
+  }},
+  "outline_updates": [
+    {{"chapter": X, "scene": Y, "add_to_attributes": {{"key": "value"}}}}
+  ]
+}}"""
+
+        if client:
+            response = await client.generate(prompt, max_tokens=2000)
+            try:
+                trope_report = json.loads(response.content)
+            except json.JSONDecodeError:
+                json_match = re.search(r'\{.*\}', response.content, re.DOTALL)
+                if json_match:
+                    try:
+                        trope_report = json.loads(json_match.group())
+                    except:
+                        trope_report = {"raw": response.content}
+                else:
+                    trope_report = {"raw": response.content}
+
+            # Apply outline updates if present
+            updates = trope_report.get("outline_updates", [])
+            for update in updates:
+                ch_num = update.get("chapter")
+                sc_num = update.get("scene")
+                additions = update.get("add_to_attributes", {})
+
+                for chapter in (self.state.master_outline or []):
+                    if chapter.get("chapter") == ch_num:
+                        for scene in chapter.get("scenes", []):
+                            if scene.get("scene") == sc_num:
+                                scene.update(additions)
+                                logger.info(f"Updated Ch{ch_num} Sc{sc_num} with trope requirements")
+
+            return trope_report, response.input_tokens + response.output_tokens
+
+        return {"tropes_checked": len(tropes_to_check)}, 50
 
     def _get_previous_scenes_context(self, scenes: List[Dict], count: int = 3) -> str:
         """Get summary of previous scenes for continuity."""
@@ -1200,6 +1549,76 @@ Write the complete scene:"""
 
         self.state.scenes = scenes
         return scenes, total_tokens
+
+    async def _stage_scene_expansion(self) -> tuple:
+        """Expand scenes that are below target word count."""
+        client = self.get_client_for_stage("scene_expansion")
+        expanded_scenes = []
+        total_tokens = 0
+        scenes_expanded = 0
+
+        target_words = self.state.words_per_scene
+        min_words = int(target_words * 0.8)
+
+        for scene in (self.state.scenes or []):
+            validation = validate_scene_length(scene, target_words)
+
+            if validation["meets_target"]:
+                expanded_scenes.append(scene)
+                continue
+
+            # Scene needs expansion
+            shortfall = validation["shortfall"]
+            logger.info(f"Expanding {validation['scene']}: {validation['actual']} words "
+                       f"(needs {shortfall} more)")
+
+            if not client:
+                expanded_scenes.append(scene)
+                continue
+
+            prompt = f"""This scene is {validation['actual']} words but should be approximately {target_words} words.
+Expand it by adding {shortfall}+ words.
+
+=== EXPANSION GUIDELINES ===
+DO:
+- Add more sensory details (smells, textures, sounds)
+- Deepen internal monologue/reactions
+- Expand dialogue with beats and subtext
+- Add physical movement and body language
+- Layer in setting details through character interaction
+
+DO NOT:
+- Add new plot points or characters
+- Change the scene's outcome
+- Add unnecessary transitions or filler
+- Pad with repetitive descriptions
+
+=== SCENE TO EXPAND ===
+Chapter {scene.get('chapter')}, Scene {scene.get('scene_number')}
+POV: {scene.get('pov', 'protagonist')}
+
+{scene.get('content', '')}
+
+=== EXPANDED SCENE ===
+Provide the complete expanded scene (target: {target_words} words):"""
+
+            response = await client.generate(prompt, max_tokens=3000)
+            expanded_scenes.append({
+                **scene,
+                "content": response.content,
+                "expanded": True,
+                "original_words": validation["actual"],
+                "expanded_words": count_words_accurate(response.content)
+            })
+            total_tokens += response.input_tokens + response.output_tokens
+            scenes_expanded += 1
+
+        self.state.scenes = expanded_scenes
+
+        return {
+            "scenes_expanded": scenes_expanded,
+            "total_scenes": len(expanded_scenes)
+        }, total_tokens
 
     async def _stage_self_refinement(self) -> tuple:
         """Self-refine scenes for quality with full config awareness."""
@@ -1482,6 +1901,81 @@ feel considered, not produced:"""
 
         self.state.scenes = enhanced_scenes
         return enhanced_scenes, total_tokens
+
+    async def _stage_dialogue_polish(self) -> tuple:
+        """Polish dialogue for authenticity, subtext, and character voice."""
+        client = self.get_client_for_stage("dialogue_polish")
+        polished_scenes = []
+        total_tokens = 0
+        config = self.state.config
+
+        for scene in (self.state.scenes or []):
+            pov = scene.get("pov", "protagonist")
+
+            prompt = f"""You are a dialogue specialist. Polish the dialogue in this scene for maximum authenticity.
+
+=== CHARACTER PROFILES ===
+{json.dumps(self.state.characters, indent=2) if self.state.characters else 'Not available'}
+
+=== DIALOGUE QUALITY CHECKLIST ===
+
+1. ELIMINATE INFO-DUMP DIALOGUE:
+   - Characters shouldn't explain plot to each other
+   - Don't have characters state what they both know
+   - Remove "As you know..." or similar constructions
+
+2. ADD SUBTEXT:
+   - What are they really saying beneath the words?
+   - Are they deflecting, hinting, manipulating?
+   - Every line should have surface meaning AND subtext
+
+3. CHARACTER VOICE DIFFERENTIATION:
+   - Each character should sound distinct
+   - Word choice, rhythm, sentence length should vary by character
+   - Apply any verbal tics or patterns from character profiles
+
+4. AUTHENTIC SPEECH PATTERNS:
+   - Interruptions (em-dashes—)
+   - Trailing off...
+   - Incomplete thoughts
+   - Non-sequiturs
+   - Misunderstandings
+
+5. PHYSICAL BEATS:
+   - Add micro-actions between dialogue lines
+   - Characters don't float—they move, touch, look away
+   - Body language should reinforce or contradict words
+
+6. TENSION IN CONVERSATION:
+   - Create conflict or push-pull in exchanges
+   - Characters want different things
+   - Not all questions get answered
+
+7. ELIMINATE DIALOGUE TELLS:
+   - Remove "he said angrily" (show the anger in words/actions)
+   - Minimize adverbs on dialogue tags
+   - "Said" is usually enough
+
+=== SCENE TO POLISH ===
+{scene.get('content', '')}
+
+Rewrite with polished, authentic dialogue. Keep all non-dialogue prose intact.
+Focus ONLY on improving the dialogue and adding physical beats between lines:"""
+
+            if client:
+                response = await client.generate(prompt, max_tokens=2500)
+                polished_scenes.append({
+                    **scene,
+                    "content": response.content,
+                    "dialogue_polished": True
+                })
+                total_tokens += response.input_tokens + response.output_tokens
+            else:
+                polished_scenes.append({**scene, "dialogue_polished": True})
+                total_tokens += 100
+
+        self.state.scenes = polished_scenes
+        return {"scenes_polished": len(polished_scenes)}, total_tokens
 
     async def _stage_voice_humanization(self) -> tuple:
         """Apply emotional unpredictability and authentic voice with tone shifts."""
@@ -1777,14 +2271,153 @@ POLISHED SCENE:"""
         self.state.scenes = polished_scenes
         return {"scenes_polished": len(polished_scenes)}, total_tokens
 
+    async def _stage_quality_audit(self) -> tuple:
+        """Comprehensive quality audit before final output."""
+        client = self.get_client_for_stage("quality_audit")
+        config = self.state.config
+        total_tokens = 0
+
+        audit_results = {
+            "word_count": {},
+            "ai_tells": {},
+            "scene_lengths": [],
+            "spice_distribution": {},
+            "chapter_hooks": [],
+            "issues": [],
+            "passed": True
+        }
+
+        # 1. Word Count Audit
+        total_words = sum(count_words_accurate(s.get("content", ""))
+                        for s in (self.state.scenes or []))
+        target_words = self.state.target_words
+        word_pct = (total_words / target_words * 100) if target_words > 0 else 0
+
+        audit_results["word_count"] = {
+            "actual": total_words,
+            "target": target_words,
+            "percentage": round(word_pct, 1),
+            "status": "on_target" if word_pct >= 95 else "slightly_under" if word_pct >= 80 else "under"
+        }
+
+        if word_pct < 80:
+            audit_results["issues"].append({
+                "type": "word_count",
+                "severity": "high",
+                "message": f"Word count {total_words:,} is {100-word_pct:.0f}% below target"
+            })
+            audit_results["passed"] = False
+
+        # 2. AI Tell Audit
+        all_content = " ".join(s.get("content", "") for s in (self.state.scenes or []))
+        ai_tell_results = count_ai_tells(all_content)
+        audit_results["ai_tells"] = ai_tell_results
+
+        if not ai_tell_results["acceptable"]:
+            audit_results["issues"].append({
+                "type": "ai_tells",
+                "severity": "medium",
+                "message": f"AI tell ratio {ai_tell_results['tells_per_1000_words']}/1000 words (should be <2)"
+            })
+
+        # 3. Scene Length Audit
+        short_scenes = []
+        for scene in (self.state.scenes or []):
+            validation = validate_scene_length(scene, self.state.words_per_scene)
+            if not validation["meets_target"]:
+                short_scenes.append(validation)
+
+        if short_scenes:
+            audit_results["scene_lengths"] = short_scenes
+            if len(short_scenes) > 3:
+                audit_results["issues"].append({
+                    "type": "scene_length",
+                    "severity": "medium",
+                    "message": f"{len(short_scenes)} scenes below 80% target word count"
+                })
+
+        # 4. Spice Distribution Audit
+        guidance = config.get("strategic_guidance", {})
+        market_pos = guidance.get("market_positioning", "").lower()
+
+        # Extract promised spice level
+        promised_spice = 0
+        if "5/5" in market_pos or "5 chili" in market_pos:
+            promised_spice = 5
+        elif "4/5" in market_pos or "4 chili" in market_pos:
+            promised_spice = 4
+        elif "3/5" in market_pos or "3 chili" in market_pos:
+            promised_spice = 3
+
+        if promised_spice > 0:
+            spice_counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+            for scene in (self.state.scenes or []):
+                level = scene.get("spice_level", 0)
+                spice_counts[level] = spice_counts.get(level, 0) + 1
+
+            # Check if actual spice matches promise
+            high_spice_scenes = spice_counts.get(4, 0) + spice_counts.get(5, 0)
+            if promised_spice >= 4 and high_spice_scenes < 2:
+                audit_results["issues"].append({
+                    "type": "spice_distribution",
+                    "severity": "high",
+                    "message": f"Promised {promised_spice}/5 spice but only {high_spice_scenes} explicit scenes"
+                })
+
+            audit_results["spice_distribution"] = {
+                "promised": promised_spice,
+                "distribution": spice_counts,
+                "high_spice_count": high_spice_scenes
+            }
+
+        # 5. Chapter Hook Strength (sample check)
+        # Group by chapter and check last scene of each
+        chapters: Dict[int, List[Dict]] = {}
+        for scene in (self.state.scenes or []):
+            ch = scene.get("chapter", 1)
+            if ch not in chapters:
+                chapters[ch] = []
+            chapters[ch].append(scene)
+
+        weak_hooks = []
+        for ch_num, ch_scenes in chapters.items():
+            last_scene = ch_scenes[-1] if ch_scenes else None
+            if last_scene:
+                content = last_scene.get("content", "")
+                # Check last 200 chars for hook indicators
+                ending = content[-500:].lower() if len(content) > 500 else content.lower()
+                has_hook = any(indicator in ending for indicator in [
+                    "?", "...", "—", "but", "suddenly", "then",
+                    "kiss", "touch", "blood", "danger", "realize"
+                ])
+                if not has_hook:
+                    weak_hooks.append(ch_num)
+
+        if weak_hooks:
+            audit_results["chapter_hooks"] = weak_hooks
+            if len(weak_hooks) > 2:
+                audit_results["issues"].append({
+                    "type": "chapter_hooks",
+                    "severity": "low",
+                    "message": f"Chapters {weak_hooks} may have weak ending hooks"
+                })
+
+        # Log audit results
+        logger.info(f"Quality Audit: {len(audit_results['issues'])} issues found")
+        for issue in audit_results["issues"]:
+            logger.warning(f"  [{issue['severity']}] {issue['message']}")
+
+        return audit_results, total_tokens
+
     async def _stage_output_validation(self) -> tuple:
         """Final quality validation and output generation with comprehensive reporting."""
         client = self.get_client_for_stage("output_validation")
         config = self.state.config
 
-        # Calculate stats
+        # Calculate stats using accurate word count
         total_scenes = len(self.state.scenes or [])
-        total_words = sum(len(s.get("content", "").split()) for s in (self.state.scenes or []))
+        total_words = sum(count_words_accurate(s.get("content", ""))
+                        for s in (self.state.scenes or []))
 
         # Count chapters
         chapters = set(s.get("chapter") for s in (self.state.scenes or []))
