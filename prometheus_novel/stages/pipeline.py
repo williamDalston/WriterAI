@@ -298,39 +298,103 @@ def validate_config(config: Dict) -> Dict:
 
 
 def _clean_scene_content(text: str) -> str:
-    """Strip meta-text and analysis notes that LLMs append after prose.
+    """Strip meta-text, LLM preambles, editing artifacts, and analysis notes.
 
-    Local models often append sections like:
-    - "Scanning for AI tells: ..."
-    - "**Changes made:** ..."
-    - "=== Quality checklist ==="
-    - "Note: I've removed ..."
-    - "The rest of the scene remains unchanged"
+    Catches all known artifact categories:
+    1. Analysis/checklist appendices ("Changes made:", "Scanning for AI tells:")
+    2. LLM preambles ("Sure, here's...", "Here is the revised...")
+    3. Prompt bleed-through ("CURRENT SCENE:", "A great chapter-ending hook can be:")
+    4. Section markers ("=== EXPANDED SCENE ===", "ENHANCED SCENE:")
+    5. UI/formatting artifacts ("Visible: 0%", percentage markers)
+    6. Instruction echoes ("Output ONLY the revised scene")
     """
     import re
 
-    # Split on common meta-text separators
-    # Look for lines that signal end-of-prose, start-of-analysis
-    meta_patterns = [
+    if not text:
+        return text
+
+    # --- PHASE 1: Strip LLM preambles from the BEGINNING of text ---
+    # These are lines the LLM puts before the actual prose
+    preamble_patterns = [
+        r'^(?:Sure[,!.]?\s*)?[Hh]ere\'?s?\s+(?:the |a |my |an? )?'
+        r'(?:revised|enhanced|polished|expanded|edited|updated|improved|rewritten|final)'
+        r'[^.:\n]{0,40}[.:]\s*\n+',
+        r'^(?:Sure[,!.]?\s*)?[Hh]ere\s+is\s+(?:the |a |my )?'
+        r'(?:revised|enhanced|polished|expanded|edited|updated|improved|rewritten|final)'
+        r'[^.:\n]{0,40}[.:]\s*\n+',
+        r'^(?:Sure|Certainly|Of course|Absolutely)[,!.]\s*(?:here\'?s?|I\'ve|I have|let me)'
+        r'[^\n]{0,80}\n+',
+        r'^(?:I\'ve |I have )(?:revised|enhanced|polished|expanded|edited|rewritten)'
+        r'[^\n]{0,80}\n+',
+        r'^(?:Below is|The following is|What follows is)[^\n]{0,60}\n+',
+    ]
+    for pattern in preamble_patterns:
+        text = re.sub(pattern, '', text, count=1, flags=re.IGNORECASE)
+
+    # --- PHASE 2: Strip trailing meta-text (truncate at first meta-marker) ---
+    # These signal end-of-prose, start-of-analysis/commentary
+    tail_patterns = [
         r'\n---+\s*\n',                    # --- separators
         r'\n\*\*\*+\s*\n',                 # *** separators
-        r'\n===+\s*\n',                     # === separators
+        r'\n===+[^=]*===*\s*\n',            # === EXPANDED SCENE === etc.
         r'\n\*\*(?:Scanning|Changes|Notes?|Quality|Summary|Checklist|AI tells)',
         r'\n(?:Scanning|Changes made|Notes?:|Quality|Summary:)',
         r'\n(?:I\'ve |I have |Here\'s what|The (?:above|following|revised))',
-        r'\n(?:The rest of the scene remains? unchanged)',
+        r'\n(?:The )?rest (?:of (?:the |this )?(?:scene|chapter|text|content) )?'
+        r'(?:remains?|is) unchanged',
+        r'\n\[(?:The )?rest (?:of (?:the |this )?(?:scene|chapter))? remains unchanged',
         r'\n(?:\[(?:Scene|Chapter|End|Note))',  # [Scene continues...] etc.
-        r'\n(?:ENHANCED SCENE|EXPANDED SCENE|POLISHED SCENE|FIXED SCENE)',
+        r'\n(?:ENHANCED SCENE|EXPANDED SCENE|POLISHED SCENE|FIXED SCENE|'
+        r'CURRENT SCENE|REVISED SCENE|MODIFIED SCENE)',
+        # Prompt bleed-through from chapter_hooks stage
+        r'\n(?:A great (?:chapter-ending|chapter-opening) hook can be:?)',
+        r'\n(?:CURRENT SCENE(?: MODIFIED)?:)',
+        # Output instruction echoes
+        r'\n(?:Output (?:ONLY |only )?the (?:revised|enhanced|polished|expanded))',
+        # UI / formatting artifacts
+        r'\n(?:Visible:\s*\d+%)',
     ]
 
-    for pattern in meta_patterns:
+    for pattern in tail_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            # Keep only the content before the meta-text
             candidate = text[:match.start()].rstrip()
-            # Only trim if we're keeping substantial content (>100 chars)
             if len(candidate) > 100:
                 text = candidate
+
+    # --- PHASE 3: Inline artifact removal (patterns that appear MID-text) ---
+    # These can appear anywhere in the prose, not just at the end
+    inline_patterns = [
+        # "The rest remains unchanged" and all variants (scene/chapter/text)
+        r'(?:The )?rest (?:of (?:the |this )?(?:scene|chapter|text|content) )?'
+        r'(?:remains?|is) unchanged[^.]*[.\s]*',
+        r'\[(?:The )?rest (?:of (?:the |this )?(?:scene|chapter))? remains unchanged[^\]]*\]\s*',
+        # "CURRENT SCENE MODIFIED:" headers
+        r'CURRENT SCENE(?: MODIFIED)?:\s*',
+        # "Visible: 0% – 100%" or similar percentage markers
+        r'Visible:\s*\d+%\s*[–—-]\s*\d+%\s*',
+        # Stray prompt markers that slipped through
+        r'(?:ENHANCED|EXPANDED|POLISHED|FIXED|REVISED) SCENE:\s*',
+        # "Sure, here's the revised version:" mid-text
+        r'(?:Sure[,.]?\s*)?[Hh]ere\'?s?\s+(?:the |a )?(?:revised|enhanced|polished|expanded|edited)'
+        r'\s+(?:version|scene|text|content)[.:]\s*',
+        # Hook instruction bleed
+        r'A great chapter-(?:ending|opening) hook can be:\s*(?:\n[-•*][^\n]+)*',
+        # Bullet lists of writing tips (from prompt)
+        r'(?:\n[-•*]\s*(?:A cliffhanger|In medias res|A striking sensory|'
+        r'A provocative|Immediate conflict|Disorientation|A kiss or romantic|'
+        r'A threat delivered|A question raised|A twist revealed|'
+        r'An emotional gut-punch|A decision made)[^\n]*)+',
+    ]
+
+    for pattern in inline_patterns:
+        text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+
+    # --- PHASE 4: Clean up whitespace artifacts ---
+    # Remove resulting blank lines (3+ newlines -> 2)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    # Remove trailing whitespace on lines
+    text = re.sub(r' +\n', '\n', text)
 
     return text.strip()
 
@@ -745,7 +809,79 @@ def _detect_duplicate_content(text: str, similarity_threshold: float = 0.6) -> s
     return text
 
 
-def _postprocess_scene(text: str, protagonist_name: str = "") -> str:
+def _flag_language_inconsistencies(text: str, setting_language: str = "") -> str:
+    """Flag or fix foreign language inconsistencies in the text.
+
+    Detects when a model uses the wrong foreign language (e.g., Spanish
+    phrases in an Italian setting, or vice versa). This is a common LLM
+    hallucination where the model confuses romance languages.
+
+    If setting_language is specified (e.g., "Italian"), replaces common
+    wrong-language phrases with the correct language equivalent.
+    """
+    if not text or not setting_language:
+        return text
+
+    setting_lang = setting_language.lower().strip()
+
+    # Common phrase mappings between confused romance languages
+    # Only fix OBVIOUS high-frequency phrases that are clearly wrong-language
+    if setting_lang == "italian":
+        # Spanish -> Italian replacements
+        spanish_to_italian = {
+            r'\bVamos\b': 'Andiamo',
+            r'\bvamos\b': 'andiamo',
+            r'\bVamos a ser realistas\b': 'Siamo realisti',
+            r'\bMi amor\b': 'Amore mio',
+            r'\bmi amor\b': 'amore mio',
+            r'\bPor favor\b': 'Per favore',
+            r'\bpor favor\b': 'per favore',
+            r'\bGracias\b': 'Grazie',
+            r'\bgracias\b': 'grazie',
+            r'\bBuenas noches\b': 'Buona notte',
+            r'\bbuenas noches\b': 'buona notte',
+            r'\bBuenos días\b': 'Buongiorno',
+            r'\bHermosa\b': 'Bella',
+            r'\bhermosa\b': 'bella',
+            r'\bCorazón\b': 'Tesoro',
+            r'\bcorazón\b': 'tesoro',
+            r'\bMijo\b': 'Figlio mio',
+            r'\bmijo\b': 'figlio mio',
+            r'\bAy,\b': 'Ah,',
+            r'\bSeñor\b': 'Signore',
+            r'\bseñor\b': 'signore',
+            r'\bSeñora\b': 'Signora',
+            r'\bseñora\b': 'signora',
+        }
+        for pattern, replacement in spanish_to_italian.items():
+            text = re.sub(pattern, replacement, text)
+
+    elif setting_lang == "spanish":
+        # Italian -> Spanish replacements
+        italian_to_spanish = {
+            r'\bAndiamo\b': 'Vamos',
+            r'\bandiamo\b': 'vamos',
+            r'\bAmore mio\b': 'Mi amor',
+            r'\bamore mio\b': 'mi amor',
+            r'\bPer favore\b': 'Por favor',
+            r'\bper favore\b': 'por favor',
+            r'\bGrazie\b': 'Gracias',
+            r'\bgrazie\b': 'gracias',
+            r'\bBella\b': 'Hermosa',
+            r'\bbella\b': 'hermosa',
+            r'\bSignore\b': 'Señor',
+            r'\bsignore\b': 'señor',
+            r'\bSignora\b': 'Señora',
+            r'\bsignora\b': 'señora',
+        }
+        for pattern, replacement in italian_to_spanish.items():
+            text = re.sub(pattern, replacement, text)
+
+    return text
+
+
+def _postprocess_scene(text: str, protagonist_name: str = "",
+                       setting_language: str = "") -> str:
     """Master post-processor: applies all code-level quality enforcement.
 
     Called after _clean_scene_content on every creative stage output.
@@ -756,6 +892,8 @@ def _postprocess_scene(text: str, protagonist_name: str = "") -> str:
     text = _enforce_first_person_pov(text, protagonist_name)
     text = _strip_emotional_summaries(text)
     text = _limit_tic_frequency(text)
+    if setting_language:
+        text = _flag_language_inconsistencies(text, setting_language)
     return text
 
 
@@ -2393,10 +2531,32 @@ Return JSON with:
         # Take the first word (the actual first name)
         return first_part.split()[0] if first_part else ""
 
+    def _get_setting_language(self) -> str:
+        """Detect the primary foreign language from setting/config for consistency checks."""
+        if not self.state or not self.state.config:
+            return ""
+        setting = self.state.config.get("setting", "")
+        world_rules = self.state.config.get("world_rules", "")
+        combined = (setting + " " + world_rules).lower()
+        # Detect the dominant setting language
+        if any(w in combined for w in ["italy", "italian", "rome", "milan", "florence",
+                                        "naples", "sicily", "tuscany", "venice"]):
+            return "italian"
+        if any(w in combined for w in ["spain", "spanish", "madrid", "barcelona",
+                                        "mexico", "mexican", "colombia", "argentina"]):
+            return "spanish"
+        if any(w in combined for w in ["france", "french", "paris", "lyon", "marseille"]):
+            return "french"
+        return ""
+
     def _postprocess(self, text: str) -> str:
         """Apply all code-level post-processing to scene content.
-        Convenience wrapper that gets protagonist name from config."""
-        return _postprocess_scene(text, self._get_protagonist_name())
+        Convenience wrapper that gets protagonist name and setting from config."""
+        return _postprocess_scene(
+            text,
+            self._get_protagonist_name(),
+            self._get_setting_language()
+        )
 
     def _get_previous_scenes_context(self, scenes: List[Dict], count: int = 3) -> str:
         """Get summary of previous scenes for continuity."""
@@ -3517,35 +3677,22 @@ Respond in JSON format:
                 is_chapter_end = (i == len(chapter_scenes) - 1)
 
                 if is_chapter_end and client:
-                    prompt = f"""This is the final scene of Chapter {chapter_num}. Ensure it ends with a POWERFUL HOOK.
+                    prompt = f"""Rewrite this scene so it ends with a powerful hook. Output ONLY the full scene text — no commentary, no notes, no labels.
 
-STRICT RULES:
-- Only modify the LAST 2-3 paragraphs
-- Keep ALL other content EXACTLY as-is
-- Do NOT change any facts (names, locations, objects, timeline)
-- Do NOT introduce AI tells
-- The hook must feel organic, not forced
-- MAINTAIN FIRST PERSON POV ("I") — never switch to third person
-- Do NOT end with an emotional summary ("This wasn't just...")
-
+RULES:
+- Modify ONLY the last 2-3 paragraphs for the hook
+- Keep ALL other content word-for-word identical
+- Do NOT change facts (names, locations, objects, timeline)
+- No AI tells, no emotional summaries at the end
+- FIRST PERSON POV ("I") throughout — never third person
+- Hook types: cliffhanger, tension peak, threat, question, twist, gut-punch, or consequence
 {hook_guidance}
 
-A great chapter-ending hook can be:
-- A cliffhanger (danger, revelation about to happen)
-- A kiss or romantic tension peak
-- A threat delivered
-- A question raised
-- A twist revealed
-- An emotional gut-punch
-- A decision made with unknown consequences
-
-CURRENT SCENE:
+<scene>
 {scene.get('content', '')}
+</scene>
 
-Rewrite ONLY the last 2-3 paragraphs to create an irresistible hook.
-Keep the rest of the scene EXACTLY intact.
-
-ENHANCED SCENE:"""
+Output the complete scene with only the ending paragraphs rewritten:"""
 
                     response = await client.generate(prompt, max_tokens=2500, temperature=0.75)
                     hooked_scenes.append({
@@ -3556,29 +3703,21 @@ ENHANCED SCENE:"""
                     total_tokens += response.input_tokens + response.output_tokens
 
                 elif is_chapter_start and client:
-                    prompt = f"""This is the opening scene of Chapter {chapter_num}. Ensure it OPENS with an immediate hook.
+                    prompt = f"""Rewrite this scene so it opens with an immediate hook. Output ONLY the full scene text — no commentary, no notes, no labels.
 
-STRICT RULES:
-- Only modify the FIRST 2-3 paragraphs
-- Keep ALL other content EXACTLY as-is
-- Do NOT change any facts (names, locations, objects, timeline)
-- Do NOT introduce AI tells
-- MAINTAIN FIRST PERSON POV ("I") — never switch to third person
+RULES:
+- Modify ONLY the first 2-3 paragraphs for the hook
+- Keep ALL other content word-for-word identical
+- Do NOT change facts (names, locations, objects, timeline)
+- No AI tells
+- FIRST PERSON POV ("I") throughout — never third person
+- Hook types: in medias res, striking sensory image, provocative thought, immediate conflict, disorientation
 
-A great chapter-opening hook can be:
-- In medias res (start in action/tension)
-- A striking sensory image
-- A provocative thought or observation
-- Immediate conflict or question
-- Disorientation that pulls the reader in
-
-CURRENT SCENE:
+<scene>
 {scene.get('content', '')}
+</scene>
 
-Rewrite ONLY the first 2-3 paragraphs to create an immediate hook.
-Keep the rest of the scene EXACTLY intact.
-
-ENHANCED SCENE:"""
+Output the complete scene with only the opening paragraphs rewritten:"""
 
                     response = await client.generate(prompt, max_tokens=2500, temperature=0.75)
                     hooked_scenes.append({
