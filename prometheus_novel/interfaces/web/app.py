@@ -91,7 +91,7 @@ class AppState:
         self.settings: Dict[str, Any] = {
             "openai_api_key": os.getenv("OPENAI_API_KEY", ""),
             "google_api_key": os.getenv("GOOGLE_API_KEY", ""),
-            "default_model": "gpt-4o-mini",
+            "default_model": os.getenv("WRITERAI_DEFAULT_MODEL", "qwen2.5:7b"),  # Local Ollama by default
             "budget_usd": 100.0,
             "theme": "dark"
         }
@@ -146,10 +146,12 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware for browser plugin
+# CORS middleware - restrict origins for security
+# In production, replace with specific origins; localhost is safe for local dev
+ALLOWED_ORIGINS = os.getenv("WRITERAI_CORS_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -416,12 +418,12 @@ async def create_project_from_seed(request: Request, background_tasks: Backgroun
         "writing_style": seed_data.get("writing_style", ""),
         "influences": seed_data.get("influences", ""),
         "avoid": seed_data.get("avoid", ""),
-        "budget_usd": 100,
+        "budget_usd": 0,
         "model_defaults": {
-            "local_model": "gpt-4o-mini",
-            "api_model": "gpt-4o-mini",
-            "critic_model": "gpt-4o-mini",
-            "fallback_model": "gpt-3.5-turbo"
+            "local_model": "qwen2.5:7b",
+            "api_model": "qwen2.5:7b",
+            "critic_model": "qwen2.5:7b",
+            "fallback_model": "qwen2.5:7b"
         },
         "status": "seeded",
 
@@ -540,33 +542,23 @@ async def run_generation(project_name: str, generation_id: str):
         with open(config_file, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f) or {}
 
-        # Get model defaults from config
+        # Get model defaults from config - default to local Ollama (no API cost)
         model_defaults = config.get("model_defaults", {})
-        api_model = model_defaults.get("api_model", "gpt-4o-mini")
-        critic_model = model_defaults.get("critic_model", "claude-sonnet-4-20250514")
-        fallback_model = model_defaults.get("fallback_model", "gemini-2.0-flash")
+        api_model = model_defaults.get("api_model", "qwen2.5:7b")
+        critic_model = model_defaults.get("critic_model", api_model)
+        fallback_model = model_defaults.get("fallback_model", api_model)
 
-        # Create LLM clients for smart multi-model routing
-        # Each model type is used for stages that match its strengths
-        from prometheus_novel.prometheus_lib.llm.clients import OpenAIClient, AnthropicClient, GeminiClient
+        # Create LLM clients - use get_client for smart routing (Ollama vs API)
+        from prometheus_novel.prometheus_lib.llm.clients import get_client, is_ollama_model
 
         llm_clients = {}
-
-        # GPT - fast/cheap for bulk drafting and structural work
-        llm_clients["gpt"] = OpenAIClient(api_model)
-        logger.info(f"Initialized GPT client: {api_model}")
-
-        # Claude - nuanced prose, character work, polish
-        llm_clients["claude"] = AnthropicClient(critic_model)
-        logger.info(f"Initialized Claude client: {critic_model}")
-
-        # Gemini - long context for world-building, continuity
-        llm_clients["gemini"] = GeminiClient(fallback_model)
-        logger.info(f"Initialized Gemini client: {fallback_model}")
-
-        # Default fallback client
-        from prometheus_novel.prometheus_lib.llm.clients import get_client
         default_client = get_client(api_model)
+
+        # Use same client for all stages when local (Ollama) - no API keys needed
+        llm_clients["gpt"] = default_client
+        llm_clients["claude"] = get_client(critic_model)
+        llm_clients["gemini"] = get_client(fallback_model)
+        logger.info(f"Using model: {api_model} (local={'Ollama' if is_ollama_model(api_model) else 'API'})")
 
         # Import and run the pipeline with multi-model support
         from prometheus_novel.stages.pipeline import PipelineOrchestrator
@@ -645,6 +637,29 @@ async def run_generation(project_name: str, generation_id: str):
             "project": project_name,
             "error": str(e)
         })
+
+
+async def stream_stage_output(stage_name: str, project_name: str, client, prompt: str, generation_id: str):
+    """Stream LLM output for a stage through WebSocket for real-time display."""
+    try:
+        buffer = ""
+        async for chunk in client.generate_stream(prompt):
+            buffer += chunk
+            # Broadcast chunks to connected clients
+            await manager.broadcast({
+                "type": "generation_stream",
+                "generation_id": generation_id,
+                "project": project_name,
+                "stage": stage_name,
+                "chunk": chunk,
+                "buffer_length": len(buffer)
+            })
+        return buffer
+    except Exception as e:
+        logger.error(f"Streaming failed for {stage_name}: {e}")
+        # Fall back to non-streaming
+        response = await client.generate(prompt)
+        return response.content if hasattr(response, "content") else str(response)
 
 
 async def generate_suggestions(text: str) -> List[Dict[str, str]]:
@@ -1254,11 +1269,17 @@ def get_settings_html() -> str:
             <div class="form-group">
                 <label>Default Model</label>
                 <select id="defaultModel">
-                    <option value="gpt-4o-mini">GPT-4o Mini (Fast, Cheap)</option>
-                    <option value="gpt-4o">GPT-4o (Quality)</option>
-                    <option value="gpt-4-turbo">GPT-4 Turbo</option>
-                    <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                    <option value="qwen2.5:7b" selected>Local: Qwen 2.5 (Recommended, Free)</option>
+                    <option value="llama3.2:3b">Local: Llama 3.2 3B</option>
+                    <option value="llama3.1:8b">Local: Llama 3.1 8B</option>
+                    <option value="mistral:7b">Local: Mistral 7B</option>
+                    <option value="phi3:mini">Local: Phi-3 Mini</option>
+                    <option value="gemma2:2b">Local: Gemma 2 2B</option>
+                    <option value="gpt-4o-mini">GPT-4o Mini (API, Paid)</option>
+                    <option value="gpt-4o">GPT-4o (API, Paid)</option>
+                    <option value="gemini-2.0-flash">Gemini 2.0 Flash (API, Paid)</option>
                 </select>
+                <p class="hint">Local models need Ollama installed. Run: ollama run qwen2.5:7b</p>
             </div>
             <div class="form-group">
                 <label>Budget (USD)</label>

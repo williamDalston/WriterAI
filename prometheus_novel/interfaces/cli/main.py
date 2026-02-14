@@ -195,12 +195,12 @@ def cmd_new(args):
         "themes": template["themes"],
         "conflicts": template["conflicts"],
         "archetypes": template["archetypes"],
-        "budget_usd": 100,
+        "budget_usd": 0,
         "model_defaults": {
-            "local_model": "gpt-4o-mini",
-            "api_model": "gpt-4o-mini",
-            "critic_model": "gpt-4o-mini",
-            "fallback_model": "gpt-3.5-turbo"
+            "local_model": "qwen2.5:7b",
+            "api_model": "qwen2.5:7b",
+            "critic_model": "qwen2.5:7b",
+            "fallback_model": "qwen2.5:7b"
         },
         "stage_model_map": {
             "high_concept": "api_model",

@@ -566,12 +566,12 @@ def create_project_from_seed(seed_data: Dict[str, Any], project_name: str = None
         "influences": seed_data.get('INFLUENCES', ''),
         "avoid": seed_data.get('AVOID', ''),
 
-        "budget_usd": 100,
+        "budget_usd": 0,
         "model_defaults": {
-            "local_model": "gpt-4o-mini",
-            "api_model": "gpt-4o-mini",
-            "critic_model": "gpt-4o-mini",
-            "fallback_model": "gpt-3.5-turbo"
+            "local_model": "qwen2.5:7b",
+            "api_model": "qwen2.5:7b",
+            "critic_model": "qwen2.5:7b",
+            "fallback_model": "qwen2.5:7b"
         },
         "stage_model_map": {
             "high_concept": "api_model",

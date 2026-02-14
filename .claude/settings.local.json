@@ -19,7 +19,9 @@
       "Bash(ping:*)",
       "Bash(curl:*)",
       "Bash(tasklist /FI \"IMAGENAME eq python.exe\")",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(cd:*)",
+      "Bash(ollama list:*)"
     ]
   }
 }

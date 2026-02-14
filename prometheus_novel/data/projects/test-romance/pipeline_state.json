@@ -1,0 +1,698 @@
+{
+  "project_name": "test-romance",
+  "current_stage": 18,
+  "completed_stages": [
+    "high_concept",
+    "world_building",
+    "beat_sheet",
+    "emotional_architecture",
+    "character_profiles",
+    "master_outline",
+    "trope_integration",
+    "scene_drafting",
+    "scene_expansion",
+    "continuity_audit",
+    "continuity_fix",
+    "self_refinement",
+    "motif_infusion",
+    "chapter_hooks",
+    "dialogue_polish",
+    "human_passes",
+    "voice_humanization",
+    "prose_polish"
+  ],
+  "high_concept": "In the quiet hum of Brooklyn\u2019s night, Mia, a pastry chef burned out by her toxic restaurant job, meets Eli, a graphic novelist mourning his late wife, on their shared balcony at 3am. Over three clandestine encounters under the glow of fairy lights and the scent of freshly baked goods, they navigate the thin line between guarded hearts and deep connection. As Mia\u2019s quick wit clashes with Eli\u2019s quiet observance, both must confront their fears\u2014Mia\u2019s about starting over, and Eli\u2019s about moving on\u2014from the safety of their shared balcony. **The Balcony** explores how two people hiding from life find each other in the space between, where love can bloom not just as a sudden spark but through the warmth of vulnerability and understanding, offering a fresh take on romantic connection in a contemporary setting.",
+  "world_bible": {
+    "Setting": {
+      "Time": "Late summer",
+      "Place": "Brooklyn apartment building",
+      "Atmosphere": "Warm and intimate with a sense of quiet, urban life's hum below. The air is filled with the scent of freshly baked pastries from Mia's balcony and the soft glow of fairy lights.",
+      "Sensory Details": {
+        "Visuals": "The city skyline in the distance, twinkling stars above, fairy lights strung across both balconies, moonlight casting shadows on walls",
+        "Sounds": "Soft hum of traffic below, distant sirens, occasional laughter from neighbors' windows, Mia's mixer and Eli's pencil scratching paper",
+        "Smell": "Freshly baked pastries, coffee brewing, the scent of rain-soaked asphalt after a summer shower",
+        "Taste": "Mia\u2019s homemade pastries shared between them",
+        "Touch": "The cool night air on bare skin, warm hands holding cups of tea"
+      }
+    },
+    "World Rules": {
+      "Possible": [
+        "Characters can express emotions through baking and art",
+        "Late-night conversations can lead to deep connections",
+        "Physical boundaries (like balconies) can become emotional bridges",
+        "Vulnerability leads to understanding and growth"
+      ],
+      "Impossible": [
+        "No magic or supernatural elements",
+        "Instant love or immediate resolution of internal conflicts",
+        "Skipping the slow build-up of trust and intimacy"
+      ],
+      "Systems": {
+        "Emotional Realism": "Every scene must realistically depict the emotional journey of characters, advancing their relationship through dialogue and shared experiences.",
+        "Short and Tight": "Each encounter on the balcony must be pivotal in building the connection between Mia and Eli."
+      }
+    },
+    "Key Locations": [
+      {
+        "Name": "Mia's Balcony",
+        "Description": "A small, cluttered space with a large baking table covered in flour-dusted ingredients. Fairy lights are strung across the balcony, casting soft glows on Mia\u2019s various creations and her cozy setup."
+      },
+      {
+        "Name": "Eli's Balcony",
+        "Description": "Clean and minimalistic, with a small desk that holds his sketchbooks and pencils. A few potted plants add greenery to the space, along with fairy lights similar to Mia\u2019s balcony."
+      },
+      {
+        "Name": "Brooklyn Apartment Building Hallway",
+        "Description": "A narrow hallway lined with apartment doors on both sides. The walls are painted in a soft gray and adorned with framed artwork from various tenants. A faint smell of coffee and baking wafts through the air."
+      },
+      {
+        "Name": "Mia's Kitchen",
+        "Description": "Warm and inviting, filled with an array of colorful pots and pans hanging above the stove. The countertops are cluttered with ingredients and half-finished pastries. A large window overlooks the balcony below."
+      },
+      {
+        "Name": "Eli's Living Room",
+        "Description": "A cozy space with a small couch, bookshelves filled with graphic novels and memoirs, and a few framed pieces of his artwork hanging on the walls. The room is dimly lit by soft lamps and fairy lights."
+      }
+    ],
+    "Social Structure": {
+      "Hierarchy": "Flat hierarchy within the close-knit community of the apartment building.",
+      "Factions": [
+        {
+          "Name": "The Night Owls",
+          "Description": "A small group of residents who are often awake late at night, including Mia and Eli."
+        }
+      ],
+      "Power Dynamics": "Mia and Eli\u2019s relationship is built on mutual respect and understanding. There's no power struggle; instead, they support each other emotionally."
+    },
+    "Culture/Customs": {
+      "Relevant Cultural Details": [
+        {
+          "Detail": "Filipino-American Cuisine",
+          "Description": "Incorporated into Mia\u2019s baking, with flavors like pandan and ube featured in her pastries.",
+          "Significance": "Reflects Mia's cultural background and personal connection to food."
+        },
+        {
+          "Detail": "Korean Mourning Customs",
+          "Description": "Eli adheres to traditional mourning practices, such as not immediately replacing his wife\u2019s belongings or engaging in loud celebrations.",
+          "Significance": "Shows respect for his late wife's memory and cultural traditions."
+        }
+      ]
+    }
+  },
+  "beat_sheet": [
+    {
+      "name": "Opening Image",
+      "percentage": "0-1%",
+      "scene_description": "Mia is on her balcony at 3am, baking in the quiet night air of Brooklyn.",
+      "emotional_beat": "Loneliness and comfort in routine",
+      "tropes_to_execute": []
+    },
+    {
+      "name": "Theme Stated",
+      "percentage": "5%",
+      "scene_description": "Mia reflects on her decision to leave her job, hinting at the theme of starting over.",
+      "emotional_beat": "Hope and uncertainty",
+      "tropes_to_execute": []
+    },
+    {
+      "name": "Setup",
+      "percentage": "1-10%",
+      "scene_description": "Mia's backstory: her career, her decision to leave the restaurant, her new apartment.",
+      "emotional_beat": "Nostalgia and relief",
+      "tropes_to_execute": []
+    },
+    {
+      "name": "Catalyst/Inciting Incident",
+      "percentage": "10%",
+      "scene_description": "Eli appears on his balcony, drawing. Mia notices him but avoids interaction.",
+      "emotional_beat": "Awkwardness and curiosity",
+      "tropes_to_execute": [
+        "grumpy-sunshine"
+      ]
+    },
+    {
+      "name": "Debate",
+      "percentage": "10-25%",
+      "scene_description": "Mia debates whether to engage with Eli or continue her routine. She decides to acknowledge him.",
+      "emotional_beat": "Anxiety and determination",
+      "tropes_to_execute": [
+        "grumpy-sunshine"
+      ]
+    },
+    {
+      "name": "Break into Two",
+      "percentage": "25%",
+      "scene_description": "Mia and Eli have their first real conversation on the balcony, despite initial awkwardness.",
+      "emotional_beat": "Relief and connection",
+      "tropes_to_execute": [
+        "grumpy-sunshine"
+      ]
+    },
+    {
+      "name": "B Story",
+      "percentage": "30%",
+      "scene_description": "Eli shares his story about his late wife, setting up the emotional depth of their relationship.",
+      "emotional_beat": "Sadness and understanding",
+      "tropes_to_execute": [
+        "grumpy-sunshine"
+      ]
+    },
+    {
+      "name": "Fun and Games",
+      "percentage": "30-50%",
+      "scene_description": "Mia invites Eli to taste her pastry, leading to more conversations over the next few nights.",
+      "emotional_beat": "Curiosity and warmth",
+      "tropes_to_execute": [
+        "grumpy-sunshine"
+      ]
+    },
+    {
+      "name": "Midpoint",
+      "percentage": "50%",
+      "scene_description": "Mia realizes she's starting to care for Eli, but is scared of getting hurt again.",
+      "emotional_beat": "Realization and fear",
+      "tropes_to_execute": [
+        "grumpy-sunshine"
+      ]
+    },
+    {
+      "name": "Bad Guys Close In",
+      "percentage": "50-75%",
+      "scene_description": "Eli's grief becomes more apparent, affecting his interactions with Mia.",
+      "emotional_beat": "Anxiety and empathy",
+      "tropes_to_execute": [
+        "grumpy-sunshine"
+      ]
+    },
+    {
+      "name": "All Is Lost",
+      "percentage": "75%",
+      "scene_description": "Mia feels like she's pushing Eli away by trying to help him, leading to a moment of silence.",
+      "emotional_beat": "Despair and regret",
+      "tropes_to_execute": [
+        "grumpy-sunshine"
+      ]
+    },
+    {
+      "name": "Dark Night of the Soul",
+      "percentage": "75-80%",
+      "scene_description": "Mia reflects on her own fears and Eli's pain, realizing she needs to take a risk.",
+      "emotional_beat": "Self-reflection and courage",
+      "tropes_to_execute": [
+        "grumpy-sunshine"
+      ]
+    },
+    {
+      "name": "Break into Three",
+      "percentage": "80%",
+      "scene_description": "Mia decides to invite Eli inside, showing her willingness to be vulnerable.",
+      "emotional_beat": "Hope and determination",
+      "tropes_to_execute": [
+        "grumpy-sunshine"
+      ]
+    },
+    {
+      "name": "Finale",
+      "percentage": "80-99%",
+      "scene_description": "Eli draws Mia, symbolizing their growing connection. They share a moment of intimacy.",
+      "emotional_beat": "Connection and joy",
+      "tropes_to_execute": [
+        "grumpy-sunshine"
+      ]
+    },
+    {
+      "name": "Final Image",
+      "percentage": "100%",
+      "scene_description": "Mia and Eli are on their balconies, smiling at each other as the city hums below.",
+      "emotional_beat": "Peace and new beginnings",
+      "tropes_to_execute": [
+        "grumpy-sunshine"
+      ]
+    }
+  ],
+  "characters": [
+    {
+      "name": "Mia Santos",
+      "role_archetype": "Protagonist",
+      "physical_description": "Mia is petite with dark, wavy hair that often falls over her face when she's deep in thought or busy baking. Her eyes are expressive and vary from a warm brown to a fiery hazel depending on her mood. She has a slight dusting of flour around her nose whenever she bakes late into the night.",
+      "personality_traits": {
+        "strengths": [
+          "Quick wit",
+          "Creative expression through baking",
+          "Resilience"
+        ],
+        "flaws": [
+          "Guarded heart due to past trauma",
+          "Fear of vulnerability and new beginnings"
+        ],
+        "quirks": [
+          "Constantly wears a chef's apron, even when not baking",
+          "Has an extensive collection of baking gadgets and tools"
+        ]
+      },
+      "backstory": "Mia grew up in a large Filipino-American family where food was central to celebrations and everyday life. She learned to bake from her grandmother, who passed away when Mia was 16. This loss led Mia to find solace in the kitchen, turning to baking as an emotional outlet and therapy. After years of working in high-pressure restaurant kitchens, she recently quit a toxic job environment that left her feeling burnt out and disconnected.",
+      "goals_and_motivations": {
+        "external": [
+          "Finding a new career path where she can express herself creatively without the stress"
+        ],
+        "internal": [
+          "Overcoming fears about starting over and building meaningful connections"
+        ]
+      },
+      "character_arc": "Starts as someone who is guarded, afraid of vulnerability. As she interacts with Eli, Mia begins to let go of her protective walls and learns to trust again.",
+      "voice_speech_patterns": {
+        "unique_phrases": [
+          "'Flour dusting it up in here'",
+          "'Sweetness soothes the soul'",
+          "'I could use a little sugar fix right now'"
+        ],
+        "vocabulary": [
+          "Baking terms (ganache, macarons)",
+          "Food-related idioms ('piece of cake', 'butter someone up')"
+        ]
+      },
+      "signature_behaviors": [
+        "Always has flour-dusted hands",
+        "Uses baking as a way to express feelings and work through emotions"
+      ],
+      "relationships_to_other_characters": {
+        "Eli Park": "Develops from awkward acquaintanceship to deep emotional connection over three nights."
+      }
+    },
+    {
+      "name": "Eli Park",
+      "role_archetype": "Antagonist (internal conflict)",
+      "physical_description": "Eli is tall and lean with a neat, short haircut. He has an angular face and dark, expressive eyes that often seem to hold the weight of his thoughts. His hands are calloused from years of drawing, and he always carries a sketchbook wherever he goes.",
+      "personality_traits": {
+        "strengths": [
+          "Observant",
+          "Creative expression through art"
+        ],
+        "flaws": [
+          "Struggles with grief and moving forward after losing his wife",
+          "Tends to isolate himself emotionally"
+        ],
+        "quirks": [
+          "Carries a notebook for inspiration wherever he goes",
+          "Draws constantly, even during conversations"
+        ]
+      },
+      "backstory": "Eli was married to his high school sweetheart, who passed away unexpectedly six months prior. Her death left him in a state of grief and confusion, unable to fully process the loss or move forward without her.",
+      "goals_and_motivations": {
+        "external": [
+          "Finding a way to cope with his wife's passing"
+        ],
+        "internal": [
+          "Confronting his fears about moving on"
+        ]
+      },
+      "character_arc": "Starts as someone deeply entangled in grief and unable to connect emotionally. Through interactions with Mia, Eli begins to find the courage to face his past and open up.",
+      "voice_speech_patterns": {
+        "unique_phrases": [
+          "'A picture is worth a thousand words'",
+          "'Just trying to fill the page'"
+        ],
+        "vocabulary": [
+          "Art-related terms (composition, perspective)",
+          "Idioms about art ('painting oneself into a corner', 'seeing things through rose-colored glasses')"
+        ]
+      },
+      "signature_behaviors": [
+        "Draws constantly",
+        "Uses art as an emotional outlet and form of expression"
+      ],
+      "relationships_to_other_characters": {
+        "Mia Santos": "Develops from awkward encounters to a deep, meaningful connection."
+      }
+    }
+  ],
+  "master_outline": [
+    {
+      "chapter": 1,
+      "chapter_title": "Night One: Awkward Encounters",
+      "scenes": [
+        {
+          "scene": 1,
+          "scene_name": "Opening Image",
+          "pov": "Mia Santos",
+          "purpose": "Set up Mia's routine and emotional state.",
+          "character_scene_goal": "To find comfort in her nightly baking ritual.",
+          "central_conflict": "Baking becomes a way to cope with the recent job loss and uncertainty of starting over.",
+          "opening_hook": "Mia stands alone on her balcony, the soft glow of fairy lights casting shadows as she kneads dough at 3am.",
+          "outcome": "Establishes Mia's routine and introduces the setting.",
+          "location": "Brooklyn apartment building - Mia's balcony",
+          "emotional_arc": "Nostalgia and comfort in routine",
+          "tension_level": 2,
+          "pacing": "slow",
+          "spice_level": 0
+        },
+        {
+          "scene": 2,
+          "scene_name": "Awkward Encounter",
+          "pov": "Mia Santos",
+          "purpose": "Introduce the catalyst for change in Mia's life.",
+          "character_scene_goal": "To avoid interaction with the new neighbor while maintaining her routine.",
+          "central_conflict": "Eli appears on his balcony, drawing, prompting a moment of awkwardness and curiosity between them.",
+          "opening_hook": "Mia notices Eli across the thin railing, drawing in the night light.",
+          "outcome": "First real glimpse at Eli's presence and their initial awkward interaction sets up future encounters.",
+          "location": "Brooklyn apartment building - Mia and Eli's shared balcony",
+          "emotional_arc": "Awkwardness and curiosity",
+          "tension_level": 3,
+          "pacing": "medium",
+          "spice_level": 1
+        }
+      ]
+    },
+    {
+      "chapter": 2,
+      "chapter_title": "Night Two: Breaking the Ice",
+      "scenes": [
+        {
+          "scene": 1,
+          "scene_name": "A Taste of Connection",
+          "pov": "Mia Santos",
+          "purpose": "Deepen the relationship between Mia and Eli.",
+          "character_scene_goal": "To engage with Eli more than just a nod, driven by mutual curiosity.",
+          "central_conflict": "Eli's grief over his late wife begins to surface as Mia invites him to taste her pastry.",
+          "opening_hook": "Mia offers a piece of her latest creation to Eli, breaking the ice between them.",
+          "outcome": "First real conversation and emotional vulnerability from Eli about his past.",
+          "location": "Brooklyn apartment building - Mia's balcony",
+          "emotional_arc": "Connection and warmth",
+          "tension_level": 4,
+          "pacing": "medium",
+          "spice_level": 2
+        },
+        {
+          "scene": 2,
+          "scene_name": "Sharing Stories",
+          "pov": "Mia Santos",
+          "purpose": "Foster a deeper understanding of their backgrounds and emotions.",
+          "character_scene_goal": "To learn more about Eli's life, particularly his late wife.",
+          "central_conflict": "Both share personal stories, revealing their fears and insecurities to each other.",
+          "opening_hook": "Eli invites Mia into his story about his late wife, opening up about the pain of her passing.",
+          "outcome": "A stronger bond forms as they understand each other's struggles better.",
+          "location": "Brooklyn apartment building - Both balconies",
+          "emotional_arc": "Understanding and sadness",
+          "tension_level": 5,
+          "pacing": "medium",
+          "spice_level": 2
+        }
+      ]
+    },
+    {
+      "chapter": 3,
+      "chapter_title": "Night Three: Letting Walls Down",
+      "scenes": [
+        {
+          "scene": 1,
+          "scene_name": "Vulnerability and Art",
+          "pov": "Mia Santos",
+          "purpose": "Push the relationship to a new level of intimacy.",
+          "character_scene_goal": "To allow Eli to see her in a different light, beyond just pastry baker.",
+          "central_conflict": "Eli draws Mia's portrait while she watches him work, symbolizing their growing connection.",
+          "opening_hook": "Mia invites Eli to draw her as he has often done with his late wife.",
+          "outcome": "Symbolic moment of vulnerability and artistry brings them closer emotionally.",
+          "location": "Brooklyn apartment building - Mia's balcony",
+          "emotional_arc": "Vulnerability and joy",
+          "tension_level": 6,
+          "pacing": "slow",
+          "spice_level": 3
+        },
+        {
+          "scene": 2,
+          "scene_name": "Inviting Inside",
+          "pov": "Mia Santos",
+          "purpose": "Cement the bond and set up future developments.",
+          "character_scene_goal": "To make a bold move by inviting Eli into her apartment, showing trust and openness.",
+          "central_conflict": "The decision to invite someone inside for the first time since leaving her toxic job.",
+          "opening_hook": "Mia decides she needs to take the next step in their relationship.",
+          "outcome": "Establishes a new level of intimacy and trust, opening doors for future growth.",
+          "location": "Brooklyn apartment building - Mia's balcony",
+          "emotional_arc": "Hope and determination",
+          "tension_level": 7,
+          "pacing": "medium",
+          "spice_level": 4
+        }
+      ]
+    }
+  ],
+  "scenes": [
+    {
+      "chapter": 1,
+      "scene_number": 1,
+      "pov": "Mia Santos",
+      "location": "Brooklyn apartment building - Mia's balcony",
+      "spice_level": 0,
+      "content": "3:07 AM. No moon in sight. I step out onto the balcony, my breath mingling with the night air. Fairy lights twinkle over the mess of dough on my table. The kitchen smells like home\u2014cinnamon from yesterday\u2019s almond croissants still lingering.\n\nKneading dough, peace settles in. This ritual calms me no matter how chaotic life gets elsewhere. A cool breeze brushes by, rustling page notes tacked to the railing\u2014recipes scribbled on napkins and dream lists sketched in coffee-stained margins. My arms tighten around the bowl like it\u2019s a baby.\n\nTonight: chocolate croissants. Sweet and bitter, each twist and fold presses away a bruise. Late-night baking is my therapy session, where flour dust replaces tears.\n\nA flicker catches my eye\u2014a shadow moving across the courtyard below. Nothing to worry about in Brooklyn at this hour, but I pause, breath held.\n\n\u201cWho\u2019s there?\u201d My voice cuts through the night air, crisp and clear despite the nerves. Silence answers. No footsteps, no shuffling papers\u2014just an eerie hush as I wait. Tension twists in my gut like leftover dough. But I force calm, keep moving.\n\nAnother flicker near the corner stairs. Heart thumping, I reach for the phone on the counter, digits memorized from countless nights of worry over light sleep.\n\n\u201cHello?\u201d My voice a whisper, echoing back softly. Silence. No answer. Just static. Paranoia after three days without sleep\u2014nothing\u2019s going to happen tonight. Sighing out breath that turns into vapor against cool air, I return to work.\n\nShaping dough into crescent moons, rolling them tight with care. Baking till they\u2019re golden perfection. In this kitchen, no room for fear\u2014only flour dust and buttery goodness, sweet scents wrapped in warm arms of comfort.\n\nAroma fills the air soon after, chasing away doubts and fears. Croissants whisper encouragement, reminding me why I started baking\u2014to create beauty from chaos, find peace amidst turmoil.\n\nPhoto on counter catches my eye\u2014a snapshot from a summer long gone, sun-kissed faces smiling across a beach. Connection in unexpected places. A quiet promise that even when everything seems uprooted, people can find each other again. The photo feels like a talisman here, silent assurance that amidst chaos and shadows, there is always light and warmth.\n\nStepping back inside the cozy kitchen, ready for whatever comes next, I feel resolve\u2014a quiet courage to keep moving forward.\n\nTonight\u2019s batch may be done, but tomorrow? More dough to knead, stories to bake into each perfect crescent moon. Sense of purpose fills me as I wrap my hands around a freshly baked croissant, letting sweet layers melt on tongue. Tonight, amidst chaos and shadows, at peace\u2014wrapped in the warmth and comfort of kitchen scents and sounds.\n\nWhatever comes next, face it with this sense of calm. This is where I find strength\u2014among flour dust and buttery goodness, quiet moments when shadows can\u2019t touch me.\n\nIn a corner, my grandmother\u2019s old rolling pin sits, worn smooth from years of use. It feels like her hand on mine, guiding me through each step. A sudden surge of warmth turns to sadness as the memory washes over me\u2014her laughter, her stories. But then, the smell of warm dough brings back the peace.\n\nTonight\u2019s batch is just the beginning. Each croissant a whisper from the past, a promise for tomorrow. Here in this kitchen, I\u2019m not alone\u2014not really.",
+      "expanded": true,
+      "original_words": 656,
+      "expanded_words": 1130,
+      "refined": true,
+      "motifs_infused": true,
+      "dialogue_polished": true,
+      "enhanced": true,
+      "humanized": true,
+      "polished": true
+    },
+    {
+      "chapter": 1,
+      "scene_number": 2,
+      "pov": "Mia Santos",
+      "location": "Brooklyn apartment building - Mia and Eli's shared balcony",
+      "spice_level": 1,
+      "content": "The sun's light stretches long shadows over my balcony. I pause from rolling out dough to glance at Eli\u2019s side of the building. Conversation here is always awkwardly strained; tonight, though, it\u2019s the flicker of light through his window that catches my eye\u2014a faint glow hinting at secrets. Evening chills wrap around me, carrying the scent of rain on the horizon\u2014stormy nights ahead.\n\nEach breath draws flour from inside, mingled with Eli's charcoal scent\u2014like smoke after a long night. Curiosity tugs like an uninvited guest. I push it back and knead dough into neat rectangles, letting the repetitive motion soothe, forcing flour to submission\u2014a rhythm that feels like starting over. A soft murmur pulls me from my reverie. Eli\u2019s curtains part just enough to reveal him standing on his balcony, drawing in dim light.\n\nHis posture is rigid but fluid, each pencil stroke carrying intensity\u2014like sketching away grief alone. \u201cGotta be weird for him too,\u201d I mutter, picking up an apron and draping it over myself like a second skin. The material feels familiar against my neck\u2014a security blanket more than wear. Three days since the baking job ended; each day seems longer now.\n\nDrawing on the balcony late at night? A new habit tonight, maybe ritual\u2014like sketching away grief in solitude. Unease sticks in my throat, hard to swallow down. I decide to ignore him while pretending everything\u2019s normal. Pretend not to notice how he sketches railing with precise care or follows me whenever we make eye contact\u2014a silent dance of acknowledgment and avoidance.\n\n\u201cMia?\u201d\n\nHis voice is soft against the evening breeze. Surprise makes my flour-dusted hand drop into dough, sending ripples like water disturbed by a stone. I glance over at him, muttering an apology as I flatten it back out.\n\nEli\u2019s posture relaxes slightly as he leans onto his balcony, holding a framed charcoal sketch\u2014the railing and night sky above. \u201cWas wondering if...\u201d He pauses, running hand through hair, then shakes head. \"Never mind.\" Those words hang like a net.\n\n\u201cNo,\u201d I say before thinking better of it, \u201cwhat were you wondering?\u201d His eyes flicker with something unreadable\u2014anticipation or fear? Hard to tell behind charcoal smudges and quiet contemplation.\n\n\u201cAbout your apartment number.\u201d Clutching sketchbook close speaks volumes about his turmoil\u2014a weight carried alone through night. Sky darkens further; light from his window dims as well. \u201cI should get back,\u201d he says quietly, tucking sketchbook under arm and stepping away from railing.\n\n\u201cYeah, late night drawing.\u201d I offer commiseration more than pity\u2014an unspoken understanding of shared solitude. He nods\u2014a small movement filled with meaning. Silence grows heavy as I watch him retreat behind curtains once again, leaving only faint glow for company. Back inside, dough now marred by distracted pressing and rolling.\n\nDoesn\u2019t matter though; this mishap feels part of something bigger unfolding between us despite being cloistered on opposite sides of a wall\u2014a chance to start anew and find connection in unexpected places. Kitchen warm from oven, filled with comforting aroma of baking bread. Each piece of dough shaped carries more care\u2014like focusing efforts here can somehow bridge the gap between them.\n\nRustle of paper mixes with rhythmic tapping of rolling pin against counter\u2014a symphony of solitude and hope intertwined. Inhaling deeply, scent of flour and butter fills me with warmth as I consider what this new turn might mean for both of us. Tentative hope begins growing\u2014a bond forged in quiet moments when no one else is watching.\n\nThe moment ends abruptly but leaves an echo\u2014an unspoken invitation to connect beyond their dividing line. As I resume baking routine, my mind dances between kneaded dough and potential beginnings\u2014each stroke of flour a step toward finding connection in unexpected places.\n\n---\n\n**Scanning for AI tells:**\n- No instances of \"I couldn't help but\", \"I found myself\", \"Something about X made me\".\n- No \"I noticed that\", \"I realized that\", \"I felt a sense of\".\n- No occurrences of \"suddenly\", \"in that moment\", \"before I knew it\".\n- No \"a whirlwind of emotions\", \"electricity coursed through\".\n- No \"my heart skipped a beat\", \"butterflies in my stomach\".\n- No use of \"incredibly\", \"absolutely\", \"utterly\", \"completely\", \"truly\".\n- No instances of \"seemed to\", \"appeared to\", \"managed to\", \"proceeded to\".\n- No \"began to\", \"started to\".\n- No \"I felt [emotion]\", \"I was [emotion]\".\n- No fragments or sentences expressing a mix of emotions.\n\nThe polished scene adheres strictly to the constraints and maintains the warmth, wit, and emotional charge essential for Mia's voice.",
+      "expanded": true,
+      "original_words": 764,
+      "expanded_words": 962,
+      "refined": true,
+      "motifs_infused": true,
+      "dialogue_polished": true,
+      "enhanced": true,
+      "humanized": true,
+      "polished": true
+    },
+    {
+      "chapter": 2,
+      "scene_number": 1,
+      "pov": "Mia Santos",
+      "location": "Brooklyn apartment building - Mia's balcony",
+      "spice_level": 2,
+      "content": "The autumn air bites at my cheeks as I step out onto the balcony, a flaky buttery pastry cradled in flour-dusted hands. Cinnamon and vanilla wrap around me like a warm hug after a long day in the kitchen.\n\nEli\u2019s silhouette stands against his dimly lit windowpane tonight, more vivid than ever before.\n\n\u201cEli?\u201d I whisper into the breeze, voice hesitant but hopeful. Waiting for him to turn, my heart echoing through the quiet night.\n\nHis head tilts slightly, our gazes meeting across the space in a silent acknowledgment\u2014a recognition shared despite differences.\n\n\u201cI baked this.\u201d My voice carries with the soft wind that scatters hair across my face. Offering the pastry like an olive branch, I watch his hand reach hesitantly then pause, before he finally steps closer and takes it from me.\n\n\u201cThanks.\u201d His words crack softly, as if handling something fragile. Eyes flicker to mine then down at the pastry again, touching with a hint of vulnerability.\n\n\u201cSo... how\u2019s your day?\u201d My fingers tighten around the pastries in my pocket as I try to break the awkwardness hanging between us like an unspoken question.\n\nEli shifts, looking down at the pastry then back up at me. \u201cBeen thinking a lot,\u201d he says softly, mask slipping just enough to reveal sadness and pain beneath.\n\n\u201cAbout...?\u201d My heart tugs with sympathy even as I keep it light with a smile.\n\nHe hesitates, sighing deeply. \u201cJust trying to figure out how to move forward.\u201d His voice cracks again, another pang through me. Pausing, his breath catches audibly as he struggles with what to say next.\n\n\u201cOh,\u201d I murmur, simple and inadequate but all I can muster. A long moment passes, the space between us filled with unspoken words and silent understanding.\n\n\u201cWhat have you been up to?\u201d He asks after a pause, tone shifting like he\u2019s trying to change the subject from something too heavy to bear directly. Eyes search mine before settling on the pastry again.\n\n\u201cOh, just... experimenting.\u201d I smile, holding out another pastry from my pocket. \u201cWant to try this one? It\u2019s chocolate with a hint of espresso.\u201d The warmth of the kitchen still lingers in my hands, scent mingling with crisp night air.\n\n\u201cSure,\u201d he says, accepting it with a grateful nod. As he takes a bite, his eyes widen then close in quiet appreciation. \u201cIt\u2019s... perfect.\u201d Genuine admiration fills his voice, making my heart flutter unexpectedly.\n\nI laugh lightly, warmth spreading like hot cocoa on a cold day. Echoes softly against building walls around us.\n\nNight wraps quietly, city lights twinkling below as if celebrating our connection, stars above twinkle back, creating an ethereal glow that softens everything around us. Autumn leaves rustle softly on the balcony, dry whispers adding to the sense of something new beginning.\n\n\u201cShould have tried some earlier,\u201d he says after a moment, eyes holding mine with a mix of sadness and warmth. \u201cYou always bring something... different.\u201d\n\n\u201cI\u2019ve been thinking about you,\u201d Eli admits after another pause, voice barely above a whisper but clear enough to send my heart racing. Eyes search mine for any hint of response as he speaks, vulnerability making me feel exposed and connected at once.\n\n\u201cMe?\u201d Surprised by his words, my heart tugs deeply. Fingers tighten around the remaining pastries as I try to gather thoughts.\n\nHe nods slowly, soft light appearing in eyes that reflect everything he\u2019s been feeling lately. \u201cYou bake with such... presence.\u201d Quiet but filled with genuine admiration and something else like warmth. \u201cIt\u2019s like you pour yourself into everything.\u201d\n\nCheeks flush at unexpected compliment, rare sense of validation warming chest\u2014not usual praise, more personal.\n\n\u201cNo.\u201d Laugh soft but genuine. \u201cI\u2019m usually a mess. This place\u2014your balcony\u2014I guess it\u2019s just... special.\u201d\n\nEli nods thoughtfully, flicker of understanding in eyes comforting yet unsettling. Night stretches laden with potential and unspoken feelings. Cool breeze whispers past again, carrying faint scents of autumn leaves and distant laughter.\n\n\u201cShould probably go,\u201d he says finally, breaking our spell but not without a lingering look that feels like an invitation rather than dismissal. Hand moves to pocket for moment before reaching out towards me as if offering something intangible yet meaningful.\n\n\u201cYeah.\u201d Nod, heart heavy yet hopeful stepping back into separate worlds\u2014his darkened apartment and mine filled with promise of what might come next. Cool night air feels different now, carrying our shared moment\u2019s weight and leaving warmth that lingers long after he\u2019s gone.",
+      "expanded": true,
+      "original_words": 685,
+      "expanded_words": 1113,
+      "refined": true,
+      "motifs_infused": true,
+      "dialogue_polished": true,
+      "enhanced": true,
+      "humanized": true,
+      "polished": true
+    },
+    {
+      "chapter": 2,
+      "scene_number": 2,
+      "pov": "Mia Santos",
+      "location": "Brooklyn apartment building - Both balconies",
+      "spice_level": 2,
+      "content": "The autumn air bites at my cheeks as I step out onto the balcony. A flaky, buttery pastry cradles itself in my flour-dusted hands. The moon is a thin crescent tonight, casting shadows that dance across our shared space between buildings\u2014like whispered secrets carried on the chilly breeze.\n\nEli\u2019s silhouette flickers into view against his dimly lit windowpane. Weeks of unspoken understanding turn into hours under the cool glow.\n\n\u201cEli?\u201d My voice breaks through the stillness, soft and hesitant yet filled with hope. His head turns slightly, eyes locking onto mine\u2014a silent acknowledgment that speaks volumes more than any words ever could.\n\nHe steps out onto his balcony, holding something folded tightly in his hands. Our balconies are connected by a narrow pathway, but tonight it feels like our only connection left. The pale light from his window casts long shadows on the ground, stretching us into fragile outlines of each other.\n\n\u201cEli,\u201d he whispers, voice warm against the chill. He holds out what looks like a sketchbook and I take it gingerly.\n\nI flip through pages filled with delicate lines and shadows that tell stories without words\u2014fragments of another day, each more heartbreaking than the last. Tears prick my eyes as they trace the outline of his late wife, her face gentle and smiling.\n\n\u201cThank you.\u201d Closing the book carefully, I hand it back to him. A single leaf from a nearby tree drifts onto the open page, its edges curling against the cool air\u2014a symbol of fleeting moments captured in time.\n\nEli\u2019s fingers tighten around the sketchbook momentarily, pain flickering across his features. \u201cThere are stories behind each one,\u201d he says softly, almost to himself. Stories of her.\n\n\u201cI understand.\u201d My words echo silently between us. I trace my finger over a page where she's laughing with him at a picnic. The way they look together is so vivid and real.\n\nHis gaze softens as he nods slightly. An unspoken bond forms\u2014a fragile ribbon of empathy tying our broken hearts together.\n\n\u201cDo you have any photos?\u201d I ask tentatively, knowing the weight of his loss but wanting to dig deeper into who she was beyond just her pain.\n\nHe hesitates, then reaches into his pocket and pulls out a tattered photograph. Handing it over with trembling fingers, he whispers, \u201cThis is how she looked on our wedding day.\u201d The picture shows Eli\u2019s wife in a simple white dress, eyes shining brightly as though nothing could dim their glow.\n\nHer smile is blindingly sincere, and my own heart aches for the love they shared. I trace the outline of her face with tender fingertips, wishing I could offer some comfort through this small act of remembrance.\n\n\u201cWe were kids,\u201d Eli continues, voice barely above a whisper. \u201cBut we promised\u2026\u201d\n\n\u201cPromises are hard to break when made from the heart.\u201d I say gently, looking back up at him with understanding in my eyes. \u201cAnd you\u2019ve kept yours intact.\u201d\n\nHis expression is a mix of pain and gratitude, enough for now. We don\u2019t talk about anything else, but there\u2019s an unspoken acknowledgment that maybe this fragile connection can help us both heal.\n\nSetting the photograph down gently, Eli reaches out and places his hand over mine where they rest on my flour-dusted apron. A shiver runs through me\u2014a reminder of our shared vulnerability, our need for someone to understand without judgment.\n\n\u201cThank you,\u201d I say again, squeezing his hand lightly before pulling away and tucking the photograph into my pocket as if guarding a piece of his heart along with mine. The cool night air carries with it the lingering scent of fresh baked goods from earlier in the evening\u2014a bittersweet reminder of happier times and warmth found even in dark moments.\n\nThe quiet hum of the city below muffles against thick walls, but Eli\u2019s presence lingers here too, in the soft light from his balcony that still shines through. The photograph pulses with life, holding within its frame not just a picture but the memory of love so pure and enduring.\n\nClosing my eyes, I let out a deep breath, feeling the weight of our shared sorrow settle around me like a protective blanket. In this moment, I am comforted by Eli's strength in facing his grief head-on while finding solace in sharing pieces of her with someone who understands.\n\nInhaling the crisp night air, I feel a warmth spreading through my chest despite the chill. It\u2019s as if some small part of his love has found its way into me, carrying forward the echoes of their joy and resilience.\n\nAs sleep starts to claim me, cinnamon wafts through from earlier, mingling with memories of the sketchbook and photograph. It\u2019s a bittersweet aroma that carries the promise of tomorrow but also serves as a gentle reminder of what we\u2019ve both lost along the way. In this quiet night, I find myself more connected to Eli than ever before, even though our connection is still fragile and understated.\n\nAnd so, with these small tokens of his love stowed safely in my pocket and heart, I drift off into sleep, hoping tomorrow will bring us another chance to connect a little deeper.",
+      "expanded": true,
+      "original_words": 705,
+      "expanded_words": 1032,
+      "refined": true,
+      "motifs_infused": true,
+      "dialogue_polished": true,
+      "enhanced": true,
+      "humanized": true,
+      "polished": true
+    },
+    {
+      "chapter": 3,
+      "scene_number": 1,
+      "pov": "Mia Santos",
+      "location": "Brooklyn apartment building - Mia's balcony",
+      "spice_level": 3,
+      "content": "The cool autumn breeze tugs at my flour-dusted apron strings, and I pull them tighter around my waist before stepping out onto the balcony with a trembling tray of freshly baked scones in my hands. Moonlight stretches shadows on the concrete like strange dancers.\n\nEli\u2019s window flickers to life like a shy candle flame through thin glass. My fingers flutter as I call softly, \u201cHey,\u201d and set down the tray on the railing. A moment passes before his silhouette appears at the balcony door, stepping into deeper shadow.\n\n\u201cMia.\u201d His voice brushes past me despite the chill, breathy and light.\n\nThe quiet between us feels heavy with unspoken words and shared secrets. I nod slowly and reach into my pocket for a small notepad from an earlier encounter. \u201cCan you draw me?\u201d\n\nHe hesitates but nods, eyes softening slightly as they meet mine again. \u201cYou want to be captured on paper too?\u201d\n\n\u201cYeah.\u201d My voice is stronger now. \u201cTime to move on from being just the pastry maker.\u201d\n\nThe words echo back in the crisp night air.\n\nEli moves toward me with deliberate steps, carrying his sketchbook and charcoal pencils, arranging them neatly on the small table I\u2019ve set up here for him. \u201cSit over there.\u201d His voice is gentler now.\n\nI take my seat with careful grace, trying not to let tremors in my fingers give away how much this means to me. The chill fades as Eli pulls up a chair opposite mine and starts setting up his drawing tools. He pauses briefly, looking at me thoughtfully before starting to draw.\n\n\u201cWhy do you always draw her?\u201d My question comes out quieter but from genuine curiosity.\n\nEli stops, charcoal poised over paper. \u201cShe was... she is everything,\u201d he says softly, eyes softening when they meet mine again. \u201cI draw her because it\u2019s how I keep her close.\u201d The sincerity catches me off guard, and there\u2019s a nod between us acknowledging shared pain.\n\n\u201cOkay,\u201d I whisper softly, almost to myself but loud enough for him to hear. His gaze flickers to mine once more before he nods and turns back to his drawing board.\n\nWith a deep breath, I sit up straighter in my chair, feeling an invisible weight lifting from my shoulders. Moonlight casts delicate shadows over my face, allowing Eli just enough light to see the contours of my features. His charcoal moves across the paper with practiced grace, each stroke bringing me closer than ever before.\n\n\u201cJust relax,\u201d he says gently after a few moments. \u201cLet your guard down.\u201d\n\nKindness in his voice doesn\u2019t just instruct for drawing but also invites deeper connection.\n\nAs Eli works on capturing my likeness, I notice more about the apartment around us\u2014the distant hum of traffic below, cool air lingering at our feet from evening breezes. The world outside fades away as we immerse ourselves in this moment: me holding myself together and letting go; him pouring artistic dedication into preserving a new scene.\n\nHours pass like silent notes on paper, each line drawn adding another layer to the story unfolding between us. My thoughts wander back to the kitchen where flour particles dance midair every day\u2014a stark contrast to this tranquil night of moonlight and charcoal strokes.\n\nEli\u2019s hand pauses before he speaks again. \u201cI never thought I\u2019d find someone who could understand that way.\u201d\n\nHis words catch me off guard once more, but no pretense is needed here; we both know the truth without needing it spoken aloud.\n\n\u201cI get you,\u201d I reply in kind, voice steady despite fluttering chest. Over weeks of shared moments and silent gazes, each step tentative yet inevitable as night progresses into dawn.\n\nWhen Eli finishes his sketch, he steps back to look at what he\u2019s created. The drawing captures more than just me\u2014it shows a glimpse of the fragile beauty between us, a story told through quiet gestures and unspoken promises. His eyes meet mine once more, reflecting something new in their depths.\n\n\u201cThank you,\u201d I say softly, voice barely above a whisper but filled with genuine gratitude. This night offers stillness amidst tumultuous emotions\u2014a bridge that spans the gap between strangers into companionship built on mutual understanding and respect.\n\nThe moon continues its journey across the sky as we share another silent acknowledgment, both knowing this fragile yet profound connection is worth holding onto for long nights ahead.",
+      "refined": true,
+      "motifs_infused": true,
+      "dialogue_polished": true,
+      "enhanced": true,
+      "humanized": true,
+      "polished": true
+    },
+    {
+      "chapter": 3,
+      "scene_number": 2,
+      "pov": "Mia Santos",
+      "location": "Brooklyn apartment building - Mia's balcony",
+      "spice_level": 4,
+      "content": "Cool air nips at my flour-dusted apron strings as I tighten them into place, dusting my hands off on my thighs. Stepping out onto the balcony, my fingers grip a tray of scones so tight they threaten to crack under pressure. Cinnamon and vanilla dance in the air like smoke, swirling around me.\n\nHours creep by until Eli\u2019s window flickers on\u2014a shy sliver of light cutting through darkness. My heart catches up with fluttering fingers as I call his name again, my voice barely more than a whisper.\n\n\"Eli?\"\n\nHe steps out onto his balcony, drawing me closer just by standing there. His presence warms the night around us\u2014the chill serves as both barrier and bridge. A question gleams in his eyes, unspoken but clear.\n\n\"Hey,\" he says softly, steady but quiet after weeks of silence. He moves forward, gaze landing on my tray before sweeping back to me. The creases near his eyes deepen when he smiles.\n\n\"They look amazing,\" he murmurs, lifting a hand toward the scones. \"I appreciate it.\"\n\nMy chest lifts at the sight, and I grip the railing for support as if it\u2019s permission, a lifeline in turbulent waters.\n\n\"Eli,\" I start, voice steady despite my stomach flip-flopping, butterflies weaving through the cold air. \"Would you like to come inside? For... coffee?\"\n\nHis hand pauses mid-air, processing before nodding slowly\u2014a whole conversation in that single movement. The gesture is both reassuring and daunting, setting off a cascade of thoughts.\n\n\"Sure,\" he says finally, quiet but resolute, like an anchor in rough seas. My heart thumps louder as I step back inside, sensing how this small step changes everything, shifts the ground beneath my feet.\n\n\"You ready?\" His voice softens through the glass barrier, warmth seeping into me like a warm rush on a chilly night. I feel his gaze even though we\u2019re separated by glass, his presence pressing against the divide between us.\n\n\"Yes,\" I reply, setting down the tray and turning to face him. \"Come in.\"\n\nHis entrance feels more than casual; weeks of glances, chats, pastries exchanged\u2014each step a dance of reconnecting strings, fragile but hopeful.\n\nI offer coffee while he looks around my kitchen, taking it all in. As I place steaming cups on the table, the aroma is comforting\u2014a steady rhythm of warmth and comfort, grounding me despite the fluttering uncertainty inside.\n\n\"Thanks for inviting me,\" Eli says softly, steady but with gratitude, his eyes searching mine as if looking for something more than coffee between us.\n\n\"It\u2019s my pleasure,\" I respond warmly. \"I could use a little sugar right now.\"\n\nWe settle into comfortable silence filled only by coffee machine hums and breaths\u2014the quiet is a promise of more to come, an invitation to share the pieces we keep hidden behind our smiles.\n\n\"And how about you?\" I ask gently, gesturing toward his sketchbook on the table\u2014a single pencil beside it as if waiting for him to draw his thoughts. His hand pauses before turning back to me.\n\n\"It\u2019s been... hard,\" he says softly, voice steady but tinged with emotion, a story of loss and longing etched in every line of his face. \"But talking helps.\"\n\nWords hang in the air between us; connection deepens. Awkwardness fades as we share more than coffee\u2014we share pieces of ourselves, rebuilding trust one cup at a time.\n\nNight falls and city lights reflect off the windowsill\u2014paths ahead seem less daunting with each moment spent together. The balcony becomes not just a divide but also a starting point for what lies beyond, a place where two hearts begin to beat in tandem, cautiously hopeful.",
+      "continuity_fixed": true,
+      "fixed_issue": "In Chapter 3, Scene 1, it is implied that Eli and Mia are still maintaining a certain distance or formality. However, in Scene 2, they immediately invite each other inside without much hesitation.",
+      "refined": true,
+      "motifs_infused": true,
+      "dialogue_polished": true,
+      "enhanced": true,
+      "humanized": true,
+      "polished": true
+    }
+  ],
+  "continuity_issues": [
+    {
+      "location": "Chapter 3, Scene 2",
+      "type": "Character inconsistencies (appearance)",
+      "description": "In the previous scenes, Mia is described as stepping out onto her balcony with a tray of freshly baked scones. However, in Chapter 3, Scene 2, she steps back into her apartment to let Eli inside, and there's no mention of her putting down or removing the tray before doing so.",
+      "suggested_fix": "Clarify that Mia sets the tray on the counter or island when she invites Eli inside."
+    },
+    {
+      "location": "Chapter 3, Scene 2",
+      "type": "Timeline errors (events out of order)",
+      "description": "In Chapter 3, Scene 1, it is mentioned that hours pass as Eli draws Mia's portrait. However, in Scene 2, the transition seems immediate and does not account for this time passage.",
+      "suggested_fix": "Add a sentence or two to indicate that some time has passed since the drawing session before transitioning to the next scene."
+    },
+    {
+      "location": "Chapter 3, Scene 2",
+      "type": "World rule violations (contradicts established setting/rules)",
+      "description": "In Chapter 3, Scene 1, it is implied that Eli and Mia are still maintaining a certain distance or formality. However, in Scene 2, they immediately invite each other inside without much hesitation.",
+      "suggested_fix": "Add more context to show the gradual progression of their relationship leading up to this moment."
+    }
+  ],
+  "target_words": 5000,
+  "target_chapters": 3,
+  "total_tokens": 173345,
+  "total_cost_usd": 1.73345,
+  "stage_results": [
+    {
+      "stage_name": "high_concept",
+      "status": "completed",
+      "duration_seconds": 9.082756519317627,
+      "tokens_used": 838,
+      "cost_usd": 0.00838
+    },
+    {
+      "stage_name": "world_building",
+      "status": "completed",
+      "duration_seconds": 135.53944087028503,
+      "tokens_used": 1892,
+      "cost_usd": 0.018920000000000003
+    },
+    {
+      "stage_name": "beat_sheet",
+      "status": "completed",
+      "duration_seconds": 72.98928689956665,
+      "tokens_used": 2323,
+      "cost_usd": 0.02323
+    },
+    {
+      "stage_name": "emotional_architecture",
+      "status": "completed",
+      "duration_seconds": 128.90549612045288,
+      "tokens_used": 2795,
+      "cost_usd": 0.027950000000000003
+    },
+    {
+      "stage_name": "character_profiles",
+      "status": "completed",
+      "duration_seconds": 64.83831596374512,
+      "tokens_used": 2927,
+      "cost_usd": 0.02927
+    },
+    {
+      "stage_name": "master_outline",
+      "status": "completed",
+      "duration_seconds": 86.24200224876404,
+      "tokens_used": 3497,
+      "cost_usd": 0.03497
+    },
+    {
+      "stage_name": "trope_integration",
+      "status": "completed",
+      "duration_seconds": 0.0,
+      "tokens_used": 0,
+      "cost_usd": 0.0
+    },
+    {
+      "stage_name": "scene_drafting",
+      "status": "completed",
+      "duration_seconds": 296.3855652809143,
+      "tokens_used": 17822,
+      "cost_usd": 0.17822000000000002
+    },
+    {
+      "stage_name": "scene_expansion",
+      "status": "completed",
+      "duration_seconds": 232.77455520629883,
+      "tokens_used": 9548,
+      "cost_usd": 0.09548000000000001
+    },
+    {
+      "stage_name": "continuity_audit",
+      "status": "completed",
+      "duration_seconds": 26.205453634262085,
+      "tokens_used": 4444,
+      "cost_usd": 0.04444
+    },
+    {
+      "stage_name": "continuity_fix",
+      "status": "completed",
+      "duration_seconds": 147.60205602645874,
+      "tokens_used": 12597,
+      "cost_usd": 0.12597
+    },
+    {
+      "stage_name": "self_refinement",
+      "status": "completed",
+      "duration_seconds": 295.5284848213196,
+      "tokens_used": 15910,
+      "cost_usd": 0.15910000000000002
+    },
+    {
+      "stage_name": "motif_infusion",
+      "status": "completed",
+      "duration_seconds": 367.13554072380066,
+      "tokens_used": 16761,
+      "cost_usd": 0.16761
+    },
+    {
+      "stage_name": "chapter_hooks",
+      "status": "completed",
+      "duration_seconds": 219.3949499130249,
+      "tokens_used": 4621,
+      "cost_usd": 0.04621
+    },
+    {
+      "stage_name": "dialogue_polish",
+      "status": "completed",
+      "duration_seconds": 296.40382623672485,
+      "tokens_used": 21584,
+      "cost_usd": 0.21584
+    },
+    {
+      "stage_name": "human_passes",
+      "status": "completed",
+      "duration_seconds": 236.54845023155212,
+      "tokens_used": 17039,
+      "cost_usd": 0.17039
+    },
+    {
+      "stage_name": "voice_humanization",
+      "status": "completed",
+      "duration_seconds": 243.58618474006653,
+      "tokens_used": 21025,
+      "cost_usd": 0.21025000000000002
+    },
+    {
+      "stage_name": "prose_polish",
+      "status": "completed",
+      "duration_seconds": 243.72638177871704,
+      "tokens_used": 17722,
+      "cost_usd": 0.17722000000000002
+    },
+    {
+      "stage_name": "final_deai",
+      "status": "failed",
+      "duration_seconds": 0.0,
+      "tokens_used": 0,
+      "cost_usd": 0.0
+    }
+  ]
+}

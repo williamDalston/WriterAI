@@ -1,38 +1,78 @@
-# Memory cleanup strategies
+# Memory cleanup strategies using real vector store
 import asyncio
+import time
+from pathlib import Path
 from typing import List, Dict, Any
 from prometheus_lib.models.novel_state import PrometheusState
+from prometheus_lib.memory.vector_store import VectorStore
 import logging
 
 logger = logging.getLogger(__name__)
 
 class MemoryCleanup:
-    def __init__(self, vector_store_instance: Any): # Accept generic vector store
+    def __init__(self, vector_store_instance: VectorStore):
         self.vector_store = vector_store_instance
 
     async def prune_old_stm(self, state: PrometheusState, retention_policy: int = 5):
-        '''
-        Removes or summarizes older STM entries to prevent indefinite growth.
-        Retention policy: keep last 'retention_policy' scenes in full detail, summarize older.
-        '''
-        logger.info(f"Pruning old STM entries. Retention policy: {retention_policy} scenes.")
-        # This would involve querying the vector store for old STM entries
-        # and potentially deleting them or replacing them with higher-level summaries.
-        # For scaffold, simulate.
-        if len(state.generated_novel_text.get(state.current_chapter, {})) > retention_policy:
-            old_scene_numbers = sorted(state.generated_novel_text[state.current_chapter].keys())[:-retention_policy]
-            for scene_num in old_scene_numbers:
-                # In a real system, you'd delete from vector store or replace with summary
-                logger.info(f"Simulating pruning of old scene {state.current_chapter}:{scene_num}")
-                # del state.generated_novel_text[state.current_chapter][scene_num] # Don't delete actual text, just memory representation
+        """Remove old STM entries from vector store to prevent unbounded growth.
+
+        Keeps the last `retention_policy` scenes' summaries in the vector store,
+        deletes older ones. The actual novel text in state.generated_novel_text
+        is NOT affected — only the memory/retrieval representations.
+        """
+        logger.info(f"Pruning old STM entries. Retention: last {retention_policy} scenes.")
+
+        current_chapter = state.current_chapter
+        current_scene = state.current_scene
+
+        # Calculate which scenes to prune: anything older than retention_policy scenes
+        scenes_to_keep = set()
+        scene_count = 0
+        for ch in range(current_chapter, 0, -1):
+            chapter_scenes = state.generated_novel_text.get(ch, {})
+            for sc in sorted(chapter_scenes.keys(), reverse=True):
+                if scene_count < retention_policy:
+                    scenes_to_keep.add((ch, sc))
+                    scene_count += 1
+                else:
+                    break
+            if scene_count >= retention_policy:
+                break
+
+        # Delete old STM entries from vector store
+        # We delete by metadata filter for scenes not in the keep set
+        for ch, chapter_scenes in state.generated_novel_text.items():
+            for sc in chapter_scenes:
+                if (ch, sc) not in scenes_to_keep:
+                    try:
+                        await self.vector_store.delete_by_metadata({
+                            "type": "scene_summary",
+                            "memory_type": "stm",
+                            "chapter": ch,
+                            "scene": sc
+                        })
+                        logger.debug(f"Pruned STM for chapter {ch}, scene {sc}")
+                    except Exception as e:
+                        logger.warning(f"Failed to prune STM Ch{ch}-S{sc}: {e}")
+
+        logger.info(f"STM pruning complete. Kept {len(scenes_to_keep)} recent scene summaries.")
 
     async def archive_novel_data(self, project_name: str, data_path: Path):
-        '''Moves completed novel data or old snapshots to an archive.'''
+        """Move completed novel data to an archive directory."""
         logger.info(f"Archiving novel data for '{project_name}' from {data_path}.")
-        import time
         archive_dir = data_path.parent / "archives" / project_name / f"archive_{int(time.time())}"
         archive_dir.mkdir(parents=True, exist_ok=True)
-        # Simulate moving files
-        # shutil.move(data_path / project_name / "outputs", archive_dir / "outputs")
-        # shutil.move(data_path / project_name / "state_snapshots", archive_dir / "state_snapshots")
+
+        import shutil
+        # Archive output files if they exist
+        for subdir in ["output", "drafts", "memory"]:
+            source = data_path / subdir
+            if source.exists():
+                dest = archive_dir / subdir
+                try:
+                    shutil.copytree(str(source), str(dest))
+                    logger.info(f"Archived {subdir} -> {dest}")
+                except Exception as e:
+                    logger.warning(f"Failed to archive {subdir}: {e}")
+
         logger.info(f"Novel data for '{project_name}' archived to {archive_dir}.")

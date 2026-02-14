@@ -1,4 +1,4 @@
-# Main orchestration script for LangGraph workflow
+# Main orchestration script for novel generation pipeline
 import asyncio
 import os
 from pathlib import Path
@@ -26,13 +26,6 @@ from prometheus_lib.utils.metrics import get_metrics_snapshot, reset_metrics, ga
 # Import config loader
 from configs.env_config import load_config
 
-# Import LangGraph (assuming it's installed)
-# from langgraph.graph import StateGraph, END
-
-# Placeholder for stage functions (will be dynamically loaded or imported)
-# from stages.stage_01_high_concept import high_concept_node
-# from stages.stage_07_write_scene import write_scene_node
-
 # --- Dependency Injection Setup ---
 class AppServices:
     def __init__(self, config):
@@ -50,35 +43,6 @@ class AppServices:
         '''Initializes asynchronous services.'''
         await self.vector_store.initialize_vector_db(Path(f"data/{self.config.project_name}/memory/vector_db"))
         # Add other async initializations here
-
-# --- LangGraph Workflow Definition (Conceptual) ---
-# This part would typically be defined using LangGraph's StateGraph
-# For scaffolding, we'll outline the conceptual flow.
-# def create_novel_generation_graph(services: AppServices):
-#     workflow = StateGraph(PrometheusState)
-
-#     # Define nodes (stages)
-#     workflow.add_node("high_concept", high_concept_node)
-#     workflow.add_node("write_scene", write_scene_node)
-#     # ... add all other stages
-
-#     # Define edges (transitions)
-#     workflow.add_edge("high_concept", "beat_sheet") # Example
-#     workflow.add_edge("write_scene", "self_refine")
-
-#     # Define conditional edges (e.g., based on critique results)
-#     # workflow.add_conditional_edges(
-#     #     "self_refine",
-#     #     lambda state: "retry_scene" if not state.critique_results.get("is_valid") else "next_stage",
-#     #     {"retry_scene": "write_scene", "next_stage": "motif_infusion"}
-#     # )
-
-#     # Define entry and exit points
-#     workflow.set_entry_point("high_concept")
-#     workflow.set_finish_point("output") # Final output stage
-
-#     app = workflow.compile()
-#     return app
 
 # --- Main Execution Function ---
 async def main():

@@ -1,0 +1,155 @@
+antagonist: 'Not a traditional antagonist—the conflict is internal. The "antagonist"
+  is Lena''s own fear of vulnerability and Marco''s guilt over his younger brother''s
+  death. Secondary tension from Marco''s overbearing mother Gianna who disapproves
+  of Lena, and the secret that Lena was handling divorce papers for the groom''s parents
+  when she first met Marco.
+
+  '
+avoid: '- AI tells: "I couldn''t help but", "I found myself", "suddenly", "a whirlwind
+  of emotions" - Purple prose: "electricity coursed through", "my heart skipped a
+  beat" - Generic descriptions: "handsome", "beautiful", use SPECIFIC details instead
+  - Instant love—this is SLOW BURN. Resistance must feel earned. - Passive heroines—Lena
+  is ACTIVE, makes choices, has agency - Love triangle clichés - "Not like other girls"
+  framing - Slut-shaming or judgment of sexual choices
+
+  '
+budget_usd: 0
+central_conflict: 'Lena''s armor vs. her growing feelings for Marco. She''s built
+  her identity around being the woman who sees through romantic illusions, but Marco
+  makes her want to believe. The external threat: if the secret about the groom''s
+  parents'' divorce papers comes out, it could destroy the wedding and prove Lena
+  right that love always fails.
+
+  '
+central_question: Can a woman who profits from love's failures find the courage to
+  risk her own heart?
+genre: romance
+influences: Sally Thorne, Talia Hibbert, Emily Henry, Ali Hazelwood's wit, Elena Ferrante's
+  emotional intensity
+key_plot_points: '- Lena arrives in Amalfi and discovers Marco is co-planner (forced
+  proximity begins) - Shared balcony scene—first real conversation in 3 years, tension
+  crackling - Wine tasting excursion where they''re paired together, old chemistry
+  resurfaces - Marco opens up about his brother''s death during a rainstorm (vulnerability)
+  - First kiss on the hidden cove beach at sunset - Gianna confronts Lena—"You destroy
+  marriages for a living" - The secret surfaces: Lena had the groom''s parents'' divorce
+  file - Marco pulls away, feels betrayed, Lena retreats into cynicism - Wedding day
+  crisis—Lena must choose: protect herself or fight for love - Grand gesture: Lena''s
+  wedding toast that becomes a declaration - Epilogue: One year later, Lena and Marco
+  in the same Amalfi villa
+
+  '
+model_defaults:
+  api_model: qwen2.5:14b
+  critic_model: qwen2.5:14b
+  fallback_model: qwen2.5:14b
+  local_model: qwen2.5:14b
+motifs: 'Lemon trees (bittersweet), stone walls (barriers/protection), the sea (depth,
+  danger, beauty), keys and locks (the monastery, emotional walls), storms (breakthrough
+  moments), Italian phrases Lena butchers (vulnerability through imperfection)
+
+  '
+other_characters: 'Sofia Chen—Lena''s best friend, the bride. Warm, perceptive, quietly
+  manipulative about seating arrangements. Knows about the one-night stand. Dante
+  Vitale—the groom, Marco''s cousin. Easy-going, devoted to Sofia. Gianna Vitale—Marco''s
+  mother. Traditional, formidable, grieving her youngest son. Enzo—the elderly monastery
+  caretaker who dispenses unsolicited wisdom and limoncello.
+
+  '
+premise: 'A divorce attorney who doesn''t believe in love is trapped co-planning a
+  destination wedding with the man she shared one devastating night with—and discovering
+  that the walls she built to protect herself are the same ones keeping her from the
+  life she wants.
+
+  '
+project_name: burning-vows
+protagonist: 'Lena Castillo, 31. Cuban-American divorce attorney in NYC. Sharp, guarded,
+  uses humor as armor. Fluent in Spanish, learning Italian badly. Fit from stress-running.
+  Dark curly hair she''s always fighting with. Deeply loyal to her best friend Sofia.
+  Terrified of becoming her mother. The one-night stand with Marco cracked something
+  open in her she''s spent 3 years sealing shut.
+
+  '
+setting: 'Amalfi Coast, Italy. A converted 17th-century monastery turned luxury wedding
+  venue perched on cliffs overlooking the Tyrrhenian Sea. Lemon groves, winding stone
+  paths, hidden coves, and a village with cobblestone streets. Late summer heat, the
+  scent of bougainvillea and sea salt. Scenes also in NYC flashbacks (Lena''s law
+  office, a rain-slicked rooftop bar where the original one-night stand happened).
+
+  '
+status: completed
+strategic_guidance:
+  aesthetic_guide: 'Visual palette: golden hour light, terracotta and white stone,
+    deep blue sea, lemon yellow, bougainvillea purple. Textures: rough stone, cool
+    linen, warm skin, salt spray. Sounds: cicadas, distant church bells, waves, Italian
+    conversation.
+
+    '
+  cultural_notes: 'Authentic Italian details: proper food (not tourist versions),
+    actual Amalfi landmarks, real Italian phrases. Cuban-American culture through
+    Lena''s family references, food memories, and her abuela''s sayings.
+
+    '
+  dialogue_bank: 'Lena''s voice: sharp wit, legal metaphors ("objection", "sustained"),
+    switches to Spanish when emotional. Marco''s voice: warm, teasing, occasional
+    Italian phrases, disarming sincerity that catches Lena off guard.
+
+    '
+  market_positioning: 'Contemporary romance. Comp titles: Beach Read by Emily Henry,
+    The Hating Game by Sally Thorne. Target: romance readers who want wit + emotional
+    depth + steam. Spice level: 3-4 chili peppers (steamy but not erotica). Closed
+    door to cracked door.
+
+    '
+  pacing_notes: 'Act 1 (25%): Setup, arrival, re-encounter, denial of attraction.
+    Act 2a (25%-50%): Forced proximity builds tension, vulnerability cracks appear.
+    Midpoint: First kiss / major vulnerability reveal. Act 2b (50%-75%): Deepening
+    connection, external threats emerge, stakes rise. Act 3 (75%-100%): Crisis, black
+    moment, choice, climax, resolution.
+
+    '
+  tropes: 'Forced proximity, one-night-stand-to-lovers, enemies-to-lovers (lite),
+    he-falls-first (but she fell first and is in denial), grumpy-sunshine (she''s
+    the grump), there-was-only-one-balcony
+
+    '
+subplots: '- Sofia suspects Lena and Marco''s history and subtly engineers proximity
+  - Gianna''s slow thaw from hostility to grudging respect for Lena - Enzo the caretaker''s
+  parallel love story (lost his wife, no regrets) - Lena''s professional crisis—questioning
+  if she chose divorce law to avoid love
+
+  '
+synopsis: 'Lena Castillo, a sharp-tongued divorce attorney who stopped believing in
+  love after watching her parents'' marriage implode, is forced to co-plan her best
+  friend''s destination wedding in the coastal hills of Amalfi with the one man she
+  can''t stand— Marco Vitale, the groom''s infuriatingly charming Italian-American
+  best man who also happens to be the guy she had a devastating one-night stand with
+  three years ago that neither of them has ever spoken about. As two weeks of forced
+  proximity in sun-soaked villas, shared balconies, and wine-fueled rehearsal dinners
+  tear down their walls, Lena discovers Marco isn''t the careless playboy she assumed—he''s
+  a man haunted by a family tragedy that mirrors her own deepest fear. But when a
+  secret from their shared past threatens to destroy the wedding and their fragile
+  new trust, Lena must choose between the safe cynicism that protects her and the
+  terrifying vulnerability that real love demands.
+
+  '
+target_length: standard (60k)
+themes: 'The courage required for vulnerability. How the stories we tell ourselves
+  about love become self-fulfilling prophecies. That protecting yourself from pain
+  also protects you from joy. Second chances aren''t given—they''re chosen.
+
+  '
+title: Burning Vows
+tone: Intense, emotional, slow-burn tension building to passionate climax. Atmospheric
+  and sensory-rich.
+world_rules: 'Contemporary setting. No magic/supernatural. Emotional realism grounded
+  in sensory detail. Italian culture portrayed respectfully and specifically. Legal
+  profession details accurate for Lena''s divorce attorney background.
+
+  '
+writing_style: 'First person, Lena''s POV. Sharp, witty internal voice that cracks
+  when emotions get real. Short punchy sentences for tension, longer flowing ones
+  for sensual moments. Heavy on sensory detail—taste, smell, texture. Dialogue-driven
+  with subtext. Internal monologue that''s self-aware and sometimes self-deprecating.
+  Physical awareness of Marco rendered in precise, specific detail (not generic).
+
+  '

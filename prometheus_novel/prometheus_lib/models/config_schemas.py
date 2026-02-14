@@ -14,7 +14,7 @@ class StageModelMap(RootModel[Dict[str, str]]):
 
 class ConfigSchema(BaseModel):
     project_name: str
-    budget_usd: PositiveFloat = Field(..., description="Total budget in USD for LLM calls.")
+    budget_usd: float = Field(..., ge=0, description="Total budget in USD. Use 0 for local (free) models.")
     model_defaults: ModelDefaults
     stage_model_map: StageModelMap
     prompt_set_directory: str = Field("prompts/default", description="Directory containing prompt templates.")
@@ -22,8 +22,10 @@ class ConfigSchema(BaseModel):
 
     @validator('budget_usd')
     def budget_must_be_reasonable(cls, v):
-        if v < 10.0: # Example: minimum budget
-            raise ValueError("Budget must be at least $10.00 to be reasonable for novel generation.")
+        if v < 0:
+            raise ValueError("Budget cannot be negative.")
+        if v > 0 and v < 1:
+            raise ValueError("Budget must be at least $1.00 for API models, or $0 for local-only.")
         if v > 10000.0: # Example: maximum budget to prevent accidental large spends
             print("Warning: Very large budget specified. Ensure this is intentional.")
         return v
@@ -80,7 +82,7 @@ if __name__ == '__main__':
 
     # Test with invalid budget
     invalid_config_data = config_data.copy()
-    invalid_config_data["budget_usd"] = 5.0
+    invalid_config_data["budget_usd"] = 0.5  # Between 0 and 1 is invalid
     try:
         ConfigSchema(**invalid_config_data)
     except ValidationError as e:

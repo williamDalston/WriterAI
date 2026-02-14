@@ -23,6 +23,46 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
+# ACCURATE TOKEN COUNTING
+# ============================================================================
+_tiktoken_encoders = {}
+
+
+def count_tokens(text: str, model_name: str = "gpt-4o-mini") -> int:
+    """Count tokens accurately using tiktoken for OpenAI models, with fallbacks.
+
+    Uses tiktoken (BPE tokenizer) for OpenAI models which gives exact counts.
+    For non-OpenAI models, uses a calibrated heuristic (3.3 chars/token for
+    English prose, which is more accurate than the naive 4 chars/token).
+    """
+    if not text:
+        return 0
+
+    model_lower = model_name.lower()
+
+    # Try tiktoken for OpenAI models
+    if any(prefix in model_lower for prefix in ("gpt", "o1", "o3", "openai")):
+        try:
+            import tiktoken
+
+            # Cache encoders to avoid repeated initialization
+            encoding_name = "cl100k_base"  # Works for gpt-4o, gpt-4, gpt-3.5
+            if encoding_name not in _tiktoken_encoders:
+                _tiktoken_encoders[encoding_name] = tiktoken.get_encoding(encoding_name)
+
+            return len(_tiktoken_encoders[encoding_name].encode(text))
+        except ImportError:
+            pass  # Fall through to heuristic
+        except Exception as e:
+            logger.debug(f"tiktoken encoding failed: {e}")
+
+    # Calibrated heuristic for non-OpenAI models
+    # English prose averages ~3.3 chars per token across most BPE tokenizers
+    # This is significantly more accurate than the naive 4 chars/token estimate
+    return max(1, int(len(text) / 3.3))
+
+
+# ============================================================================
 # RETRY AND TIMEOUT CONFIGURATION
 # ============================================================================
 DEFAULT_TIMEOUT_SECONDS = 120  # 2 minutes per request
@@ -157,6 +197,12 @@ class BaseLLMClient(ABC):
         self.model_name = model_name
         self._initialized = False
 
+    def _normalize_generate_kwargs(self, **kwargs) -> dict:
+        """Normalize kwargs - map max_output_tokens to max_tokens."""
+        if "max_output_tokens" in kwargs and "max_tokens" not in kwargs:
+            kwargs["max_tokens"] = kwargs.pop("max_output_tokens")
+        return kwargs
+
     @abstractmethod
     async def generate(
         self,
@@ -182,8 +228,8 @@ class BaseLLMClient(ABC):
         pass
 
     def estimate_tokens(self, text: str) -> int:
-        """Rough token estimation (4 chars per token average)."""
-        return len(text) // 4
+        """Accurate token estimation using tiktoken when available, with fallback."""
+        return count_tokens(text, self.model_name)
 
 
 class OpenAIClient(BaseLLMClient):
@@ -248,6 +294,11 @@ class OpenAIClient(BaseLLMClient):
         last_error = None
         delay = INITIAL_RETRY_DELAY
         timeout = kwargs.pop('timeout', DEFAULT_TIMEOUT_SECONDS)
+
+        # Handle json_mode parameter
+        json_mode = kwargs.pop('json_mode', False)
+        if json_mode:
+            kwargs['response_format'] = {"type": "json_object"}
 
         for attempt in range(MAX_RETRIES + 1):
             try:
@@ -380,6 +431,7 @@ class GeminiClient(BaseLLMClient):
     ) -> LLMResponse:
         """Generate text using Gemini API."""
         await self._ensure_initialized()
+        kwargs.pop('json_mode', None)  # Gemini doesn't support this parameter
 
         full_prompt = prompt
         if system_prompt:
@@ -467,6 +519,145 @@ class GeminiClient(BaseLLMClient):
             raise
 
 
+class OllamaClient(BaseLLMClient):
+    """Local Ollama client - free, no API keys, runs models on your machine."""
+
+    def __init__(self, model_name: str = "qwen2.5:7b"):
+        super().__init__(model_name)
+        self.client = None
+        self.base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+
+    async def _ensure_initialized(self):
+        """Lazy initialization of the Ollama client (OpenAI-compatible API)."""
+        if self._initialized:
+            return
+
+        try:
+            from openai import AsyncOpenAI
+            self.client = AsyncOpenAI(
+                base_url=self.base_url,
+                api_key="ollama"  # Required by SDK but not used by Ollama
+            )
+            self._initialized = True
+            logger.info(f"Ollama client initialized for model: {self.model_name} at {self.base_url}")
+        except ImportError:
+            logger.warning("openai package not installed. Cannot use Ollama.")
+            self._initialized = True
+
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        **kwargs
+    ) -> LLMResponse:
+        """Generate text using local Ollama."""
+        await self._ensure_initialized()
+        kwargs = self._normalize_generate_kwargs(**kwargs)
+        max_tokens = kwargs.pop("max_tokens", max_tokens)
+        temperature = kwargs.pop("temperature", temperature)
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        if not self.client:
+            logger.debug("Using mock Ollama response")
+            return LLMResponse(
+                content=f"[Ollama not available - ensure Ollama is running: ollama run {self.model_name}]",
+                model=self.model_name,
+                input_tokens=self.estimate_tokens(prompt),
+                output_tokens=100,
+                finish_reason="stop"
+            )
+
+        try:
+            # Build create kwargs
+            create_kwargs = {
+                "model": self.model_name,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+
+            # Support JSON mode for structured output
+            json_mode = kwargs.pop("json_mode", False)
+            if json_mode:
+                create_kwargs["response_format"] = {"type": "json_object"}
+
+            # Pass through remaining kwargs (excluding internal ones)
+            timeout_val = kwargs.pop("timeout", 300)
+            create_kwargs.update({k: v for k, v in kwargs.items()})
+
+            response = await asyncio.wait_for(
+                self.client.chat.completions.create(**create_kwargs),
+                timeout=timeout_val  # Longer timeout for local
+            )
+
+            content = response.choices[0].message.content or ""
+            return LLMResponse(
+                content=content,
+                model=response.model or self.model_name,
+                input_tokens=getattr(response.usage, "prompt_tokens", self.estimate_tokens(prompt)),
+                output_tokens=getattr(response.usage, "completion_tokens", self.estimate_tokens(content)),
+                finish_reason=response.choices[0].finish_reason or "stop",
+                raw_response=response
+            )
+
+        except Exception as e:
+            error_str = str(e).lower()
+            if "connection" in error_str or "refused" in error_str:
+                raise LLMError(
+                    f"Ollama not reachable at {self.base_url}. "
+                    f"Start Ollama (ollama serve) and run: ollama run {self.model_name}"
+                )
+            logger.error(f"Ollama error: {e}")
+            raise
+
+    async def generate_stream(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        **kwargs
+    ) -> AsyncIterator[str]:
+        """Stream text generation from Ollama."""
+        await self._ensure_initialized()
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        if not self.client:
+            mock_text = f"[Ollama not available - run: ollama run {self.model_name}]"
+            for word in mock_text.split():
+                yield word + " "
+                await asyncio.sleep(0.05)
+            return
+
+        try:
+            stream = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stream=True,
+                **{k: v for k, v in kwargs.items() if k != "timeout"}
+            )
+
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+
+        except Exception as e:
+            logger.error(f"Ollama streaming error: {e}")
+            raise
+
+
 class AnthropicClient(BaseLLMClient):
     """Anthropic Claude API client wrapper."""
 
@@ -504,6 +695,7 @@ class AnthropicClient(BaseLLMClient):
     ) -> LLMResponse:
         """Generate text using Anthropic API."""
         await self._ensure_initialized()
+        kwargs.pop('json_mode', None)  # Anthropic doesn't support this parameter
 
         if not self.client:
             return LLMResponse(
@@ -570,11 +762,25 @@ class AnthropicClient(BaseLLMClient):
             raise
 
 
+# Ollama/local model names - no API cost
+OLLAMA_MODEL_PREFIXES = ("ollama:", "llama", "mistral", "qwen", "phi", "gemma", "codellama", "dolphin", "neural", "openhermes", "nous", "deepseek", "yi-")
+
+
+def is_ollama_model(model_name: str) -> bool:
+    """Check if model name indicates a local Ollama model."""
+    lower = model_name.lower()
+    return any(lower.startswith(p) or p in lower for p in OLLAMA_MODEL_PREFIXES)
+
+
 # Client factory
 def get_client(model_name: str) -> BaseLLMClient:
-    """Get appropriate client for model name."""
+    """Get appropriate client for model name. Prefers Ollama for local/no-cost."""
     model_lower = model_name.lower()
 
+    if is_ollama_model(model_name):
+        # Strip "ollama:" prefix only if present (keep tags like qwen2.5:7b)
+        actual_model = model_name[7:].strip() if model_name.lower().startswith("ollama:") else model_name
+        return OllamaClient(actual_model)
     if "gpt" in model_lower or "openai" in model_lower:
         return OpenAIClient(model_name)
     elif "gemini" in model_lower or "google" in model_lower:
@@ -582,6 +788,5 @@ def get_client(model_name: str) -> BaseLLMClient:
     elif "claude" in model_lower or "anthropic" in model_lower:
         return AnthropicClient(model_name)
     else:
-        # Default to OpenAI
-        logger.warning(f"Unknown model {model_name}, defaulting to OpenAI")
-        return OpenAIClient(model_name)
+        logger.warning(f"Unknown model {model_name}, defaulting to local Ollama")
+        return OllamaClient(model_name)

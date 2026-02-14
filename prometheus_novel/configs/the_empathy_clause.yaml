@@ -1,14 +1,17 @@
-# Novel-specific configuration (budget, model mapping, prompt set)
+# Novel-specific configuration - LOCAL ONLY (Ollama, $0 cost)
 project_name: the_empathy_clause
-budget_usd: 1000  # Example budget
+budget_usd: 0  # Local models are free
 model_defaults:
-  local_model: gpt-local
-  api_model: gpt-4o-mini
-  critic_model: gpt-4o-mini-nano
-  fallback_model: gpt-3.5-turbo
+  local_model: qwen2.5:7b
+  api_model: qwen2.5:7b        # Fast writer (7B)
+  critic_model: qwen2.5:14b    # Stronger critic (14B) - catches more issues
+  fallback_model: qwen2.5:7b
 stage_model_map:
   high_concept: api_model
   beat_sheet: api_model
   write_scene: api_model
-  self_refine: critic_model
+  self_refine: critic_model     # 14B for quality evaluation
+  continuity_audit: critic_model # 14B for nuanced consistency checks
+  quality_audit: critic_model    # 14B for final QA
+  memory_summary: api_model
 prompt_set_directory: prompts/default

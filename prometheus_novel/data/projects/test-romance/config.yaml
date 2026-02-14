@@ -1,0 +1,68 @@
+antagonist: 'Internal conflict only—Mia''s fear of starting over, Eli''s grief over
+  his late wife that he hasn''t fully processed.
+
+  '
+avoid: '- AI tells: "I couldn''t help but", "I found myself", "suddenly" - Purple
+  prose - Generic descriptions - Instant love—this is a slow three-beat progression
+
+  '
+budget_usd: 0
+central_question: Can two people hiding from their lives find each other in the space
+  between?
+genre: romance
+key_plot_points: '- Night 1: They meet on the balcony at 3am. Awkward. She''s baking,
+  he''s drawing. - Night 2: Real conversation. She learns about his wife. He tastes
+  her pastry. - Night 3: Vulnerability. He draws her. She invites him inside.
+
+  '
+model_defaults:
+  api_model: qwen2.5:14b
+  critic_model: qwen2.5:14b
+  fallback_model: qwen2.5:14b
+  local_model: qwen2.5:14b
+other_characters: 'Eli Park, 32. Korean-American graphic novelist. Quiet, observant,
+  unexpectedly funny. Moved in a month ago after his wife passed.
+
+  '
+project_name: test-romance
+protagonist: 'Mia Santos, 28. Filipino-American pastry chef who just quit her toxic
+  restaurant job. Uses baking as therapy. Quick wit, guarded heart.
+
+  '
+setting: 'A Brooklyn apartment building. Two adjacent balconies separated by a thin
+  railing. Late summer. The hum of the city below, fairy lights, and the smell of
+  whatever Mia is stress-baking at 3am.
+
+  '
+status: completed
+strategic_guidance:
+  market_positioning: 'Short contemporary romance. Comp: short stories by Casey McQuiston.
+    Spice level: 1 (tension only). Sweet and hopeful.
+
+    '
+  pacing_notes: 'Act 1 (33%): Night 1 meet-cute on the balcony. Walls up. Act 2 (33%-66%):
+    Night 2 vulnerability crack. Real connection. Act 3 (66%-100%): Night 3 choice
+    to let someone in.
+
+    '
+  tropes: 'Neighbors-to-lovers, late-night-encounters, grumpy-sunshine (she''s grumpy)
+
+    '
+synopsis: 'Mia, a burned-out pastry chef, meets her new neighbor Eli on their shared
+  apartment balcony at 3am. Over three late-night encounters, they discover that the
+  walls between them—literal and figurative—are thinner than they thought.
+
+  '
+target_length: micro (5k)
+themes: Starting over. Finding connection in unexpected places. The courage to be
+  seen.
+title: The Balcony
+tone: Warm, witty, emotionally charged
+world_rules: 'Contemporary setting. No magic. Emotional realism. Short and tight—every
+  scene must advance the relationship.
+
+  '
+writing_style: 'First person, Mia''s POV. Short punchy sentences mixed with sensory-rich
+  descriptions. Dialogue-heavy. Warm and witty.
+
+  '

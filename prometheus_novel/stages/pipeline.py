@@ -230,6 +230,8 @@ def count_words_accurate(text: str) -> int:
 
 def validate_scene_length(scene: Dict, target_words: int, tolerance: float = 0.8) -> Dict:
     """Check if scene meets word count target."""
+    if not isinstance(scene, dict):
+        return {"scene": "?", "actual": 0, "target": target_words, "min_required": int(target_words * tolerance), "meets_target": False, "shortfall": target_words}
     content = scene.get("content", "")
     actual_words = count_words_accurate(content)
     min_words = int(target_words * tolerance)
@@ -295,16 +297,109 @@ def validate_config(config: Dict) -> Dict:
     }
 
 
+def _clean_scene_content(text: str) -> str:
+    """Strip meta-text and analysis notes that LLMs append after prose.
+
+    Local models often append sections like:
+    - "Scanning for AI tells: ..."
+    - "**Changes made:** ..."
+    - "=== Quality checklist ==="
+    - "Note: I've removed ..."
+    """
+    import re
+
+    # Split on common meta-text separators
+    # Look for lines that signal end-of-prose, start-of-analysis
+    meta_patterns = [
+        r'\n---+\s*\n',                    # --- separators
+        r'\n\*\*\*+\s*\n',                 # *** separators
+        r'\n===+\s*\n',                     # === separators
+        r'\n\*\*(?:Scanning|Changes|Notes?|Quality|Summary|Checklist|AI tells)',
+        r'\n(?:Scanning|Changes made|Notes?:|Quality|Summary:)',
+        r'\n(?:I\'ve |I have |Here\'s what|The (?:above|following|revised))',
+    ]
+
+    for pattern in meta_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            # Keep only the content before the meta-text
+            candidate = text[:match.start()].rstrip()
+            # Only trim if we're keeping substantial content (>100 chars)
+            if len(candidate) > 100:
+                text = candidate
+
+    return text.strip()
+
+
+def _repair_json_string(json_str: str) -> str:
+    """Apply progressive repairs to malformed JSON from LLM output."""
+    import re
+
+    if not json_str or not isinstance(json_str, str):
+        return "{}"
+
+    # 1. Remove comments (LLMs sometimes add these)
+    json_str = re.sub(r'//[^\n]*', '', json_str)
+    json_str = re.sub(r'/\*.*?\*/', '', json_str, flags=re.DOTALL)
+
+    # 2. Fix Python-style booleans/None
+    json_str = re.sub(r'\bTrue\b', 'true', json_str)
+    json_str = re.sub(r'\bFalse\b', 'false', json_str)
+    json_str = re.sub(r'\bNone\b', 'null', json_str)
+
+    # 3. Remove trailing commas before } or ]
+    json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
+
+    # 4. Fix unquoted keys (word: -> "word":)
+    json_str = re.sub(r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', json_str)
+
+    # 5. (Removed) Single-quote to double-quote conversion was corrupting
+    # apostrophes in English text (can't -> can"t). JSON mode and proper
+    # prompts should produce double-quoted strings natively.
+
+    # 6. Fix literal newlines/tabs inside JSON string values
+    # LLMs (especially local models) produce multi-line strings which break JSON parsing
+    result = []
+    in_str = False
+    i = 0
+    while i < len(json_str):
+        ch = json_str[i]
+        # Track string boundaries (handle escaped quotes)
+        if ch == '"' and (i == 0 or json_str[i-1] != '\\'):
+            in_str = not in_str
+            result.append(ch)
+        elif in_str and ch == '\n':
+            result.append('\\n')
+        elif in_str and ch == '\r':
+            pass  # Drop carriage returns inside strings
+        elif in_str and ch == '\t':
+            result.append('\\t')
+        else:
+            result.append(ch)
+        i += 1
+    json_str = ''.join(result)
+
+    # 7. Fix decimal numbers without leading zero
+    json_str = re.sub(r':\s*\.(\d)', r': 0.\1', json_str)
+
+    return json_str
+
+
 def extract_json_robust(text: str, expect_array: bool = False) -> Any:
     """Robustly extract JSON from LLM response text.
 
     Handles common LLM output issues:
     - JSON wrapped in markdown code blocks
     - Explanatory text before/after JSON
-    - Multiple JSON objects (takes first complete one)
-    - Trailing commas (removes them)
+    - Trailing commas, single quotes, unquoted keys
+    - Python-style True/False/None
+    - Truncated JSON (attempts repair)
     """
     import re
+
+    if text is None:
+        return [] if expect_array else {}
+    text = str(text).strip()
 
     # Remove markdown code blocks
     text = re.sub(r'```json\s*', '', text)
@@ -312,65 +407,156 @@ def extract_json_robust(text: str, expect_array: bool = False) -> Any:
 
     # Try to find JSON structure
     if expect_array:
-        # Look for array
         match = re.search(r'\[\s*\{.*\}\s*\]', text, re.DOTALL)
         if match:
             json_str = match.group(0)
         else:
-            # Try to find any array
             match = re.search(r'\[.*\]', text, re.DOTALL)
-            json_str = match.group(0) if match else text
+            if match:
+                json_str = match.group(0)
+            else:
+                # No array found - try full text (may be object with "chapters" etc.)
+                json_str = text
     else:
-        # Look for object
         match = re.search(r'\{.*\}', text, re.DOTALL)
         json_str = match.group(0) if match else text
 
-    # Fix common JSON issues
-    # Remove trailing commas before } or ]
-    json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
+    # Apply repairs
+    json_str = _repair_json_string(json_str)
 
     # Try to parse
     try:
-        return json.loads(json_str)
+        result = json.loads(json_str)
+        # If expecting array but got object (json_mode wraps in object), unwrap
+        if expect_array and isinstance(result, dict):
+            for key, val in result.items():
+                if isinstance(val, list):
+                    return val
+            return [result]  # Single object, wrap as array
+        return result
     except json.JSONDecodeError as e:
-        logger.warning(f"JSON parse failed: {e}. Returning raw text.")
+        logger.warning(f"JSON parse attempt 1 failed: {e}")
+        logger.warning(f"Raw JSON (first 300 chars): {json_str[:300]}")
+
+        # Attempt 2: Try to extract individual complete objects from the text
+        if expect_array:
+            objects = _extract_complete_json_objects(json_str)
+            if objects:
+                logger.info(f"Recovered {len(objects)} complete JSON objects from malformed array")
+                return objects
+
+        # Attempt 3: For truncated JSON, try closing brackets
+        if expect_array:
+            for suffix in ['"}]}]', '"}]', '"}}]', '"]', '}]', '}}]', '}]}]']:
+                try:
+                    trimmed = json_str.rstrip().rstrip(',').rstrip()
+                    result = json.loads(trimmed + suffix)
+                    if isinstance(result, list) and len(result) > 0:
+                        logger.info(f"Repaired truncated JSON with suffix '{suffix}'")
+                        return result
+                except json.JSONDecodeError:
+                    continue
+
+        logger.warning(f"All JSON parse attempts failed. Returning raw text.")
         if expect_array:
             return [{"raw": text}]
         return {"raw": text}
 
 
+def _extract_complete_json_objects(text: str) -> list:
+    """Extract all complete, valid JSON objects from text.
+
+    Walks through the text tracking brace depth (string-aware) to find
+    complete {...} blocks, then attempts to parse each one individually.
+    """
+    objects = []
+    depth = 0
+    start = None
+    in_str = False
+
+    for i, char in enumerate(text):
+        # Track string boundaries (skip braces inside strings)
+        if char == '"' and (i == 0 or text[i-1] != '\\'):
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+
+        if char == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0 and start is not None:
+                candidate = text[start:i+1]
+                candidate = _repair_json_string(candidate)
+                try:
+                    obj = json.loads(candidate)
+                    if isinstance(obj, dict):
+                        objects.append(obj)
+                except json.JSONDecodeError:
+                    pass
+                start = None
+
+    return objects
+
+
 # ============================================================================
 # STAGE ORDERING RATIONALE & PRESERVATION CONSTRAINTS
 # ============================================================================
-# The prose refinement stages are ordered carefully to prevent later stages
-# from undoing earlier work:
+# Stages are ordered: destructive refinement FIRST, then additive polish.
 #
-# 1. dialogue_polish - Dialogue-focused first (doesn't touch prose)
-# 2. motif_infusion - Additive content (adds, doesn't rewrite)
-# 3. chapter_hooks - Targeted endings only (last 2-3 paragraphs)
-# 4. human_passes - De-AI-ification (removes AI tells)
-# 5. voice_humanization - Emotional texture (with preservation constraints)
-# 6. prose_polish - Final line-level polish (strict preservation mode)
-# 7. quality_audit - Validation (can trigger re-run if fails)
+# PLANNING: motif_embedding feeds structural motifs into master_outline
+#
+# REFINEMENT (destructive, before polish):
+#   voice_human_pass - Consolidated de-AI + voice + emotional texture
+#   continuity_audit_2 / continuity_fix_2 - Facts-only check after destructive edits
+#
+# POLISH (additive, order matters):
+# 1. dialogue_polish - Dialogue-focused (doesn't touch prose)
+# 2. prose_polish - Final line-level polish (strict preservation mode)
+# 3. chapter_hooks - LAST creative edit (openings + endings only)
+#
+# VALIDATION:
+#   final_deai - Safety net with hook protection (word-window slicing)
+#   quality_audit - Can trigger re-run of voice_human_pass or scene_expansion
 #
 # Each later stage includes PRESERVATION_CONSTRAINTS to prevent regression.
 
 PRESERVATION_CONSTRAINTS = """
 === CRITICAL: PRESERVATION CONSTRAINTS ===
-You MUST NOT re-introduce any of the following AI tell patterns that were
-previously removed. Before outputting, verify NONE of these appear:
+You MUST NOT re-introduce any of the following. Before outputting, verify
+NONE of these appear anywhere in your output:
 
-AI TELLS TO AVOID (automatic rejection if found):
+SURFACE AI TELLS (hard blacklist):
 - "I couldn't help but", "I found myself", "Something about X made me"
 - "I noticed that", "I realized that", "I felt a sense of"
 - "suddenly", "in that moment", "before I knew it"
 - "a whirlwind of emotions", "electricity coursed through"
 - "my heart skipped a beat", "butterflies in my stomach"
-- "incredibly", "absolutely", "utterly", "completely", "truly"
+- "incredibly", "absolutely", "utterly", "completely", "truly", "genuinely"
 - "seemed to", "appeared to", "managed to", "proceeded to"
 - "began to", "started to"
 - "I felt [emotion]", "I was [emotion]"
 - "a mix of [emotion] and [emotion]"
+
+STOCK ROMANCE CLICHES (hard blacklist):
+- "warm hug", "protective blanket", "anchor in rough seas"
+- "ethereal glow", "twinkling lights celebrating"
+- "something new beginning", "connection in unexpected places"
+- "filled with meaning", "the beginning of something"
+- "time seemed to stop", "the world fell away"
+- "her heart fluttered", "butterflies", "electric touch"
+- "a comfortable silence", "unspoken understanding"
+- "breath I didn't know I was holding"
+
+DEEP AI PATTERNS (structural blacklist):
+- Ending a paragraph by explaining the emotion the scene just showed
+- Stacking 3+ metaphors in one paragraph
+- Two consecutive paragraphs making the same emotional point
+- Characters being perfectly emotionally articulate in dialogue
+- Summarizing a time jump with "over the weeks, they..."
 
 PROSE PATTERNS TO PRESERVE (do not overwrite):
 - Short punchy sentences (keep them short)
@@ -379,56 +565,92 @@ PROSE PATTERNS TO PRESERVE (do not overwrite):
 - Trailing off... (intentional, preserve)
 - Contradictory emotions (keep the messiness)
 - Character-specific vocabulary (don't normalize)
-
-IF YOU ADD NEW TEXT, verify it:
-- Contains no AI tells from the list above
-- Matches the existing voice and rhythm
-- Doesn't add flowery metaphors or purple prose
+- Ugly, specific, concrete detail (keep it unglamorous)
 """
 
-# HUMANIZATION TECHNIQUES - From speech prompt system
+# HUMANIZATION TECHNIQUES - Targets the deep AI patterns that survive surface-level de-AI
 HUMANIZATION_PRINCIPLES = """
-=== SENTENCE RHYTHM ===
-- Use SHORT sentences for punch. Impact. Emphasis.
-- Let longer sentences breathe and flow, carrying the reader through complex
-  thoughts or descriptions with a rhythm that builds momentum.
-- Fragments work. Sometimes better than complete sentences.
-- Vary length deliberately: short-short-long, or long-short for contrast.
+=== RULE 1: KILL EMOTIONAL SUMMARIZATION (the #1 AI tell) ===
+AI prose ends paragraphs by TELLING the reader what to feel. This is the single
+most recognizable AI pattern. Find and destroy every instance.
 
-=== IMPERFECTION AS AUTHENTICITY ===
-- Incomplete thoughts that trail off...
-- Interrupted dialogue with em-dashes—
-- Characters who miss obvious things
-- Contradictory emotions held simultaneously
-- Occasional sentence fragments or casual grammar
-- Thoughts that circle back to earlier ideas
+EXAMPLES OF WHAT TO CUT:
+- "A bittersweet reminder of happier times."
+- "A fragile ribbon of empathy tying our broken hearts together."
+- "A bond forged in quiet moments when no one else is watching."
+- "Something about this moment felt like the beginning of something new."
+- Any sentence that summarizes the emotion the scene just showed.
 
-=== IMPLICITNESS OVER EXPLICITNESS ===
-- If something is implied, don't write it out
-- Let readers infer meaning from action and dialogue
-- Use subtext—what's NOT said matters
-- Trust the reader to connect the dots
-- Symbolic resonance over direct statement
+THE FIX: End paragraphs on ACTION, SENSORY DETAIL, or DIALOGUE. If the scene
+showed tenderness, the reader already feels it. Don't explain it to them.
 
-=== EMOTIONAL UNPREDICTABILITY ===
-- Humans oscillate between emotional states
-- Sudden tonal shifts (analytical to poetic, formal to casual)
-- Brief bursts of unexpected emotion
-- Contradictory feelings in the same moment
+BEFORE: She handed him the pastry. Their fingers brushed. A warmth spread
+through her—a quiet reminder that connection could bloom in unexpected places.
+AFTER: She handed him the pastry. Their fingers brushed. She pulled her hand
+back and wiped it on her apron.
+
+=== RULE 2: ONE METAPHOR PER PARAGRAPH, MAX ===
+AI stacks 3-4 figurative comparisons in the same paragraph. Real writers pick
+one and commit to it. If you have "like a warm hug" AND "an anchor in rough
+seas" AND "a protective blanket" within three sentences, keep the strongest
+one and make the other sentences literal.
+
+=== RULE 3: CONCRETE SPECIFICITY OVER STOCK IMAGERY ===
+AI defaults to "generic cozy": fairy lights, warm scents, soft glow, city
+lights twinkling. Replace stock with observed, unglamorous detail.
+
+STOCK: "The kitchen was warm and inviting, filled with the scent of cinnamon."
+SPECIFIC: "The oven ticked as it cooled. Flour had gotten into the cracked
+grout again. The cinnamon was the cheap stuff from the bodega—too sweet,
+almost fake, but it was what she had."
+
+Push for: brand names, broken things, ugly details, the specific object that
+doesn't belong, the sound that interrupts the mood.
+
+=== RULE 4: DIALOGUE MUST CARRY SUBTEXT ===
+AI dialogue is polite, turn-taking, and emotionally articulate. Real people:
+- Talk past each other
+- Answer a different question than the one asked
+- Use deflection when vulnerable
+- Say the wrong thing, then try to fix it
+- Interrupt, overlap, trail off mid-thought
+- Have verbal tics (a word they overuse, a way they stall)
+
+BEFORE: "I've been thinking about you," he said softly. "About us."
+"Me too," she whispered. "I think something is happening between us."
+AFTER: "I keep—" He stopped. Bit the inside of his cheek. "Your croissants.
+The ones from Tuesday. I keep thinking about those."
+She stared at him. "The burnt ones?"
+"Yeah." A pause. "Those."
+
+=== RULE 5: NO LOOPING (same feeling restated across paragraphs) ===
+If the scene establishes "baking = comfort" in paragraph 1, paragraphs 2-5
+should NOT circle back to that same idea. After you establish a theme ONCE:
+- Introduce a complication
+- Force a choice
+- Create a consequence
+- Or cut the paragraph entirely
+
+=== RULE 6: SENTENCE RHYTHM THROUGH VARIETY ===
+- SHORT for impact. Punch.
+- Long sentences that build through complex territory.
+- Fragments. For gut reaction.
+- Vary deliberately: short-short-long, long-short-short.
+- But never three long sentences in a row. Never three fragments in a row.
+
+=== RULE 7: EMOTIONAL UNPREDICTABILITY ===
+- Tonal shifts within paragraphs (tender to irritated to amused)
 - Vulnerability alternating with deflection
+- Humor cracking through a serious moment
+- The wrong emotion at the wrong time (laughing at a funeral, angry during a kiss)
+- Contradictory feelings: wanting and resenting the wanting
 
-=== FEWER EXPLICIT TRANSITIONS ===
-- Remove "however", "furthermore", "additionally"
-- Let ideas flow by juxtaposition
-- Trust reader to make connections
-- Abrupt shifts can be more powerful than smooth ones
+=== RULE 8: END ON CONCRETE, NOT ABSTRACT ===
+Every scene should end on something the reader can SEE, HEAR, or TOUCH.
+Not on a feeling, not on a realization, not on a metaphor about connection.
 
-=== ORIGINAL PHRASING ===
-- Avoid clichés and stock expressions
-- Find fresh ways to express common feelings
-- Use unexpected metaphors and comparisons
-- Regional idioms or character-specific expressions
-- Sensory-specific rather than generic descriptions
+BEFORE: "And in that moment, she knew that something had changed between them forever."
+AFTER: "She locked the door. The flour was still on his sleeve."
 """
 
 
@@ -470,6 +692,9 @@ class PipelineState:
     master_outline: Optional[List[Dict[str, Any]]] = None
     scenes: Optional[List[Dict[str, Any]]] = None
     continuity_issues: Optional[List[Dict[str, Any]]] = None  # Track issues to fix
+    continuity_issues_2: Optional[List[Dict[str, Any]]] = None  # Post-refinement issues
+    motif_map: Optional[Dict[str, Any]] = None  # Structural motif plan from motif_embedding
+    emotional_arc: Optional[Dict[str, Any]] = None  # From emotional_architecture
 
     # Calculated targets
     target_words: int = 60000
@@ -482,9 +707,14 @@ class PipelineState:
     total_tokens: int = 0
     total_cost_usd: float = 0.0
 
+    # Checkpoint tracking - which stages completed successfully
+    completed_stages: List[str] = field(default_factory=list)
+
     def calculate_targets(self):
         """Calculate word count targets based on target_length and genre."""
         length_map = {
+            "micro (5k)": 5000,
+            "novelette (15k)": 15000,
             "short (30k)": 30000,
             "standard (60k)": 60000,
             "long (90k)": 90000,
@@ -516,8 +746,11 @@ class PipelineState:
                 break
 
         # Calculate structure
-        self.target_chapters = max(self.target_words // self.words_per_chapter, 10)
-        self.scenes_per_chapter = 3  # 3-4 scenes per chapter
+        raw_chapters = self.target_words // self.words_per_chapter
+        # For short works (<15k), allow fewer chapters; for novels, minimum 10
+        min_chapters = 3 if self.target_words <= 15000 else 10
+        self.target_chapters = max(raw_chapters, min_chapters)
+        self.scenes_per_chapter = 3 if self.target_chapters >= 10 else 2  # Fewer scenes for short works
         self.words_per_scene = self.words_per_chapter // self.scenes_per_chapter
 
         logger.info(f"Targets for {genre or 'general'}: {self.target_words} words, "
@@ -525,11 +758,12 @@ class PipelineState:
                    f"{self.words_per_scene} words/scene")
 
     def save(self):
-        """Save state to disk."""
+        """Save state to disk with checkpoint data for reliable resume."""
         state_file = self.project_path / "pipeline_state.json"
         state_dict = {
             "project_name": self.project_name,
             "current_stage": self.current_stage,
+            "completed_stages": self.completed_stages,
             "high_concept": self.high_concept,
             "world_bible": self.world_bible,
             "beat_sheet": self.beat_sheet,
@@ -537,6 +771,9 @@ class PipelineState:
             "master_outline": self.master_outline,
             "scenes": self.scenes,
             "continuity_issues": self.continuity_issues,
+            "continuity_issues_2": self.continuity_issues_2,
+            "motif_map": self.motif_map,
+            "emotional_arc": self.emotional_arc,
             "target_words": self.target_words,
             "target_chapters": self.target_chapters,
             "total_tokens": self.total_tokens,
@@ -554,7 +791,7 @@ class PipelineState:
         }
         with open(state_file, "w") as f:
             json.dump(state_dict, f, indent=2)
-        logger.info(f"Pipeline state saved to {state_file}")
+        logger.info(f"Pipeline state checkpointed to {state_file} (stage {self.current_stage}, {len(self.completed_stages)} completed)")
 
     @classmethod
     def load(cls, project_path: Path) -> Optional["PipelineState"]:
@@ -575,6 +812,7 @@ class PipelineState:
             project_path=project_path,
             config=config,
             current_stage=data.get("current_stage", 0),
+            completed_stages=data.get("completed_stages", []),
             high_concept=data.get("high_concept"),
             world_bible=data.get("world_bible"),
             beat_sheet=data.get("beat_sheet"),
@@ -582,6 +820,9 @@ class PipelineState:
             master_outline=data.get("master_outline"),
             scenes=data.get("scenes"),
             continuity_issues=data.get("continuity_issues"),
+            continuity_issues_2=data.get("continuity_issues_2"),
+            motif_map=data.get("motif_map"),
+            emotional_arc=data.get("emotional_arc"),
             target_words=data.get("target_words", 60000),
             target_chapters=data.get("target_chapters", 20),
             total_tokens=data.get("total_tokens", 0),
@@ -602,36 +843,44 @@ class PipelineOrchestrator:
     STAGES = [
         # === PLANNING PHASE ===
         "high_concept",
+        # Parallel group 1: both only depend on high_concept
         "world_building",
         "beat_sheet",
-        "emotional_architecture",   # Map emotional arc across story
+        # Parallel group 2: emotional_arch needs beat_sheet, characters needs world_bible
+        "emotional_architecture",
         "character_profiles",
+        # Motif embedding: structural motifs fed into outline (not post-hoc infusion)
+        "motif_embedding",
+        # Sequential: master_outline needs beat_sheet + characters + motifs
         "master_outline",
-        "trope_integration",        # Ensure genre tropes are placed
+        "trope_integration",
 
         # === DRAFTING PHASE ===
         "scene_drafting",
-        "scene_expansion",          # Expand short scenes to target
+        "scene_expansion",
         "continuity_audit",
         "continuity_fix",
         "self_refinement",
 
-        # === PROSE REFINEMENT PHASE (Order matters!) ===
-        # 1. Additive stages FIRST (add content before polishing)
-        "motif_infusion",           # Adds thematic elements to prose/dialogue
-        "chapter_hooks",            # Only touches last 2-3 paragraphs of chapters
-        # 2. Dialogue polish (AFTER additive, so new dialogue gets polished)
+        # === REFINEMENT PHASE (Destructive - before polish) ===
+        # Single consolidated pass: de-AI + voice + emotional texture
+        "voice_human_pass",
+        # Lightweight continuity check after destructive edits
+        "continuity_audit_2",
+        "continuity_fix_2",
+
+        # === POLISH PHASE (Additive - order matters!) ===
+        # 1. Dialogue first (doesn't touch prose)
         "dialogue_polish",
-        # 3. Humanization stages (de-AI-ify, AFTER all content is finalized)
-        "human_passes",
-        "voice_humanization",       # Includes preservation constraints
-        # 4. Final polish (strict preservation mode)
+        # 2. Prose polish (line-level, strict preservation)
         "prose_polish",
-        # 5. Safety net: surgical AI tell removal (catches any that slipped through)
-        "final_deai",
+        # 3. Chapter hooks LAST (nothing touches hooks after this)
+        "chapter_hooks",
 
         # === VALIDATION PHASE ===
-        "quality_audit",            # Can trigger iteration if fails
+        # Safety net: surgical AI tell removal (protects hooks)
+        "final_deai",
+        "quality_audit",
         "output_validation"
     ]
 
@@ -643,6 +892,7 @@ class PipelineOrchestrator:
         "beat_sheet": "gpt",
         "emotional_architecture": "claude",  # Nuanced emotional mapping
         "character_profiles": "claude",
+        "motif_embedding": "claude",         # Structural motif design
         "master_outline": "gpt",
         "trope_integration": "claude",       # Genre-aware trope placement
         "scene_drafting": "gpt",
@@ -650,10 +900,10 @@ class PipelineOrchestrator:
         "continuity_audit": "gemini",
         "continuity_fix": "claude",
         "self_refinement": "claude",
-        "human_passes": "claude",
+        "voice_human_pass": "claude",        # Consolidated de-AI + voice
+        "continuity_audit_2": "gemini",      # Lightweight post-refinement check
+        "continuity_fix_2": "claude",        # Facts-only fix, no style changes
         "dialogue_polish": "claude",         # Dialogue authenticity
-        "voice_humanization": "claude",
-        "motif_infusion": "claude",
         "chapter_hooks": "claude",
         "prose_polish": "claude",
         "final_deai": "gpt",                 # Fast surgical replacement (no creativity needed)
@@ -670,26 +920,37 @@ class PipelineOrchestrator:
         "beat_sheet": 0.3,
         "emotional_architecture": 0.5,
         "character_profiles": 0.5,
+        "motif_embedding": 0.5,
         "master_outline": 0.3,
         "trope_integration": 0.4,
 
         # Creative stages - need variety (0.7-0.9)
         "scene_drafting": 0.85,
         "scene_expansion": 0.8,
+        "voice_human_pass": 0.7,
         "dialogue_polish": 0.75,
-        "voice_humanization": 0.8,
-        "motif_infusion": 0.7,
         "chapter_hooks": 0.75,
         "prose_polish": 0.7,
 
         # Analytical stages - need precision (0.2-0.4)
         "continuity_audit": 0.2,
         "continuity_fix": 0.4,
+        "continuity_audit_2": 0.2,
+        "continuity_fix_2": 0.3,
         "self_refinement": 0.5,
-        "human_passes": 0.6,
         "final_deai": 0.3,
         "quality_audit": 0.2,
         "output_validation": 0.2
+    }
+
+    # Define which stages can run in parallel (they share no dependencies)
+    # Each group runs concurrently; groups run sequentially
+    # IMPORTANT: Group members MUST be adjacent in STAGES list
+    PARALLEL_GROUPS = {
+        # After high_concept: both only need high_concept, no cross-dependency
+        "planning_parallel_1": ["world_building", "beat_sheet"],
+        # After group 1: emotional_arch needs beat_sheet, characters needs world_bible
+        "planning_parallel_2": ["emotional_architecture", "character_profiles"],
     }
 
     def get_temperature_for_stage(self, stage_name: str) -> float:
@@ -787,13 +1048,85 @@ class PipelineOrchestrator:
         return self.state
 
     async def run(self, stages: Optional[List[str]] = None, resume: bool = False):
-        """Run the pipeline with quality-driven iteration support."""
+        """Run the pipeline with quality-driven iteration and checkpoint resume."""
         await self.initialize(resume=resume)
 
         stages_to_run = stages or self.STAGES
-        start_index = self.state.current_stage if resume else 0
 
-        for i, stage_name in enumerate(stages_to_run[start_index:], start_index):
+        # When resuming, skip already-completed stages based on checkpoint data
+        if resume and self.state.completed_stages:
+            start_index = 0
+            for i, stage_name in enumerate(stages_to_run):
+                if stage_name not in self.state.completed_stages:
+                    start_index = i
+                    break
+            else:
+                start_index = len(stages_to_run)  # All done
+            logger.info(f"Resuming from stage {start_index} ({stages_to_run[start_index] if start_index < len(stages_to_run) else 'done'}), "
+                       f"{len(self.state.completed_stages)} stages already completed")
+        else:
+            start_index = self.state.current_stage if resume else 0
+
+        # Build reverse lookup: stage_name -> parallel group
+        parallel_lookup = {}
+        for group_name, group_stages in self.PARALLEL_GROUPS.items():
+            for s in group_stages:
+                parallel_lookup[s] = group_stages
+
+        i = start_index
+        while i < len(stages_to_run):
+            stage_name = stages_to_run[i]
+
+            # Skip stages already completed (safety check for parallel group overlap)
+            if stage_name in self.state.completed_stages:
+                i += 1
+                continue
+
+            # Check if this stage is part of a parallel group
+            parallel_group = parallel_lookup.get(stage_name)
+            if parallel_group and all(s in stages_to_run[i:] for s in parallel_group):
+                # Find all group members that start at consecutive positions
+                group_members = [s for s in parallel_group if s in stages_to_run[i:] and s not in self.state.completed_stages]
+
+                if len(group_members) > 1:
+                    logger.info(f"Running {len(group_members)} stages in parallel: {group_members}")
+                    for s in group_members:
+                        await self._emit("on_stage_start", s, i)
+
+                    # Run in parallel
+                    results = await asyncio.gather(
+                        *[self._run_stage(s) for s in group_members],
+                        return_exceptions=True
+                    )
+
+                    # Process results
+                    failed = False
+                    for s, result in zip(group_members, results):
+                        if isinstance(result, Exception):
+                            result = StageResult(stage_name=s, status=StageStatus.FAILED, error=str(result))
+                            failed = True
+
+                        self.state.stage_results.append(result)
+                        self.state.total_tokens += result.tokens_used
+                        self.state.total_cost_usd += result.cost_usd
+
+                        if result.status == StageStatus.COMPLETED:
+                            if s not in self.state.completed_stages:
+                                self.state.completed_stages.append(s)
+
+                        await self._emit("on_stage_complete", s, result)
+
+                    self.state.current_stage = i + len(group_members)
+                    self.state.save()
+
+                    if failed:
+                        break
+
+                    # Skip past all group members
+                    i += len(group_members)
+                    continue
+
+            # Sequential execution for non-parallel stages
             self.state.current_stage = i
             await self._emit("on_stage_start", stage_name, i)
 
@@ -802,6 +1135,12 @@ class PipelineOrchestrator:
                 self.state.stage_results.append(result)
                 self.state.total_tokens += result.tokens_used
                 self.state.total_cost_usd += result.cost_usd
+
+                # Track completed stages for checkpoint resume
+                if result.status == StageStatus.COMPLETED:
+                    if stage_name not in self.state.completed_stages:
+                        self.state.completed_stages.append(stage_name)
+
                 self.state.save()
 
                 await self._emit("on_stage_complete", stage_name, result)
@@ -830,7 +1169,7 @@ class PipelineOrchestrator:
                             await self._emit("on_stage_complete", f"{rerun_stage}_iteration", rerun_result)
 
                         # Re-run prose polish after fixes
-                        if "human_passes" in stages_to_rerun or "scene_expansion" in stages_to_rerun:
+                        if "voice_human_pass" in stages_to_rerun or "scene_expansion" in stages_to_rerun:
                             logger.info("  Re-running prose_polish after fixes")
                             polish_result = await self._run_stage("prose_polish")
                             self.state.stage_results.append(polish_result)
@@ -849,6 +1188,8 @@ class PipelineOrchestrator:
                 await self._emit("on_stage_error", stage_name, str(e))
                 break
 
+            i += 1
+
         await self._emit("on_pipeline_complete", self.state)
         return self.state
 
@@ -863,6 +1204,7 @@ class PipelineOrchestrator:
             "beat_sheet": self._stage_beat_sheet,
             "emotional_architecture": self._stage_emotional_architecture,
             "character_profiles": self._stage_character_profiles,
+            "motif_embedding": self._stage_motif_embedding,
             "master_outline": self._stage_master_outline,
             "trope_integration": self._stage_trope_integration,
             "scene_drafting": self._stage_scene_drafting,
@@ -870,12 +1212,12 @@ class PipelineOrchestrator:
             "continuity_audit": self._stage_continuity_audit,
             "continuity_fix": self._stage_continuity_fix,
             "self_refinement": self._stage_self_refinement,
-            "human_passes": self._stage_human_passes,
+            "voice_human_pass": self._stage_voice_human_pass,
+            "continuity_audit_2": self._stage_continuity_audit_2,
+            "continuity_fix_2": self._stage_continuity_fix_2,
             "dialogue_polish": self._stage_dialogue_polish,
-            "voice_humanization": self._stage_voice_humanization,
-            "motif_infusion": self._stage_motif_infusion,
-            "chapter_hooks": self._stage_chapter_hooks,
             "prose_polish": self._stage_prose_polish,
+            "chapter_hooks": self._stage_chapter_hooks,
             "final_deai": self._stage_final_deai,
             "quality_audit": self._stage_quality_audit,
             "output_validation": self._stage_output_validation
@@ -903,6 +1245,8 @@ class PipelineOrchestrator:
             )
 
         except Exception as e:
+            import traceback
+            logger.error(f"Stage {stage_name} failed: {e}\n{traceback.format_exc()}")
             return StageResult(
                 stage_name=stage_name,
                 status=StageStatus.FAILED,
@@ -1076,9 +1420,13 @@ Respond in JSON format."""
 
         client = self.get_client_for_stage("world_building")
         if client:
-            response = await client.generate(prompt, temperature=0.4)
-            self.state.world_bible = extract_json_robust(response.content, expect_array=False)
-            return self.state.world_bible, response.input_tokens + response.output_tokens
+            response = await client.generate(prompt, temperature=0.4, json_mode=True)
+            try:
+                self.state.world_bible = extract_json_robust(response.content if response else None, expect_array=False)
+            except Exception as e:
+                logger.warning(f"World building JSON parse failed: {e}")
+                self.state.world_bible = {"setting": config.get("title", "Unknown"), "rules": [], "locations": []}
+            return self.state.world_bible, (response.input_tokens + response.output_tokens) if response else 0
 
         # Mock response
         self.state.world_bible = {
@@ -1138,9 +1486,13 @@ Respond as a JSON array of beats."""
 
         client = self.get_client_for_stage("beat_sheet")
         if client:
-            response = await client.generate(prompt, temperature=0.3)
-            self.state.beat_sheet = extract_json_robust(response.content, expect_array=True)
-            return self.state.beat_sheet, response.input_tokens + response.output_tokens
+            response = await client.generate(prompt, temperature=0.3, json_mode=True)
+            try:
+                self.state.beat_sheet = extract_json_robust(response.content if response else None, expect_array=True)
+            except Exception as e:
+                logger.warning(f"Beat sheet JSON parse failed: {e}")
+                self.state.beat_sheet = [{"beat": "Catalyst", "description": "..."}, {"beat": "Midpoint", "description": "..."}]
+            return self.state.beat_sheet, (response.input_tokens + response.output_tokens) if response else 0
 
         # Mock response
         self.state.beat_sheet = [
@@ -1210,18 +1562,12 @@ Identify 4-5 visible moments where character growth is SHOWN:
 Respond as JSON with emotional_beats, peaks, troughs, rhythm_check, and transformation_markers."""
 
         if client:
-            response = await client.generate(prompt, max_tokens=2000)
+            response = await client.generate(prompt, max_tokens=2000, json_mode=True)
             try:
-                emotional_map = json.loads(response.content)
-            except json.JSONDecodeError:
-                json_match = re.search(r'\{.*\}', response.content, re.DOTALL)
-                if json_match:
-                    try:
-                        emotional_map = json.loads(json_match.group())
-                    except:
-                        emotional_map = {"raw": response.content}
-                else:
-                    emotional_map = {"raw": response.content}
+                emotional_map = extract_json_robust(response.content if response else None, expect_array=False)
+            except Exception as e:
+                logger.warning(f"Emotional architecture JSON parse failed: {e}")
+                emotional_map = {}
 
             # Store for use in later stages
             self.state.config["emotional_architecture"] = emotional_map
@@ -1274,12 +1620,13 @@ Respond as a JSON array of character objects."""
 
         client = self.get_client_for_stage("character_profiles")
         if client:
-            response = await client.generate(prompt)
+            response = await client.generate(prompt, json_mode=True)
             try:
-                self.state.characters = json.loads(response.content)
-            except json.JSONDecodeError:
-                self.state.characters = [{"raw": response.content}]
-            return self.state.characters, response.input_tokens + response.output_tokens
+                self.state.characters = extract_json_robust(response.content if response else None, expect_array=True)
+            except Exception as e:
+                logger.warning(f"Character profiles JSON parse failed: {e}")
+                self.state.characters = [{"name": "Protagonist", "role": "protagonist"}, {"name": "Antagonist", "role": "antagonist"}]
+            return self.state.characters, (response.input_tokens + response.output_tokens) if response else 0
 
         # Mock response
         self.state.characters = [
@@ -1289,7 +1636,12 @@ Respond as a JSON array of character objects."""
         return self.state.characters, 100
 
     async def _stage_master_outline(self) -> tuple:
-        """Create master outline with scene connections and proper word count targets."""
+        """Create master outline with scene-by-scene breakdown.
+
+        Uses batched generation (5 chapters per batch) to avoid token limits
+        with smaller models. Each batch gets full story context plus a summary
+        of previously generated chapters for continuity.
+        """
         config = self.state.config
         story_context = self._build_story_context()
         strategic = self._build_strategic_guidance()
@@ -1298,131 +1650,202 @@ Respond as a JSON array of character objects."""
         writing_style = config.get("writing_style", "")
         is_dual_pov = "dual pov" in writing_style.lower()
         protagonist = config.get("protagonist", "").split(",")[0] if config.get("protagonist") else "Protagonist"
-        # Extract hero name from other_characters (first name mentioned is usually the love interest)
         other_chars = config.get("other_characters", "")
         hero_name = other_chars.split("(")[0].strip() if other_chars else "Hero"
 
-        prompt = f"""Create a detailed master outline with scene-by-scene breakdown.
+        client = self.get_client_for_stage("master_outline")
+        if not client:
+            self.state.master_outline = [
+                {"chapter": 1, "scenes": [{"scene": 1, "goal": "...", "pov": protagonist}]},
+                {"chapter": 2, "scenes": [{"scene": 1, "goal": "...", "pov": hero_name}]}
+            ]
+            return self.state.master_outline, 100
+
+        all_chapters = []
+        total_tokens = 0
+        BATCH_SIZE = 5
+
+        # Build characters brief outside f-string to avoid brace escaping issues
+        chars_brief = json.dumps(
+            [{"name": c.get("name",""), "role": c.get("role",""), "arc": c.get("arc","")}
+             for c in (self.state.characters or []) if isinstance(c, dict)],
+            indent=1
+        )
+
+        for batch_start in range(1, self.state.target_chapters + 1, BATCH_SIZE):
+            batch_end = min(batch_start + BATCH_SIZE - 1, self.state.target_chapters)
+
+            # Summary of previous chapters for continuity
+            prev_summary = ""
+            if all_chapters:
+                prev_lines = []
+                for ch in all_chapters:
+                    if not isinstance(ch, dict):
+                        continue
+                    ch_num = ch.get("chapter", "?")
+                    ch_title = ch.get("chapter_title", "")
+                    scene_summaries = []
+                    for sc in ch.get("scenes", []):
+                        if isinstance(sc, dict):
+                            scene_summaries.append(f"  - {sc.get('scene_name', 'Scene')}: {sc.get('purpose', '')}")
+                    prev_lines.append(f"Ch {ch_num} \"{ch_title}\":\n" + "\n".join(scene_summaries))
+                prev_summary = "PREVIOUSLY OUTLINED CHAPTERS:\n" + "\n".join(prev_lines)
+
+            prompt = f"""Create chapters {batch_start}-{batch_end} of a {self.state.target_chapters}-chapter novel outline.
 
 {story_context}
 
 HIGH CONCEPT: {self.state.high_concept}
 
-WORLD BIBLE:
-{json.dumps(self.state.world_bible, indent=2) if self.state.world_bible else 'Not available'}
-
 BEAT SHEET:
 {json.dumps(self.state.beat_sheet, indent=2)}
 
-CHARACTERS:
-{json.dumps(self.state.characters, indent=2)}
+CHARACTERS (brief):
+{chars_brief}
 
 {strategic}
 
-=== CRITICAL REQUIREMENTS ===
+MOTIF MAP (embed these structurally into scenes — settings, objects, character actions):
+{json.dumps(getattr(self.state, 'motif_map', {}), indent=2)}
 
-TARGET: {self.state.target_chapters} chapters total to hit {self.state.target_words:,} words
-SCENES PER CHAPTER: {self.state.scenes_per_chapter} scenes each
-TOTAL SCENES NEEDED: {self.state.target_chapters * self.state.scenes_per_chapter}
+{prev_summary}
 
-{"POV ALTERNATION: This is DUAL POV. Alternate between " + protagonist + " and " + hero_name + ". Mark each scene with its POV character." if is_dual_pov else ""}
+=== GENERATE CHAPTERS {batch_start} THROUGH {batch_end} ===
 
-KEY LOCATIONS TO USE:
-{config.get('key_locations', 'Not specified')}
+TARGET: {self.state.target_chapters} chapters total, {self.state.scenes_per_chapter} scenes per chapter
+{"POV: Alternate between " + protagonist + " and " + hero_name if is_dual_pov else "POV: " + protagonist}
 
-SUBPLOTS TO WEAVE IN:
-{config.get('subplots', 'None specified')}
+SUBPLOTS: {config.get('subplots', 'None specified')}
 
-For EACH of the {self.state.target_chapters} chapters, create exactly {self.state.scenes_per_chapter} scenes.
+IMPORTANT: Each chapter is an object with a "scenes" array. Example structure:
+{{"chapters": [{{"chapter": 1, "chapter_title": "Title", "scenes": [{{"scene": 1, "scene_name": "Name", "pov": "Character", "purpose": "...", "character_scene_goal": "...", "central_conflict": "...", "opening_hook": "...", "outcome": "...", "location": "...", "emotional_arc": "...", "tension_level": 5, "pacing": "medium", "spice_level": 0}}]}}]}}
 
-=== CHAPTER STRUCTURE ===
-1. chapter: (number 1-{self.state.target_chapters})
-2. chapter_title: (evocative title that hints at chapter content)
+Scene fields: scene (number), scene_name, pov, purpose, character_scene_goal, central_conflict, opening_hook, outcome, location, emotional_arc, tension_level (1-10), pacing (fast/medium/slow), spice_level (0-5).
 
-=== SCENE ATTRIBUTES (for each scene in the chapter) ===
+Respond with a JSON object containing a "chapters" array of {batch_end - batch_start + 1} chapter objects. Each chapter MUST have "chapter", "chapter_title", and "scenes" keys."""
 
-BASIC INFO:
-- scene: (number within chapter)
-- scene_name: (evocative 2-4 word name)
-- pov: (whose perspective - "{protagonist}" or "{hero_name}")
-- purpose: (why this scene exists in the story)
-
-GOALS & CONFLICTS:
-- character_scene_goal: (what the POV character is trying to accomplish)
-- central_conflict: (the main obstacle/tension in this scene)
-- proximal_conflicts: (smaller tensions/complications that arise)
-- inner_conflict: (internal struggle the character faces)
-- opposition_elements: (who/what opposes the character)
-
-STRUCTURE:
-- opening_hook: (first line concept - how to grab reader immediately)
-- development: (how the scene progresses)
-- suffering: (what pain/difficulty the character experiences)
-- climax: (peak tension moment)
-- outcome: (how the scene resolves - win/lose/draw)
-- scene_question: (the dramatic question this scene answers)
-
-CONNECTIONS:
-- connection_to_previous: (how this flows from the last scene)
-- connection_to_next: (how this sets up the next scene)
-- connection_to_inner_goals: (how it relates to character's internal journey)
-- connection_to_outer_goals: (how it relates to plot goals)
-- beat_sheet_alignment: (which story beat this serves)
-
-SETTING & SENSORY:
-- location: (specific place with atmosphere)
-- setting_description: (key visual/sensory elements to establish)
-- sensory_focus: (which senses to emphasize - sounds, smells, textures)
-- imagery: (key images/symbols to include)
-- key_symbol: (recurring motif to weave in)
-
-CRAFT ELEMENTS:
-- physical_motion: (key actions/movements)
-- subtext: (what's being communicated beneath the surface)
-- relationships: (dynamics between characters present)
-- knowledge_gain: (what does character learn/realize)
-- unique_element: (what makes THIS scene distinctive)
-- foreshadowing: (subtle hints to plant for later)
-
-PACING & EMOTION:
-- pacing: (fast/medium/slow - and why)
-- tension_level: (1-10, with reason)
-- emotional_arc: (start emotion -> end emotion)
-- internalization: (internal thought/reaction moments needed)
-
-ADDITIONAL:
-- subplot_thread: (which subplot, if any)
-- extra_characters: (supporting characters in scene)
-- spice_level: (0=none, 1=tension, 2=kiss, 3=fade-to-black, 4=explicit, 5=very explicit)
-- dialogue_notes: (key conversations/exchanges to include)
-- theme_connection: (how scene reinforces themes)
-
-Respond as a JSON array of {self.state.target_chapters} chapter objects, each containing an array of fully-detailed scene objects."""
-
-        client = self.get_client_for_stage("master_outline")
-        if client:
-            response = await client.generate(prompt, max_tokens=8000)
+            response = await client.generate(prompt, max_tokens=4096, json_mode=True)
             try:
-                self.state.master_outline = json.loads(response.content)
-            except json.JSONDecodeError:
-                # Try to extract JSON from response
-                import re
-                json_match = re.search(r'\[.*\]', response.content, re.DOTALL)
-                if json_match:
-                    try:
-                        self.state.master_outline = json.loads(json_match.group())
-                    except:
-                        self.state.master_outline = [{"raw": response.content}]
-                else:
-                    self.state.master_outline = [{"raw": response.content}]
-            return self.state.master_outline, response.input_tokens + response.output_tokens
+                batch = extract_json_robust(response.content, expect_array=True)
+            except Exception as e:
+                logger.error(f"JSON extraction failed for batch {batch_start}-{batch_end}: {e}")
+                batch = []
 
-        # Mock response
-        self.state.master_outline = [
-            {"chapter": 1, "scenes": [{"scene": 1, "goal": "...", "pov": protagonist}]},
-            {"chapter": 2, "scenes": [{"scene": 1, "goal": "...", "pov": hero_name}]}
-        ]
-        return self.state.master_outline, 100
+            # Handle json_mode wrapping: model may wrap array in an object
+            if isinstance(batch, dict):
+                for key in ("chapters", "outline", "chapter_list", "result"):
+                    if key in batch and isinstance(batch[key], list):
+                        batch = batch[key]
+                        break
+                else:
+                    for key, val in batch.items():
+                        if isinstance(val, list) and val:
+                            batch = val
+                            break
+                    else:
+                        batch = [batch]
+
+            # Ensure batch is a list for iteration
+            if not isinstance(batch, list):
+                batch = [batch] if isinstance(batch, dict) else []
+
+            # Validate batch - accept chapters with flexible key names
+            SCENE_KEYS = ("scenes", "scene_list", "scene_details", "chapter_scenes")
+            for idx, ch in enumerate(batch):
+                if not isinstance(ch, dict):
+                    continue
+                # Normalize scene key to "scenes"
+                scene_key = None
+                for sk in SCENE_KEYS:
+                    if sk in ch:
+                        scene_key = sk
+                        break
+                if scene_key and scene_key != "scenes":
+                    raw_scenes = ch.pop(scene_key)
+                    ch["scenes"] = [s for s in raw_scenes if isinstance(s, dict)] if isinstance(raw_scenes, list) else []
+                elif "scenes" in ch and not isinstance(ch.get("scenes"), list):
+                    ch["scenes"] = [ch["scenes"]] if isinstance(ch["scenes"], dict) else []
+                if "scenes" in ch:
+                    ch["scenes"] = [s for s in ch["scenes"] if isinstance(s, dict)]
+                    if "chapter" not in ch:
+                        ch["chapter"] = batch_start + idx
+                    all_chapters.append(ch)
+                elif "raw" in ch:
+                    logger.warning(f"Batch {batch_start}-{batch_end} returned raw text, attempting repair")
+                    raw = ch["raw"]
+                    repaired = self._repair_truncated_json(raw)
+                    if repaired:
+                        for rch in repaired:
+                            if isinstance(rch, dict) and "scenes" in rch:
+                                all_chapters.append(rch)
+                else:
+                    logger.warning(f"Chapter object missing 'scenes' key. Keys found: {list(ch.keys())}")
+
+            # Fallback: if model returned flat scenes instead of chapters, group them
+            # qwen2.5/llama often output {"chapters": [{scene1}, {scene2}, ...]} - flat scene objects
+            has_proper_chapters = any(isinstance(ch, dict) and "scenes" in ch for ch in batch if isinstance(ch, dict))
+            if not has_proper_chapters:
+                # Scene objects have "scene" or "scene_number" - avoid matching chapter-like objects (have "scenes")
+                def is_flat_scene(obj):
+                    if not isinstance(obj, dict) or "scenes" in obj:
+                        return False
+                    return "scene" in obj or "scene_number" in obj
+                flat_scenes = [ch for ch in batch if is_flat_scene(ch)]
+                if flat_scenes:
+                    spc = max(1, self.state.scenes_per_chapter)  # Guard against 0
+                    logger.info(f"Detected {len(flat_scenes)} flat scenes, grouping into chapters (spc={spc})")
+                    for ch_idx in range(batch_start, batch_end + 1):
+                        offset = (ch_idx - batch_start) * spc
+                        ch_scenes = flat_scenes[offset:offset + spc]
+                        if ch_scenes:
+                            # Ensure scene_number set for downstream (scene_drafting expects it)
+                            for i, sc in enumerate(ch_scenes):
+                                if "scene_number" not in sc and "scene" in sc:
+                                    sc["scene_number"] = sc["scene"]
+                                elif "scene_number" not in sc:
+                                    sc["scene_number"] = i + 1
+                            all_chapters.append({
+                                "chapter": ch_idx,
+                                "chapter_title": ch_scenes[0].get("scene_name", f"Chapter {ch_idx}"),
+                                "scenes": ch_scenes
+                            })
+
+            total_tokens += response.input_tokens + response.output_tokens
+            logger.info(f"Outlined chapters {batch_start}-{batch_end}: {len(all_chapters)} total chapters so far")
+
+        self.state.master_outline = all_chapters
+        total_scenes = sum(len(ch.get("scenes", [])) for ch in all_chapters if isinstance(ch, dict))
+        logger.info(f"Master outline complete: {len(all_chapters)} chapters, {total_scenes} total scenes")
+        if len(all_chapters) == 0:
+            logger.warning("Master outline is empty - scene_drafting will have nothing to process")
+        return self.state.master_outline, total_tokens
+
+    def _repair_truncated_json(self, raw: str) -> list:
+        """Attempt to repair truncated JSON arrays from LLM output.
+
+        Uses the shared _extract_complete_json_objects for robust extraction.
+        """
+        import re
+        raw = re.sub(r'```json\s*', '', raw)
+        raw = re.sub(r'```\s*', '', raw)
+        raw = _repair_json_string(raw)
+
+        # Try closing brackets first
+        for suffix in [']}]', '}]}]', '"]}]', '"}]}]', '"}}]']:
+            try:
+                trimmed = raw.rstrip().rstrip(',')
+                result = json.loads(trimmed + suffix)
+                if isinstance(result, list):
+                    return [ch for ch in result if isinstance(ch, dict) and "scenes" in ch]
+            except json.JSONDecodeError:
+                continue
+
+        # Fall back to extracting individual objects
+        try:
+            objects = _extract_complete_json_objects(raw)
+            return [ch for ch in objects if "scenes" in ch]
+        except Exception:
+            return []
 
     async def _stage_trope_integration(self) -> tuple:
         """Ensure genre-specific tropes are properly placed in the outline."""
@@ -1491,30 +1914,30 @@ Return JSON with:
 }}"""
 
         if client:
-            response = await client.generate(prompt, max_tokens=2000)
+            response = await client.generate(prompt, max_tokens=2000, json_mode=True)
             try:
-                trope_report = json.loads(response.content)
-            except json.JSONDecodeError:
-                json_match = re.search(r'\{.*\}', response.content, re.DOTALL)
-                if json_match:
-                    try:
-                        trope_report = json.loads(json_match.group())
-                    except:
-                        trope_report = {"raw": response.content}
-                else:
-                    trope_report = {"raw": response.content}
+                trope_report = extract_json_robust(response.content if response else None, expect_array=False)
+            except Exception as e:
+                logger.warning(f"Trope integration JSON parse failed: {e}")
+                trope_report = {"tropes_checked": len(tropes_to_check), "outline_updates": []}
 
             # Apply outline updates if present
             updates = trope_report.get("outline_updates", [])
             for update in updates:
+                if not isinstance(update, dict):
+                    continue
                 ch_num = update.get("chapter")
                 sc_num = update.get("scene")
                 additions = update.get("add_to_attributes", {})
 
                 for chapter in (self.state.master_outline or []):
+                    if not isinstance(chapter, dict):
+                        continue
                     if chapter.get("chapter") == ch_num:
                         for scene in chapter.get("scenes", []):
-                            if scene.get("scene") == sc_num:
+                            if not isinstance(scene, dict):
+                                continue
+                            if scene.get("scene") == sc_num or scene.get("scene_number") == sc_num:
                                 scene.update(additions)
                                 logger.info(f"Updated Ch{ch_num} Sc{sc_num} with trope requirements")
 
@@ -1530,6 +1953,8 @@ Return JSON with:
         recent = scenes[-count:] if len(scenes) >= count else scenes
         summaries = []
         for s in recent:
+            if not isinstance(s, dict):
+                continue
             ch = s.get("chapter", "?")
             sc = s.get("scene_number", "?")
             content = s.get("content", "")[:500]  # First 500 chars as summary
@@ -1560,10 +1985,14 @@ Return JSON with:
             spice_info = f"HEAT LEVEL: {market_positioning}"
 
         for chapter in (self.state.master_outline or []):
+            if not isinstance(chapter, dict):
+                continue
             chapter_num = chapter.get("chapter", 1)
 
             for scene_info in chapter.get("scenes", []):
-                scene_num = scene_info.get("scene", 1)
+                if not isinstance(scene_info, dict):
+                    continue
+                scene_num = scene_info.get("scene", scene_info.get("scene_number", 1))
                 pov_char = scene_info.get("pov", "protagonist")
                 spice_level = scene_info.get("spice_level", 0)
                 location = scene_info.get("location", "")
@@ -1733,7 +2162,7 @@ Write the complete scene:"""
                         "pov": pov_char,
                         "location": location,
                         "spice_level": spice_level,
-                        "content": response.content
+                        "content": _clean_scene_content(response.content)
                     })
                     total_tokens += response.input_tokens + response.output_tokens
                 else:
@@ -1762,6 +2191,9 @@ Write the complete scene:"""
         min_words = int(target_words * 0.8)
 
         for scene in (self.state.scenes or []):
+            if not isinstance(scene, dict):
+                expanded_scenes.append(scene)
+                continue
             validation = validate_scene_length(scene, target_words)
 
             if validation["meets_target"]:
@@ -1806,7 +2238,7 @@ Provide the complete expanded scene (target: {target_words} words):"""
             response = await client.generate(prompt, max_tokens=3000)
             expanded_scenes.append({
                 **scene,
-                "content": response.content,
+                "content": _clean_scene_content(response.content),
                 "expanded": True,
                 "original_words": validation["actual"],
                 "expanded_words": count_words_accurate(response.content)
@@ -1833,6 +2265,9 @@ Provide the complete expanded scene (target: {target_words} words):"""
         tone = config.get("tone", "")
 
         for scene in (self.state.scenes or []):
+            if not isinstance(scene, dict):
+                refined_scenes.append(scene)
+                continue
             prompt = f"""Review and improve this scene for publication quality.
 
 === STYLE REQUIREMENTS ===
@@ -1869,7 +2304,7 @@ Provide the improved scene:"""
                 response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                 refined_scenes.append({
                     **scene,
-                    "content": response.content,
+                    "content": _clean_scene_content(response.content),
                     "refined": True
                 })
                 total_tokens += response.input_tokens + response.output_tokens
@@ -1917,30 +2352,17 @@ For each issue found, provide:
 Respond in JSON format with "issues" array and "passed" boolean."""
 
         if client:
-            response = await client.generate(prompt, max_tokens=4000, temperature=0.2)  # Analytical
+            response = await client.generate(prompt, max_tokens=4000, temperature=0.2, json_mode=True)
             try:
-                audit_report = json.loads(response.content)
-            except json.JSONDecodeError:
-                # Try to extract JSON
-                import re
-                json_match = re.search(r'\{.*\}', response.content, re.DOTALL)
-                if json_match:
-                    try:
-                        audit_report = json.loads(json_match.group())
-                    except:
-                        audit_report = {
-                            "issues_found": 0,
-                            "issues": [],
-                            "raw_analysis": response.content,
-                            "passed": True
-                        }
-                else:
-                    audit_report = {
-                        "issues_found": 0,
-                        "issues": [],
-                        "raw_analysis": response.content,
-                        "passed": True
-                    }
+                audit_report = extract_json_robust(response.content if response else None, expect_array=False)
+            except Exception as e:
+                logger.warning(f"Continuity audit JSON parse failed: {e}")
+                audit_report = {"issues": [], "passed": True}
+            # Ensure expected keys exist
+            if "issues" not in audit_report:
+                audit_report["issues"] = []
+            if "passed" not in audit_report:
+                audit_report["passed"] = len(audit_report.get("issues", [])) == 0
 
             # Store issues for the fix stage
             self.state.continuity_issues = audit_report.get("issues", [])
@@ -1971,6 +2393,8 @@ Respond in JSON format with "issues" array and "passed" boolean."""
         fixes_applied = 0
 
         for issue in self.state.continuity_issues:
+            if not isinstance(issue, dict):
+                continue
             issue_location = issue.get("location", "")
             issue_type = issue.get("type", "")
             issue_desc = issue.get("description", "")
@@ -1978,6 +2402,8 @@ Respond in JSON format with "issues" array and "passed" boolean."""
 
             # Find the affected scene
             for i, scene in enumerate(fixed_scenes):
+                if not isinstance(scene, dict):
+                    continue
                 scene_loc = f"Chapter {scene.get('chapter')}, Scene {scene.get('scene_number')}"
                 if issue_location.lower() in scene_loc.lower() or scene_loc.lower() in issue_location.lower():
 
@@ -2005,7 +2431,7 @@ FIXED SCENE:"""
                         response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                         fixed_scenes[i] = {
                             **scene,
-                            "content": response.content,
+                            "content": _clean_scene_content(response.content),
                             "continuity_fixed": True,
                             "fixed_issue": issue_desc
                         }
@@ -2017,91 +2443,242 @@ FIXED SCENE:"""
         self.state.scenes = fixed_scenes
         return {"fixes_applied": fixes_applied, "issues_found": len(self.state.continuity_issues)}, total_tokens
 
-    async def _stage_human_passes(self) -> tuple:
-        """Eliminate AI tells and add authentic human imperfection to prose."""
+    async def _stage_voice_human_pass(self) -> tuple:
+        """Consolidated destructive refinement: de-AI + voice + emotional texture.
+
+        Runs BEFORE any polish stages. Combines the work of the old human_passes
+        and voice_humanization into a single coherent pass to avoid conflicting
+        rewrites and duplicated instructions.
+        """
         enhanced_scenes = []
         total_tokens = 0
-        client = self.get_client_for_stage("human_passes")
+        client = self.get_client_for_stage("voice_human_pass")
         config = self.state.config
         guidance = config.get("strategic_guidance", {})
 
         writing_style = config.get("writing_style", "")
         influences = config.get("influences", "")
+        tone = config.get("tone", "")
         aesthetic = guidance.get("aesthetic_guide", "")
 
         # Build AI tell patterns list for the prompt
-        ai_tells_sample = AI_TELL_PATTERNS[:20]  # First 20 patterns
+        ai_tells_sample = AI_TELL_PATTERNS[:20]
 
         for scene in (self.state.scenes or []):
+            if not isinstance(scene, dict):
+                enhanced_scenes.append(scene)
+                continue
             pov = scene.get("pov", "protagonist")
 
-            prompt = f"""Transform this scene to feel authentically human-written, not AI-generated.
+            prompt = f"""You are a destructive revision editor. Your job: make this scene
+read like a human wrote it. Not "good AI." Not "polished AI." HUMAN.
 
-=== VOICE TARGETS ===
-WRITING STYLE: {writing_style}
-INFLUENCES TO CHANNEL: {influences}
+This is a REVISION pass. Keep plot, characters, and scene structure intact.
+Change HOW it's written, not WHAT happens.
 
-=== AI TELLS TO ELIMINATE (search and destroy) ===
-{chr(10).join('- "' + p + '"' for p in ai_tells_sample)}
-- Any "filter" phrases (felt, noticed, realized, saw that)
-- Purple prose and overwrought metaphors
-- Hollow intensifiers (incredibly, absolutely, utterly)
-- Weak constructions (seemed to, began to, managed to)
+=== VOICE ===
+STYLE: {writing_style}
+TONE: {tone}
+CHANNEL: {influences}
+{f"AESTHETIC: {aesthetic}" if aesthetic else ""}
 
-=== HUMANIZATION PRINCIPLES ===
-{HUMANIZATION_PRINCIPLES}
+=== YOUR 6 JOBS (in priority order) ===
 
-=== SENTENCE RHYTHM TECHNIQUES ===
-- SHORT for impact. Punch. Emphasis.
-- Long sentences that flow and build momentum, carrying the reader through
-  complex emotional or descriptive territory with deliberate rhythm.
-- Fragments. For punch.
-- Vary deliberately: short-short-long creates a different feel than long-short-short.
+JOB 1: KILL EMOTIONAL SUMMARIZATION
+Find every sentence that tells the reader what to feel after the scene
+already showed it. Cut it or replace it with action/sensory detail.
+This is the #1 priority. If a paragraph ends with "a reminder that..." or
+"something about this moment..." or "a bond forged in..." — that sentence
+dies. End on what the character DOES or SEES instead.
 
-=== IMPERFECTION AS AUTHENTICITY ===
-- Incomplete thoughts that trail off...
-- Interrupted dialogue with em-dashes—
-- Thoughts that circle back to earlier ideas
-- Contradictory emotions in same moment
-- Characters who miss obvious things
+JOB 2: ENFORCE ONE-METAPHOR-PER-PARAGRAPH
+Count the figurative comparisons in each paragraph. If there are 2+,
+keep the sharpest one. Make the rest literal. Three metaphors in a row
+is AI perfume. One metaphor that lands is writing.
 
-=== IMPLICITNESS OVER EXPLICITNESS ===
-- If implied, don't write it out
-- Let readers infer from action/dialogue
-- Subtext matters more than text
-- Trust reader to connect dots
+JOB 3: REPLACE STOCK WITH SPECIFIC
+"Warm and inviting" → what specifically? The cracked tile, the cheap
+cinnamon, the oven that takes 20 minutes to preheat, the neighbor's
+TV bleeding through the wall. Push every generic image toward the
+ugly, specific, observed detail that only THIS character in THIS place
+would notice.
 
-=== AESTHETIC PALETTE ===
-{aesthetic}
+JOB 4: FIX THE DIALOGUE
+Real people don't take clean turns being emotionally articulate.
+- Add deflection (answering a different question)
+- Add fumbling (starting, stopping, restarting)
+- Add subtext (what they mean vs what they say)
+- Add physical beats between lines (not "she smiled"—what did her
+  hands do? her jaw? did she look away?)
+- Remove any line where a character announces their feelings directly
+  unless they would actually do that in real life
+
+JOB 5: CUT LOOPING PARAGRAPHS
+If two paragraphs make the same emotional point, cut one. If a theme
+(e.g., "baking = comfort") is established in paragraph 1, paragraphs
+2-5 must ADVANCE, not restate. Each paragraph earns its spot by doing
+something the previous one didn't.
+
+JOB 6: SURFACE CLEANUP
+{chr(10).join('- Kill: "' + p + '"' for p in ai_tells_sample[:10])}
+- Kill filter phrases: felt, noticed, realized, saw that
+- Kill hollow intensifiers: incredibly, absolutely, utterly
+- Kill weak constructions: seemed to, began to, managed to
+- Kill transitions: however, furthermore, additionally
+- Kill stock romance: warm hug, butterflies, anchor in rough seas,
+  ethereal glow, comfortable silence, breath I didn't know I held
 
 === POV DEPTH ({pov}) ===
-- Stay fully in their head
-- Their unique vocabulary and thought patterns
-- Their specific observations and biases
-- Body-specific reactions (throat tight, stomach hollow)
-- NOT generic (heart racing, butterflies)
+Stay in their head. Their vocabulary. Their biases. Their blind spots.
+Body reactions must be SPECIFIC to this character (throat tight, jaw
+clenched, fingers curling) — not generic (heart racing, stomach
+flipping, pulse quickening).
 
 === SCENE TO TRANSFORM ===
 {scene.get('content', '')}
 
-Rewrite with authentic human voice. The text should pass as written by
-a skilled human author, not generated by an AI. Every sentence should
-feel considered, not produced:"""
+BEFORE YOU OUTPUT, check:
+1. Does any paragraph end by explaining the emotion? Fix it.
+2. Does any paragraph have 2+ metaphors? Fix it.
+3. Is any detail generic/stock? Make it specific.
+4. Is any dialogue too clean? Rough it up.
+5. Do any two consecutive paragraphs say the same thing? Cut one.
+
+Output the revised scene:"""
 
             if client:
                 response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                 enhanced_scenes.append({
                     **scene,
-                    "content": response.content,
-                    "enhanced": True
+                    "content": _clean_scene_content(response.content),
+                    "voice_human_passed": True
                 })
                 total_tokens += response.input_tokens + response.output_tokens
             else:
-                enhanced_scenes.append({**scene, "enhanced": True})
+                enhanced_scenes.append({**scene, "voice_human_passed": True})
                 total_tokens += 100
 
         self.state.scenes = enhanced_scenes
-        return enhanced_scenes, total_tokens
+        return {"scenes_processed": len(enhanced_scenes)}, total_tokens
+
+    async def _stage_continuity_audit_2(self) -> tuple:
+        """Lightweight continuity check after destructive voice/human pass.
+
+        Only checks facts: names, timeline, object positions, setting details.
+        Does NOT evaluate style, voice, or prose quality.
+        """
+        client = self.get_client_for_stage("continuity_audit_2")
+
+        all_content = "\n\n---\n\n".join([
+            f"Chapter {s.get('chapter')}, Scene {s.get('scene_number')}:\n{s.get('content', '')}"
+            for s in (self.state.scenes or []) if isinstance(s, dict)
+        ])
+
+        prompt = f"""You are a continuity checker. The manuscript just went through a voice revision pass.
+Check ONLY for factual consistency issues that may have been introduced.
+
+WORLD RULES:
+{json.dumps(self.state.world_bible, indent=2) if self.state.world_bible else 'Not available'}
+
+CHARACTERS:
+{json.dumps(self.state.characters, indent=2) if self.state.characters else 'Not available'}
+
+MANUSCRIPT:
+{all_content}
+
+CHECK ONLY:
+1. Character names spelled correctly and consistently
+2. Timeline still makes sense (no impossible sequences)
+3. Objects/items haven't moved or changed unexpectedly
+4. Setting details match established world rules
+5. Character knowledge consistency (no knowing things they shouldn't)
+
+DO NOT flag:
+- Style or voice changes (those are intentional)
+- Prose quality issues
+- Dialogue naturalness
+
+For each issue: location, type, description, suggested_fix.
+Respond in JSON: {{"issues": [...], "passed": true/false}}"""
+
+        if client:
+            response = await client.generate(prompt, max_tokens=2000, temperature=0.2, json_mode=True)
+            try:
+                audit_report = extract_json_robust(response.content, expect_array=False)
+            except Exception:
+                audit_report = {"issues": [], "passed": True}
+            if "issues" not in audit_report:
+                audit_report["issues"] = []
+            if "passed" not in audit_report:
+                audit_report["passed"] = len(audit_report.get("issues", [])) == 0
+
+            self.state.continuity_issues_2 = audit_report.get("issues", [])
+            logger.info(f"Continuity audit #2: {len(self.state.continuity_issues_2)} issues")
+            return audit_report, response.input_tokens + response.output_tokens
+
+        self.state.continuity_issues_2 = []
+        return {"issues": [], "passed": True}, 50
+
+    async def _stage_continuity_fix_2(self) -> tuple:
+        """Fix factual continuity issues from post-refinement audit.
+
+        CRITICAL: Fix facts ONLY. Do not rewrite for style, do not add voice,
+        do not polish. Preserve all voice/human pass work.
+        """
+        client = self.get_client_for_stage("continuity_fix_2")
+
+        issues = getattr(self.state, 'continuity_issues_2', [])
+        if not issues:
+            logger.info("No post-refinement continuity issues - skipping")
+            return {"fixes_applied": 0, "skipped": True}, 0
+
+        fixed_scenes = list(self.state.scenes or [])
+        total_tokens = 0
+        fixes_applied = 0
+
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            issue_location = issue.get("location", "")
+            issue_desc = issue.get("description", "")
+            suggested_fix = issue.get("suggested_fix", "")
+
+            for i, scene in enumerate(fixed_scenes):
+                if not isinstance(scene, dict):
+                    continue
+                scene_loc = f"Chapter {scene.get('chapter')}, Scene {scene.get('scene_number')}"
+                if issue_location.lower() in scene_loc.lower() or scene_loc.lower() in issue_location.lower():
+
+                    prompt = f"""Fix a FACTUAL continuity error in this scene.
+
+ISSUE: {issue_desc}
+SUGGESTED FIX: {suggested_fix}
+
+RULES:
+- Change ONLY the factual error (a name, a detail, a timeline reference)
+- Do NOT rewrite surrounding prose for style
+- Do NOT add voice, emotion, or polish
+- Preserve the author's voice and sentence structure exactly
+- Minimal surgical edit only
+
+SCENE:
+{scene.get('content', '')}
+
+Output the scene with ONLY the factual fix applied:"""
+
+                    if client:
+                        response = await client.generate(prompt, max_tokens=2500, temperature=0.3)
+                        fixed_scenes[i] = {
+                            **scene,
+                            "content": _clean_scene_content(response.content),
+                            "continuity_fixed_2": True
+                        }
+                        total_tokens += response.input_tokens + response.output_tokens
+                        fixes_applied += 1
+                    break
+
+        self.state.scenes = fixed_scenes
+        return {"fixes_applied": fixes_applied}, total_tokens
 
     async def _stage_dialogue_polish(self) -> tuple:
         """Polish dialogue for authenticity, subtext, and character voice."""
@@ -2116,6 +2693,9 @@ feel considered, not produced:"""
         cultural_notes = guidance.get("cultural_notes", "")
 
         for scene in (self.state.scenes or []):
+            if not isinstance(scene, dict):
+                polished_scenes.append(scene)
+                continue
             pov = scene.get("pov", "protagonist")
 
             prompt = f"""You are a dialogue specialist. Polish the dialogue in this scene for maximum authenticity.
@@ -2176,7 +2756,7 @@ Focus ONLY on improving the dialogue and adding physical beats between lines:"""
                 response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                 polished_scenes.append({
                     **scene,
-                    "content": response.content,
+                    "content": _clean_scene_content(response.content),
                     "dialogue_polished": True
                 })
                 total_tokens += response.input_tokens + response.output_tokens
@@ -2187,152 +2767,97 @@ Focus ONLY on improving the dialogue and adding physical beats between lines:"""
         self.state.scenes = polished_scenes
         return {"scenes_polished": len(polished_scenes)}, total_tokens
 
-    async def _stage_voice_humanization(self) -> tuple:
-        """Apply emotional unpredictability and authentic voice with tone shifts."""
-        client = self.get_client_for_stage("voice_humanization")
-        humanized_scenes = []
+    # _stage_voice_humanization removed — merged into _stage_voice_human_pass
+
+    async def _stage_motif_embedding(self) -> tuple:
+        """Design structural motif plan that feeds into master_outline.
+
+        This is a PLANNING stage, not a prose stage. It produces a motif map
+        that master_outline uses to bake motifs into scene structure from the
+        start, rather than painting them on after drafting.
+        """
+        client = self.get_client_for_stage("motif_embedding")
         total_tokens = 0
 
-        # Get voice style from config
-        writing_style = self.state.config.get("writing_style", "")
-        tone = self.state.config.get("tone", "")
-        influences = self.state.config.get("influences", "")
-
-        for scene in (self.state.scenes or []):
-            pov = scene.get("pov", "protagonist")
-
-            prompt = f"""You are a literary prose stylist. Enhance this scene with emotional
-authenticity and unpredictability that marks genuinely human writing.
-
-{PRESERVATION_CONSTRAINTS}
-
-=== VOICE TARGETS ===
-WRITING STYLE: {writing_style}
-TONE: {tone}
-INFLUENCES TO CHANNEL: {influences}
-POV CHARACTER: {pov}
-
-=== CHARACTER VOICES ===
-{json.dumps(self.state.characters, indent=2) if self.state.characters else 'Not available'}
-
-=== EMOTIONAL UNPREDICTABILITY ===
-Humans oscillate between emotional states. Add:
-- Sudden tonal shifts (analytical to poetic, formal to casual)
-- Brief bursts of unexpected emotion
-- Vulnerability alternating with deflection
-- Humor breaking tension (or heightening it)
-- Contradictory feelings in the same moment
-- Sarcasm, frustration, or quiet joy emerging naturally
-
-=== TONE SHIFTS & CONTRADICTIONS ===
-- Let the tone change within paragraphs
-- Move from sharp to soft, confident to doubtful
-- Don't maintain one emotional register throughout
-- Create moments of cognitive dissonance
-
-=== SUBTLE SHIFTS IN THOUGHT ===
-- Introduce digressions or non-linear thinking
-- Let thoughts wander and return
-- Abrupt mental pivots that feel natural
-- Personal reflections that interrupt narrative flow
-
-=== FEWER TRANSITIONS ===
-- Remove "however", "furthermore", "additionally"
-- Let ideas flow by juxtaposition
-- Trust the reader to make connections
-- Abrupt can be more powerful than smooth
-
-=== DIALOGUE AUTHENTICITY ===
-- Verbal tics unique to each character
-- Interruptions, overlapping, trailing off...
-- What's NOT said (subtext)
-- Physical beats between lines
-- Misunderstandings and cross-purposes
-
-=== SCENE TO ENHANCE ===
-{scene.get('content', '')}
-
-ENHANCE (don't fully rewrite) with emotional depth and human unpredictability.
-Preserve existing sentence structures and voice. Add emotional texture where
-missing, but do NOT change working prose. The prose should feel like it came
-from a mind that oscillates and experiences the world with messy authenticity.
-
-BEFORE OUTPUTTING: Verify no AI tells from PRESERVATION CONSTRAINTS appear:"""
-
-            if client:
-                response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
-                humanized_scenes.append({
-                    **scene,
-                    "content": response.content,
-                    "humanized": True
-                })
-                total_tokens += response.input_tokens + response.output_tokens
-            else:
-                humanized_scenes.append({**scene, "humanized": True})
-                total_tokens += 100
-
-        self.state.scenes = humanized_scenes
-        return {"voice_applied": True, "scenes_processed": len(humanized_scenes)}, total_tokens
-
-    async def _stage_motif_infusion(self) -> tuple:
-        """Weave thematic motifs throughout using Claude's literary understanding."""
-        client = self.get_client_for_stage("motif_infusion")
-        infused_scenes = []
-        total_tokens = 0
-
-        # Get themes and motifs from config
         themes = self.state.config.get("themes", "")
         motifs = self.state.config.get("motifs", "")
         central_question = self.state.config.get("central_question", "")
         guidance = self.state.config.get("strategic_guidance", {})
         aesthetic = guidance.get("aesthetic_guide", "")
 
-        for scene in (self.state.scenes or []):
-            prompt = f"""You are a literary editor specializing in thematic depth. SUBTLY ADD motifs
-and themes to this scene. This is an ADDITIVE pass - you should add small touches,
-not rewrite existing prose.
+        # Build context from completed planning stages
+        beat_sheet_summary = json.dumps(self.state.beat_sheet, indent=2) if self.state.beat_sheet else "Not available"
+        chars_summary = json.dumps(
+            [{"name": c.get("name", ""), "role": c.get("role", ""), "arc": c.get("arc", "")}
+             for c in (self.state.characters or []) if isinstance(c, dict)],
+            indent=1
+        )
 
-{PRESERVATION_CONSTRAINTS}
+        prompt = f"""You are a literary architect. Design a STRUCTURAL MOTIF PLAN for this novel.
 
-THEMES TO REINFORCE: {themes}
+This plan will be fed directly into the master outline so that scenes are
+DESIGNED AROUND motifs from the start—not decorated with them after the fact.
+
+=== STORY INPUTS ===
+HIGH CONCEPT: {self.state.high_concept}
+THEMES: {themes}
 RECURRING MOTIFS: {motifs}
 CENTRAL QUESTION: {central_question}
-AESTHETIC GUIDE: {aesthetic}
+AESTHETIC: {aesthetic}
 
-SCENE TO ENHANCE (add to, don't rewrite):
-{scene.get('content', '')}
+BEAT SHEET:
+{beat_sheet_summary}
 
-=== ADDITIVE MOTIF TECHNIQUES (minimal intervention) ===
-1. Add 1-2 sensory details per scene that echo motifs
-2. Slip a thematic reference into existing dialogue naturally
-3. Add a single symbolic object or observation
-4. Plant one seed that pays off later
-5. DO NOT rewrite entire paragraphs - touch lightly
+CHARACTERS:
+{chars_summary}
 
-The motifs should feel organic, not forced. A reader shouldn't notice them
-consciously, but should FEEL them. If a scene already has good thematic
-resonance, leave it mostly unchanged.
+EMOTIONAL ARCHITECTURE:
+{json.dumps(self.state.config.get('emotional_architecture', {}), indent=2)}
 
-BEFORE OUTPUTTING: Verify no AI tells from PRESERVATION CONSTRAINTS appear.
-Provide the enhanced scene:"""
+=== PRODUCE A MOTIF MAP ===
+For each major motif, provide:
+1. "motif": The motif name/symbol
+2. "meaning": What it represents thematically
+3. "evolution": How it transforms across the story (3-4 stages)
+4. "scene_mechanics": Concrete ways scenes should be built around it
+   (settings, objects, character actions, dialogue patterns)
+5. "key_beats": Which beat sheet moments should feature this motif prominently
+6. "character_links": Which characters embody or interact with this motif
 
-            if client:
-                response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
-                infused_scenes.append({
-                    **scene,
-                    "content": response.content,
-                    "motifs_infused": True
-                })
-                total_tokens += response.input_tokens + response.output_tokens
-            else:
-                infused_scenes.append({**scene, "motifs_infused": True})
-                total_tokens += 100
+Also provide:
+- "motif_collisions": Moments where two motifs should intersect or conflict
+- "central_question_arc": How the motifs collectively answer the central question
 
-        self.state.scenes = infused_scenes
-        return {"motifs_infused": True, "themes": themes, "scenes_processed": len(infused_scenes)}, total_tokens
+Respond in JSON format:
+{{"motifs": [...], "motif_collisions": [...], "central_question_arc": "..."}}"""
+
+        if client:
+            response = await client.generate(prompt, max_tokens=3000, temperature=0.5, json_mode=True)
+            try:
+                motif_map = extract_json_robust(response.content, expect_array=False)
+            except Exception as e:
+                logger.warning(f"Motif embedding JSON parse failed: {e}")
+                motif_map = {"motifs": [], "motif_collisions": [], "central_question_arc": ""}
+            total_tokens = response.input_tokens + response.output_tokens
+        else:
+            motif_map = {"motifs": [], "motif_collisions": [], "central_question_arc": ""}
+            total_tokens = 50
+
+        # Store motif map on state so master_outline can reference it
+        self.state.motif_map = motif_map
+        logger.info(f"Motif embedding: {len(motif_map.get('motifs', []))} motifs mapped")
+        return motif_map, total_tokens
 
     async def _stage_chapter_hooks(self) -> tuple:
-        """Ensure every chapter ends with a compelling hook for mobile scroll-through."""
+        """Ensure every chapter has a compelling opening and ending hook.
+
+        This is the LAST creative edit stage. Nothing touches hooks after this.
+        Constraints:
+        - Opening: only first 2-3 paragraphs of chapter's first scene
+        - Ending: only last 2-3 paragraphs of chapter's last scene
+        - Middle content: DO NOT ALTER
+        - Facts: DO NOT CHANGE (names, locations, timeline, objects)
+        """
         client = self.get_client_for_stage("chapter_hooks")
         hooked_scenes = []
         total_tokens = 0
@@ -2342,6 +2867,8 @@ Provide the enhanced scene:"""
         # Group scenes by chapter
         chapters: Dict[int, List[Dict]] = {}
         for scene in (self.state.scenes or []):
+            if not isinstance(scene, dict):
+                continue
             ch = scene.get("chapter", 1)
             if ch not in chapters:
                 chapters[ch] = []
@@ -2355,16 +2882,23 @@ Provide the enhanced scene:"""
         for chapter_num in sorted(chapters.keys()):
             chapter_scenes = chapters[chapter_num]
 
-            # Process all scenes, but focus on the last scene for the hook
             for i, scene in enumerate(chapter_scenes):
+                if not isinstance(scene, dict):
+                    hooked_scenes.append(scene)
+                    continue
+
+                is_chapter_start = (i == 0)
                 is_chapter_end = (i == len(chapter_scenes) - 1)
 
                 if is_chapter_end and client:
-                    # This is the last scene of the chapter - ensure it has a hook
                     prompt = f"""This is the final scene of Chapter {chapter_num}. Ensure it ends with a POWERFUL HOOK.
 
-IMPORTANT: Only modify the LAST 2-3 paragraphs. Keep everything else EXACTLY as-is.
-Do NOT introduce AI tells (see list below).
+STRICT RULES:
+- Only modify the LAST 2-3 paragraphs
+- Keep ALL other content EXACTLY as-is
+- Do NOT change any facts (names, locations, objects, timeline)
+- Do NOT introduce AI tells
+- The hook must feel organic, not forced
 
 {hook_guidance}
 
@@ -2377,18 +2911,50 @@ A great chapter-ending hook can be:
 - An emotional gut-punch
 - A decision made with unknown consequences
 
-CURRENT SCENE (enhance the ending hook):
+CURRENT SCENE:
 {scene.get('content', '')}
 
-Rewrite ONLY the last 2-3 paragraphs to create an irresistible hook that makes the reader NEED to continue.
-Keep the rest of the scene intact. The hook should feel organic, not forced.
+Rewrite ONLY the last 2-3 paragraphs to create an irresistible hook.
+Keep the rest of the scene EXACTLY intact.
 
 ENHANCED SCENE:"""
 
-                    response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
+                    response = await client.generate(prompt, max_tokens=2500, temperature=0.75)
                     hooked_scenes.append({
                         **scene,
-                        "content": response.content,
+                        "content": _clean_scene_content(response.content),
+                        "hook_enhanced": True
+                    })
+                    total_tokens += response.input_tokens + response.output_tokens
+
+                elif is_chapter_start and client:
+                    prompt = f"""This is the opening scene of Chapter {chapter_num}. Ensure it OPENS with an immediate hook.
+
+STRICT RULES:
+- Only modify the FIRST 2-3 paragraphs
+- Keep ALL other content EXACTLY as-is
+- Do NOT change any facts (names, locations, objects, timeline)
+- Do NOT introduce AI tells
+
+A great chapter-opening hook can be:
+- In medias res (start in action/tension)
+- A striking sensory image
+- A provocative thought or observation
+- Immediate conflict or question
+- Disorientation that pulls the reader in
+
+CURRENT SCENE:
+{scene.get('content', '')}
+
+Rewrite ONLY the first 2-3 paragraphs to create an immediate hook.
+Keep the rest of the scene EXACTLY intact.
+
+ENHANCED SCENE:"""
+
+                    response = await client.generate(prompt, max_tokens=2500, temperature=0.75)
+                    hooked_scenes.append({
+                        **scene,
+                        "content": _clean_scene_content(response.content),
                         "hook_enhanced": True
                     })
                     total_tokens += response.input_tokens + response.output_tokens
@@ -2414,6 +2980,9 @@ ENHANCED SCENE:"""
         devices_text = "\n".join([f"- {name}: {desc}" for name, desc in devices_sample])
 
         for scene in (self.state.scenes or []):
+            if not isinstance(scene, dict):
+                polished_scenes.append(scene)
+                continue
             pov = scene.get("pov", "protagonist")
 
             prompt = f"""You are a master prose editor performing the FINAL polish on a novel scene.
@@ -2497,7 +3066,7 @@ POLISHED SCENE:"""
                 response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                 polished_scenes.append({
                     **scene,
-                    "content": response.content,
+                    "content": _clean_scene_content(response.content),
                     "polished": True
                 })
                 total_tokens += response.input_tokens + response.output_tokens
@@ -2511,34 +3080,29 @@ POLISHED SCENE:"""
     async def _stage_final_deai(self) -> tuple:
         """Final surgical pass to remove any AI tells that slipped through.
 
-        This is a safety net that runs after prose_polish. Instead of rewriting
-        entire paragraphs, it does targeted find-and-replace for known AI patterns.
-        For complex cases, it asks the LLM to rewrite ONLY the problematic sentence.
+        Runs AFTER chapter_hooks. Uses word-window slicing to PROTECT hook text:
+        - First 300 words: protected (chapter opening)
+        - Last 400 words: protected (chapter hook)
+        - Middle: editable (regex + targeted LLM rewrites)
         """
         client = self.get_client_for_stage("final_deai")
         cleaned_scenes = []
         total_tokens = 0
         fixes_made = 0
 
-        # Patterns that can be surgically replaced without LLM
         SURGICAL_REPLACEMENTS = {
-            # Filter phrases - often can just be deleted
             "I couldn't help but notice": "",
             "I found myself": "I",
             "I noticed that": "",
             "I realized that": "",
             "I felt a sense of": "I felt",
             "Something about it made me": "It made me",
-
-            # Weak constructions
             "seemed to": "",
             "appeared to": "",
             "managed to": "",
             "proceeded to": "",
             "began to": "",
             "started to": "",
-
-            # Hollow intensifiers (remove entirely)
             " incredibly ": " ",
             " absolutely ": " ",
             " utterly ": " ",
@@ -2546,8 +3110,6 @@ POLISHED SCENE:"""
             " totally ": " ",
             " truly ": " ",
             " genuinely ": " ",
-
-            # Purple prose simplifications
             "a whirlwind of emotions": "confusion",
             "time seemed to stop": "everything stilled",
             "electricity coursed through": "heat rushed through",
@@ -2557,56 +3119,123 @@ POLISHED SCENE:"""
             "overwhelmed by": "hit by",
         }
 
-        for scene in (self.state.scenes or []):
+        # Group scenes by chapter to identify chapter-end scenes
+        chapters: Dict[int, List[int]] = {}
+        scenes_list = self.state.scenes or []
+        for idx, scene in enumerate(scenes_list):
+            if isinstance(scene, dict):
+                ch = scene.get("chapter", 1)
+                if ch not in chapters:
+                    chapters[ch] = []
+                chapters[ch].append(idx)
+
+        # Build set of chapter-end scene indices (these get hook protection)
+        chapter_end_indices = set()
+        for ch_indices in chapters.values():
+            if ch_indices:
+                chapter_end_indices.add(ch_indices[-1])
+
+        for idx, scene in enumerate(scenes_list):
+            if not isinstance(scene, dict):
+                cleaned_scenes.append(scene)
+                continue
+
             content = scene.get("content", "")
-            original_content = content
             scene_fixes = 0
+            is_chapter_end = idx in chapter_end_indices
 
-            # Apply surgical replacements
-            for pattern, replacement in SURGICAL_REPLACEMENTS.items():
-                if pattern.lower() in content.lower():
-                    # Case-insensitive replacement
-                    import re
-                    content = re.sub(
-                        re.escape(pattern),
-                        replacement,
-                        content,
-                        flags=re.IGNORECASE
-                    )
-                    scene_fixes += 1
+            if is_chapter_end:
+                # HOOK PROTECTION: split into protected head/tail + editable middle
+                words = content.split()
+                HEAD_WORDS = 300
+                TAIL_WORDS = 400
 
-            # Clean up any double spaces created by deletions
-            content = re.sub(r'  +', ' ', content)
-            content = re.sub(r' +\.', '.', content)
-            content = re.sub(r' +,', ',', content)
+                if len(words) <= HEAD_WORDS + TAIL_WORDS:
+                    # Scene too short to have an editable middle — skip entirely
+                    cleaned_scenes.append(scene)
+                    continue
 
-            # Check if any complex AI tells remain that need LLM help
-            remaining_tells = count_ai_tells(content)
+                head = " ".join(words[:HEAD_WORDS])
+                middle = " ".join(words[HEAD_WORDS:-TAIL_WORDS])
+                tail = " ".join(words[-TAIL_WORDS:])
 
-            if remaining_tells["total_tells"] > 0 and client:
-                # Get the specific problematic sentences
-                problem_patterns = list(remaining_tells["patterns_found"].keys())[:5]
+                # Apply surgical replacements ONLY to middle
+                for pattern, replacement in SURGICAL_REPLACEMENTS.items():
+                    if pattern.lower() in middle.lower():
+                        import re
+                        middle = re.sub(
+                            re.escape(pattern), replacement,
+                            middle, flags=re.IGNORECASE
+                        )
+                        scene_fixes += 1
 
-                prompt = f"""You are doing a SURGICAL edit. Find sentences containing these AI tell patterns
-and rewrite ONLY those specific sentences. Do NOT change anything else.
+                middle = re.sub(r'  +', ' ', middle)
+                middle = re.sub(r' +\.', '.', middle)
+                middle = re.sub(r' +,', ',', middle)
+
+                # LLM pass on middle only if needed
+                remaining_tells = count_ai_tells(middle)
+                if remaining_tells["total_tells"] > 0 and client:
+                    problem_patterns = list(remaining_tells["patterns_found"].keys())[:5]
+                    prompt = f"""SURGICAL edit. Fix ONLY sentences containing these AI tell patterns.
+Do NOT change anything else.
 
 PATTERNS TO FIX: {problem_patterns}
 
 RULES:
-- Only change sentences that contain the patterns above
-- Keep the meaning, just remove the AI tell
+- Only change sentences containing the patterns above
+- Keep meaning, just remove the AI tell
 - Preserve surrounding sentences EXACTLY
-- If a sentence is fine, leave it alone
+
+TEXT:
+{middle}
+
+OUTPUT the text with only problematic sentences fixed:"""
+
+                    response = await client.generate(prompt, max_tokens=3000)
+                    middle = response.content
+                    total_tokens += response.input_tokens + response.output_tokens
+                    scene_fixes += remaining_tells["total_tells"]
+
+                # Recombine: protected head + cleaned middle + protected tail
+                content = head + " " + middle + " " + tail
+            else:
+                # Non-chapter-end scenes: full surgical pass (no hook to protect)
+                for pattern, replacement in SURGICAL_REPLACEMENTS.items():
+                    if pattern.lower() in content.lower():
+                        import re
+                        content = re.sub(
+                            re.escape(pattern), replacement,
+                            content, flags=re.IGNORECASE
+                        )
+                        scene_fixes += 1
+
+                content = re.sub(r'  +', ' ', content)
+                content = re.sub(r' +\.', '.', content)
+                content = re.sub(r' +,', ',', content)
+
+                remaining_tells = count_ai_tells(content)
+                if remaining_tells["total_tells"] > 0 and client:
+                    problem_patterns = list(remaining_tells["patterns_found"].keys())[:5]
+                    prompt = f"""SURGICAL edit. Fix ONLY sentences containing these AI tell patterns.
+Do NOT change anything else.
+
+PATTERNS TO FIX: {problem_patterns}
+
+RULES:
+- Only change sentences containing the patterns above
+- Keep meaning, just remove the AI tell
+- Preserve surrounding sentences EXACTLY
 
 TEXT:
 {content}
 
-OUTPUT the full text with only the problematic sentences fixed:"""
+OUTPUT the text with only problematic sentences fixed:"""
 
-                response = await client.generate(prompt, max_tokens=3000)
-                content = response.content
-                total_tokens += response.input_tokens + response.output_tokens
-                scene_fixes += remaining_tells["total_tells"]
+                    response = await client.generate(prompt, max_tokens=3000)
+                    content = _clean_scene_content(response.content)
+                    total_tokens += response.input_tokens + response.output_tokens
+                    scene_fixes += remaining_tells["total_tells"]
 
             if scene_fixes > 0:
                 fixes_made += scene_fixes
@@ -2618,8 +3247,8 @@ OUTPUT the full text with only the problematic sentences fixed:"""
             })
 
         self.state.scenes = cleaned_scenes
-        logger.info(f"Final de-AI pass: {fixes_made} fixes made across {len(cleaned_scenes)} scenes")
-        return {"fixes_made": fixes_made, "scenes_processed": len(cleaned_scenes)}, total_tokens
+        logger.info(f"Final de-AI pass: {fixes_made} fixes (hook-protected on {len(chapter_end_indices)} chapter endings)")
+        return {"fixes_made": fixes_made, "scenes_processed": len(cleaned_scenes), "hooks_protected": len(chapter_end_indices)}, total_tokens
 
     async def _stage_quality_audit(self) -> tuple:
         """Comprehensive quality audit before final output."""
@@ -2638,8 +3267,9 @@ OUTPUT the full text with only the problematic sentences fixed:"""
         }
 
         # 1. Word Count Audit
+        scenes_list = [s for s in (self.state.scenes or []) if isinstance(s, dict)]
         total_words = sum(count_words_accurate(s.get("content", ""))
-                        for s in (self.state.scenes or []))
+                        for s in scenes_list)
         target_words = self.state.target_words
         word_pct = (total_words / target_words * 100) if target_words > 0 else 0
 
@@ -2659,7 +3289,7 @@ OUTPUT the full text with only the problematic sentences fixed:"""
             audit_results["passed"] = False
 
         # 2. AI Tell Audit
-        all_content = " ".join(s.get("content", "") for s in (self.state.scenes or []))
+        all_content = " ".join(s.get("content", "") for s in scenes_list)
         ai_tell_results = count_ai_tells(all_content)
         audit_results["ai_tells"] = ai_tell_results
 
@@ -2672,7 +3302,7 @@ OUTPUT the full text with only the problematic sentences fixed:"""
 
         # 3. Scene Length Audit
         short_scenes = []
-        for scene in (self.state.scenes or []):
+        for scene in scenes_list:
             validation = validate_scene_length(scene, self.state.words_per_scene)
             if not validation["meets_target"]:
                 short_scenes.append(validation)
@@ -2701,7 +3331,7 @@ OUTPUT the full text with only the problematic sentences fixed:"""
 
         if promised_spice > 0:
             spice_counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
-            for scene in (self.state.scenes or []):
+            for scene in scenes_list:
                 level = scene.get("spice_level", 0)
                 spice_counts[level] = spice_counts.get(level, 0) + 1
 
@@ -2723,7 +3353,7 @@ OUTPUT the full text with only the problematic sentences fixed:"""
         # 5. Chapter Hook Strength (sample check)
         # Group by chapter and check last scene of each
         chapters: Dict[int, List[Dict]] = {}
-        for scene in (self.state.scenes or []):
+        for scene in scenes_list:
             ch = scene.get("chapter", 1)
             if ch not in chapters:
                 chapters[ch] = []
@@ -2773,9 +3403,9 @@ OUTPUT the full text with only the problematic sentences fixed:"""
                         audit_results["needs_iteration"] = True
 
                 elif issue["type"] == "ai_tells":
-                    # AI tells too high - re-run human_passes
-                    if "human_passes" not in audit_results["stages_to_rerun"]:
-                        audit_results["stages_to_rerun"].append("human_passes")
+                    # AI tells too high - re-run voice_human_pass
+                    if "voice_human_pass" not in audit_results["stages_to_rerun"]:
+                        audit_results["stages_to_rerun"].append("voice_human_pass")
                         audit_results["needs_iteration"] = True
 
                 elif issue["type"] == "scene_length":
@@ -2801,12 +3431,13 @@ OUTPUT the full text with only the problematic sentences fixed:"""
         config = self.state.config
 
         # Calculate stats using accurate word count
-        total_scenes = len(self.state.scenes or [])
+        scenes_list = [s for s in (self.state.scenes or []) if isinstance(s, dict)]
+        total_scenes = len(scenes_list)
         total_words = sum(count_words_accurate(s.get("content", ""))
-                        for s in (self.state.scenes or []))
+                        for s in scenes_list)
 
         # Count chapters
-        chapters = set(s.get("chapter") for s in (self.state.scenes or []))
+        chapters = set(s.get("chapter") for s in scenes_list)
         total_chapters = len(chapters)
 
         # Calculate targets vs actual
@@ -2828,10 +3459,10 @@ OUTPUT the full text with only the problematic sentences fixed:"""
         }
 
         # Sample validation - check multiple scenes
-        if client and self.state.scenes and len(self.state.scenes) >= 3:
+        if client and scenes_list and len(scenes_list) >= 3:
             # Check beginning, middle, and end
-            sample_indices = [0, len(self.state.scenes) // 2, -1]
-            samples = [self.state.scenes[i] for i in sample_indices]
+            sample_indices = [0, len(scenes_list) // 2, -1]
+            samples = [scenes_list[i] for i in sample_indices]
 
             prompt = f"""Rate these 3 representative scenes (beginning, middle, end) on quality (1-10 scale).
 
@@ -2861,14 +3492,8 @@ Respond with JSON:
 {{"scores": {{"prose": X, "voice": X, "pacing": X, "sensory": X, "hook": X, "genre_fit": X}}, "overall": X, "strengths": ["..."], "areas_for_improvement": ["..."]}}"""
 
             try:
-                response = await client.generate(prompt, max_tokens=800)
-                # Try to extract JSON
-                import re
-                json_match = re.search(r'\{.*\}', response.content, re.DOTALL)
-                if json_match:
-                    quality_data = json.loads(json_match.group())
-                else:
-                    quality_data = json.loads(response.content)
+                response = await client.generate(prompt, max_tokens=800, json_mode=True)
+                quality_data = extract_json_robust(response.content, expect_array=False)
 
                 validation_report["quality_score"] = quality_data.get("overall", 7) / 10
                 validation_report["quality_details"] = quality_data
@@ -2905,12 +3530,16 @@ Respond with JSON:
 
         # Get chapter titles from outline if available
         for ch in (self.state.master_outline or []):
+            if not isinstance(ch, dict):
+                continue
             ch_num = ch.get("chapter")
             ch_title = ch.get("chapter_title", "")
             if ch_num and ch_title:
                 chapter_titles[ch_num] = ch_title
 
         for scene in (self.state.scenes or []):
+            if not isinstance(scene, dict):
+                continue
             chapter = scene.get("chapter")
             if chapter != current_chapter:
                 ch_title = chapter_titles.get(chapter, "")

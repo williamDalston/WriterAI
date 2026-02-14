@@ -18,8 +18,10 @@ from prometheus_lib.llm.clients import (
     OpenAIClient,
     GeminiClient,
     AnthropicClient,
+    OllamaClient,
     LLMResponse,
-    get_client
+    get_client,
+    is_ollama_model,
 )
 
 
@@ -155,7 +157,20 @@ class TestGetClient:
         client = get_client("claude-3-5-sonnet")
         assert isinstance(client, AnthropicClient)
 
-    def test_unknown_model_defaults_to_openai(self):
-        """Test that unknown model defaults to OpenAI."""
+    def test_unknown_model_defaults_to_ollama(self):
+        """Test that unknown model defaults to local Ollama."""
         client = get_client("unknown-model")
-        assert isinstance(client, OpenAIClient)
+        assert isinstance(client, OllamaClient)
+
+    def test_get_ollama_client(self):
+        """Test getting Ollama client for local models."""
+        client = get_client("qwen2.5:7b")
+        assert isinstance(client, OllamaClient)
+        assert client.model_name == "qwen2.5:7b"
+
+    def test_is_ollama_model(self):
+        """Test ollama model detection."""
+        assert is_ollama_model("qwen2.5:7b")
+        assert is_ollama_model("llama3.2")
+        assert is_ollama_model("mistral:7b")
+        assert not is_ollama_model("gpt-4o-mini")
