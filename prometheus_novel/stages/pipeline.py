@@ -1168,12 +1168,13 @@ class PipelineOrchestrator:
 
                             await self._emit("on_stage_complete", f"{rerun_stage}_iteration", rerun_result)
 
-                        # Re-run prose polish after fixes
+                        # Re-run full polish chain after destructive/expansion fixes
                         if "voice_human_pass" in stages_to_rerun or "scene_expansion" in stages_to_rerun:
-                            logger.info("  Re-running prose_polish after fixes")
-                            polish_result = await self._run_stage("prose_polish")
-                            self.state.stage_results.append(polish_result)
-                            self.state.total_tokens += polish_result.tokens_used
+                            logger.info("  Re-running polish chain: dialogue, prose, hooks, final_deai")
+                            for polish_stage in ["dialogue_polish", "prose_polish", "chapter_hooks", "final_deai"]:
+                                p_result = await self._run_stage(polish_stage)
+                                self.state.stage_results.append(p_result)
+                                self.state.total_tokens += p_result.tokens_used
 
                         self.state.save()
 
@@ -1718,9 +1719,18 @@ TARGET: {self.state.target_chapters} chapters total, {self.state.scenes_per_chap
 SUBPLOTS: {config.get('subplots', 'None specified')}
 
 IMPORTANT: Each chapter is an object with a "scenes" array. Example structure:
-{{"chapters": [{{"chapter": 1, "chapter_title": "Title", "scenes": [{{"scene": 1, "scene_name": "Name", "pov": "Character", "purpose": "...", "character_scene_goal": "...", "central_conflict": "...", "opening_hook": "...", "outcome": "...", "location": "...", "emotional_arc": "...", "tension_level": 5, "pacing": "medium", "spice_level": 0}}]}}]}}
+{{"chapters": [{{"chapter": 1, "chapter_title": "Title", "scenes": [{{"scene": 1, "scene_name": "Name", "pov": "Character", "purpose": "...", "differentiator": "concrete detail that makes this scene unique", "character_scene_goal": "...", "central_conflict": "...", "opening_hook": "...", "outcome": "...", "location": "...", "emotional_arc": "...", "tension_level": 5, "pacing": "medium", "spice_level": 0}}]}}]}}
 
-Scene fields: scene (number), scene_name, pov, purpose, character_scene_goal, central_conflict, opening_hook, outcome, location, emotional_arc, tension_level (1-10), pacing (fast/medium/slow), spice_level (0-5).
+Scene fields: scene (number), scene_name, pov, purpose, differentiator (REQUIRED: one concrete detail making this scene distinct), character_scene_goal, central_conflict, opening_hook, outcome, location, emotional_arc, tension_level (1-10), pacing (fast/medium/slow), spice_level (0-5).
+
+=== CRITICAL: SCENE DIFFERENTIATION ===
+The AI tends to collapse similar scenes into the same output. To prevent this, EVERY scene must be DISTINCT:
+- Give each scene a UNIQUE purpose (not "they talk on the balcony" twice)
+- Give each scene a UNIQUE opening_hook (different entry point, different action, different time)
+- Give each scene a UNIQUE central_conflict or tension (even if small)
+- Add a "differentiator" field: one concrete detail that makes THIS scene different (e.g., "first time she brings him food", "he shows her the sketchbook", "rain forces them inside")
+- If two scenes share a location (e.g., balcony), they must differ in: time of day, weather, object present, emotional state, or what is at stake
+- Never write two scenes with the same purpose, outcome, or emotional beat. Advance the story.
 
 Respond with a JSON object containing a "chapters" array of {batch_end - batch_start + 1} chapter objects. Each chapter MUST have "chapter", "chapter_title", and "scenes" keys."""
 
@@ -2027,6 +2037,7 @@ Return JSON with:
                 relationships = scene_info.get('relationships', '')
                 knowledge_gain = scene_info.get('knowledge_gain', '')
                 unique_element = scene_info.get('unique_element', '')
+                differentiator = scene_info.get('differentiator', '')  # What makes THIS scene distinct from similar beats
                 foreshadowing = scene_info.get('foreshadowing', '')
                 pacing = scene_info.get('pacing', 'medium')
                 tension_level = scene_info.get('tension_level', 5)
@@ -2037,7 +2048,20 @@ Return JSON with:
                 extra_chars = scene_info.get('extra_characters', '')
 
                 # Build comprehensive scene prompt
+                # Detect scene position within chapter for differentiation
+                chapter_scene_list = [s for s in chapter.get("scenes", []) if isinstance(s, dict)]
+                scene_position = next((i for i, s in enumerate(chapter_scene_list)
+                                       if (s.get("scene", s.get("scene_number", 0)) == scene_num)), 0)
+                total_scenes_in_chapter = len(chapter_scene_list)
+
+                # Get last scene's opening words to prevent repetition
+                prev_opening = ""
+                if scenes:
+                    last_content = scenes[-1].get("content", "")
+                    prev_opening = " ".join(last_content.split()[:50])
+
                 prompt = f"""Write Chapter {chapter_num}, Scene {scene_num}: "{scene_name}"
+POSITION: Scene {scene_position + 1} of {total_scenes_in_chapter} in this chapter.
 
 === MASTER CRAFT PRINCIPLES ===
 1. SHOW vs TELL:
@@ -2067,17 +2091,36 @@ INFLUENCES TO CHANNEL: {influences}
 
 === ABSOLUTE RESTRICTIONS (NEVER INCLUDE) ===
 {avoid_list}
+- NEVER use: "couldn't help but", "found myself", "a sense of", "I realized"
+- NEVER use stock metaphors: "electricity", "butterflies", "anchor", "storm",
+  "walls crumbling", "breath I didn't know I was holding", "heart skipped"
+- NEVER end a paragraph by explaining the emotion it just showed
+- NEVER use two metaphors in the same paragraph
+- NEVER open with weather, atmosphere, or description—open with ACTION or DIALOGUE
+- NEVER loop: if you made a point, advance; do not restate it
+
+=== SCENE DIFFERENTIATION (critical) ===
+When outline beats are similar, the AI repeats itself. THIS SCENE MUST BE DISTINCT:
+- Different purpose, outcome, and emotional beat from any previous scene
+- If the outline gave similar beats (e.g., "they talk on balcony"), invent a concrete differentiator: different time, object, conflict, or piece of dialogue
+- Do NOT retell the same story beat. Advance the story. This is Scene {scene_position + 1} of {total_scenes_in_chapter} in this chapter—it must do something the previous scene did not
+{"This scene MUST open differently from the previous scene." if scenes else ""}
+{f"PREVIOUS SCENE OPENED WITH: {prev_opening}..." if prev_opening else ""}
+{"DO NOT repeat similar atmospheric descriptions, sensory details, or emotional" if scenes else ""}
+{"states from the previous opening. Use a DIFFERENT sense, action, or entry point." if scenes else ""}
 
 === POV & VOICE ===
-Written from {pov_char}'s perspective in first person.
+Written from {pov_char}'s perspective.
 - Their unique vocabulary and thought patterns
 - Their specific biases and blind spots
 - Their physical sensations and emotional responses
+- Body reactions must be SPECIFIC to this character (not generic "heart racing")
 
 === SCENE PURPOSE ===
 WHY THIS SCENE EXISTS: {purpose}
 SCENE QUESTION (to answer): {scene_question}
 {f"UNIQUE ELEMENT: {unique_element}" if unique_element else ""}
+{f"DIFFERENTIATOR (what makes this scene distinct from similar beats): {differentiator}" if differentiator else ""}
 
 === GOALS & CONFLICTS ===
 CHARACTER'S SCENE GOAL: {char_goal}
@@ -2106,8 +2149,15 @@ LOCATION: {location}
 {f"KEY IMAGERY: {imagery}" if imagery else ""}
 {f"SYMBOL TO WEAVE IN: {key_symbol}" if key_symbol else ""}
 
-AESTHETIC PALETTE:
-{aesthetic}
+{f"AESTHETIC PALETTE: {aesthetic}" if aesthetic else ""}
+
+=== UGLY DETAILS (required) ===
+Every setting has something broken, dirty, or imperfect. Include at least ONE:
+- The fridge humming, a sticky patch on the floor, the siren two streets over
+- The cheap flour brand, cracked grout, oven that ticks when cooling
+- The neighbor's TV bleeding through the wall, a drip in the sink
+- A specific object that doesn't belong, a sound that interrupts the mood
+Generic "fairy lights" and "warm scents" = stock photo. Replace with observed, unglamorous detail.
 
 === CRAFT ELEMENTS ===
 {f"PHYSICAL ACTIONS: {physical_motion}" if physical_motion else ""}
@@ -2117,6 +2167,12 @@ AESTHETIC PALETTE:
 {f"FORESHADOWING TO PLANT: {foreshadowing}" if foreshadowing else ""}
 {f"DIALOGUE TO INCLUDE: {dialogue_notes}" if dialogue_notes else ""}
 {f"THEME CONNECTION: {theme_connection}" if theme_connection else ""}
+
+=== DIALOGUE RULES ===
+- Real people deflect, fumble, trail off, interrupt
+- No character announces their feelings unless they would in real life
+- Add physical beats between lines (not "she smiled"—what did her hands do?)
+- Subtext > text: what they mean is often not what they say
 
 === PACING & EMOTION ===
 PACING: {pacing}
@@ -2132,8 +2188,7 @@ TENSION LEVEL: {tension_level}/10
 {json.dumps(self.state.characters, indent=2) if self.state.characters else ''}
 {f"ADDITIONAL CHARACTERS: {extra_chars}" if extra_chars else ""}
 
-=== CULTURAL AUTHENTICITY ===
-{cultural_notes}
+{f"=== CULTURAL AUTHENTICITY ==={chr(10)}{cultural_notes}" if cultural_notes else ""}
 
 === CONTINUITY ===
 {previous_context}
@@ -2143,10 +2198,11 @@ Approximately {self.state.words_per_scene} words.
 Paragraphs: 4 sentences maximum (mobile-optimized).
 
 === NOW WRITE ===
-Begin directly with the narrative. The opening should:
-- Establish setting through character interaction (not description dump)
+Begin DIRECTLY with narrative—no preamble, no title, no scene heading.
+- Open with ACTION or DIALOGUE (not description, not atmosphere)
 - Hook immediately with tension, motion, or intrigue
-- Ground us in the POV character's physical/emotional state
+- Ground us in the POV character's physical state through what they DO
+- Each paragraph must advance the scene (no restatements)
 
 Write the complete scene:"""
 
@@ -2181,7 +2237,11 @@ Write the complete scene:"""
         return scenes, total_tokens
 
     async def _stage_scene_expansion(self) -> tuple:
-        """Expand scenes that are below target word count."""
+        """Expand scenes that are below target word count.
+
+        Uses rolling context so the LLM knows what was already written,
+        preventing 'retry' duplication (same beat expanded as if it hadn't been drafted).
+        """
         client = self.get_client_for_stage("scene_expansion")
         expanded_scenes = []
         total_tokens = 0
@@ -2209,12 +2269,21 @@ Write the complete scene:"""
                 expanded_scenes.append(scene)
                 continue
 
+            # Pass previous EXPANDED scenes as context so LLM doesn't "retry" the same beat
+            previous_context = self._get_previous_scenes_context(expanded_scenes, count=3)
+
             prompt = f"""This scene is {validation['actual']} words but should be approximately {target_words} words.
 Expand it by adding {shortfall}+ words.
 
+=== CRITICAL: CONTINUITY ===
+The scenes below have ALREADY been written and expanded. This scene comes AFTER them.
+Do NOT retell or repeat the same story beat. Expand THIS scene only. Advance the story.
+
+{previous_context}
+
 === EXPANSION GUIDELINES ===
 DO:
-- Add more sensory details (smells, textures, sounds)
+- Add more sensory details (smells, textures, sounds) - prefer ugly/specific over stock
 - Deepen internal monologue/reactions
 - Expand dialogue with beats and subtext
 - Add physical movement and body language
@@ -2225,6 +2294,7 @@ DO NOT:
 - Change the scene's outcome
 - Add unnecessary transitions or filler
 - Pad with repetitive descriptions
+- Retell events from previous scenes (they are already done)
 
 === SCENE TO EXPAND ===
 Chapter {scene.get('chapter')}, Scene {scene.get('scene_number')}
@@ -2268,37 +2338,45 @@ Provide the complete expanded scene (target: {target_words} words):"""
             if not isinstance(scene, dict):
                 refined_scenes.append(scene)
                 continue
-            prompt = f"""Review and improve this scene for publication quality.
+            prompt = f"""Revise this scene for publication quality. Output ONLY the revised scene text.
 
-=== STYLE REQUIREMENTS ===
-WRITING STYLE: {writing_style}
-TONE: {tone}
+=== STYLE ===
+{writing_style} | TONE: {tone}
 
-=== ABSOLUTE RESTRICTIONS (Flag if present, then remove) ===
+=== RESTRICTIONS (remove if present) ===
 {avoid_list}
 
-=== QUALITY CHECKLIST ===
-Score and improve across these dimensions:
-1. Structure (goal, conflict, turn present and clear)
-2. Dialogue (natural, character-appropriate, subtext present)
-3. Pacing (varied sentence length, no rushed or dragging sections)
-4. Sensory Details (show don't tell, visceral reactions)
-5. Hook (compelling ending that pulls reader forward)
-6. POV Consistency (staying in the character's head, no head-hopping)
-7. Paragraph Length (max 4 sentences for mobile readability)
+=== REVISION PRIORITIES (in order) ===
 
-=== ORIGINAL SCENE ===
+1. CUT EMOTIONAL SUMMARIES: If a paragraph shows an emotion through
+   action/dialogue, delete any sentence that then explains that emotion.
+   End on what the character DOES, not what it means.
+
+2. ONE METAPHOR PER PARAGRAPH: If a paragraph has 2+ figurative
+   comparisons, keep the sharpest, make the rest literal.
+
+3. KILL STOCK LANGUAGE: Replace these with specific, observed details:
+   - "warm and inviting" → what specifically? Cracked tile? Cheap cinnamon?
+   - "electricity/spark" → what physical sensation, exactly?
+   - "comfortable silence" → what sounds fill it?
+   - "butterflies/heart skipped" → what does the body actually do?
+
+4. ROUGH UP DIALOGUE: Real people deflect, fumble, trail off.
+   - Cut any line where a character announces their feelings
+   - Add physical beats (not "smiled"—what did their hands do?)
+
+5. CUT LOOPING: If two paragraphs make the same emotional point, cut one.
+   Every paragraph must advance the scene.
+
+6. STRENGTHEN VERBS: Replace "was/had/felt/seemed/began/started" with
+   concrete action verbs. Cut filter words (noticed, realized, saw that).
+
+7. PARAGRAPH LENGTH: Max 4 sentences per paragraph.
+
+=== SCENE TO REVISE ===
 {scene.get('content', '')}
 
-=== INSTRUCTIONS ===
-1. First, check for any "avoid" list violations and remove them
-2. Strengthen weak verbs
-3. Eliminate filter words (felt, saw, heard, noticed)
-4. Add visceral reactions where missing
-5. Ensure paragraphs aren't too long
-6. Tighten dialogue tags
-
-Provide the improved scene:"""
+Output ONLY the revised scene—no notes, no commentary, no checklist:"""
 
             if client:
                 response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
@@ -2482,6 +2560,19 @@ TONE: {tone}
 CHANNEL: {influences}
 {f"AESTHETIC: {aesthetic}" if aesthetic else ""}
 
+=== NON-NEGOTIABLE: NO HALLMARK CARD SYNDROME ===
+The AI refuses to let an action just be an action. It explains the emotional
+meaning of every movement immediately after it happens. YOU MUST STOP THAT.
+
+RULE: Do not summarize the character's internal state. Do not explain the
+"meaning" of the scene. Describe the physical action and STOP. If the scene
+showed tenderness, the reader already feels it. Do not tell them. Do not
+digest the scene for the reader. Let them digest it.
+
+KILL on sight: "This ritual calms me...", "Late-night baking is my therapy...",
+"A quiet promise that...", "Tonight, amidst chaos and shadows, at peace...",
+"connection in unexpected places", "a sense of something new beginning".
+
 === YOUR 6 JOBS (in priority order) ===
 
 JOB 1: KILL EMOTIONAL SUMMARIZATION
@@ -2491,10 +2582,13 @@ This is the #1 priority. If a paragraph ends with "a reminder that..." or
 "something about this moment..." or "a bond forged in..." — that sentence
 dies. End on what the character DOES or SEES instead.
 
-JOB 2: ENFORCE ONE-METAPHOR-PER-PARAGRAPH
-Count the figurative comparisons in each paragraph. If there are 2+,
-keep the sharpest one. Make the rest literal. Three metaphors in a row
-is AI perfume. One metaphor that lands is writing.
+JOB 2: INSERT UGLY DETAILS (break the stock photo)
+Every setting has something broken, dirty, or annoying. Add at least ONE:
+- The fridge humming, the sticky patch on the floor, the siren two streets over
+- The cheap flour brand from the bodega, the cracked grout, the oven that ticks
+- The neighbor's TV bleeding through the wall, the drip in the sink
+Generic "fairy lights twinkle" and "smells like home" = stock photo. Replace
+with observed, unglamorous detail that only THIS character would notice.
 
 JOB 3: REPLACE STOCK WITH SPECIFIC
 "Warm and inviting" → what specifically? The cracked tile, the cheap
@@ -2503,15 +2597,19 @@ TV bleeding through the wall. Push every generic image toward the
 ugly, specific, observed detail that only THIS character in THIS place
 would notice.
 
-JOB 4: FIX THE DIALOGUE
-Real people don't take clean turns being emotionally articulate.
+JOB 4: LOWER THE DIALOGUE EMOTIONAL IQ (break therapeutic speech)
+Real people do NOT speak with perfect emotional intelligence. They are NOT
+in a couple's therapy session. They deflect. They say "It's fine" when it's
+not. They talk about the weather to avoid talking about the dead wife.
 - Add deflection (answering a different question)
 - Add fumbling (starting, stopping, restarting)
 - Add subtext (what they mean vs what they say)
 - Add physical beats between lines (not "she smiled"—what did her
   hands do? her jaw? did she look away?)
-- Remove any line where a character announces their feelings directly
-  unless they would actually do that in real life
+- REMOVE any line where a character articulates their feelings clearly
+  unless they would actually do that in real life (they usually wouldn't)
+- "It's like you pour yourself into everything" to a neighbor they barely
+  know? That dies. Replace with awkward deflection or a wrong thing said.
 
 JOB 5: CUT LOOPING PARAGRAPHS
 If two paragraphs make the same emotional point, cut one. If a theme
@@ -2834,7 +2932,7 @@ Respond in JSON format:
         if client:
             response = await client.generate(prompt, max_tokens=3000, temperature=0.5, json_mode=True)
             try:
-                motif_map = extract_json_robust(response.content, expect_array=False)
+                motif_map = extract_json_robust(response.content if response else None, expect_array=False)
             except Exception as e:
                 logger.warning(f"Motif embedding JSON parse failed: {e}")
                 motif_map = {"motifs": [], "motif_collisions": [], "central_question_arc": ""}
@@ -3119,9 +3217,14 @@ POLISHED SCENE:"""
             "overwhelmed by": "hit by",
         }
 
+        # Guard: if no scenes exist, return early
+        scenes_list = self.state.scenes or []
+        if not scenes_list:
+            logger.warning("final_deai: No scenes to process")
+            return {"fixes_made": 0, "scenes_processed": 0, "hooks_protected": 0}, 0
+
         # Group scenes by chapter to identify chapter-end scenes
         chapters: Dict[int, List[int]] = {}
-        scenes_list = self.state.scenes or []
         for idx, scene in enumerate(scenes_list):
             if isinstance(scene, dict):
                 ch = scene.get("chapter", 1)
@@ -3193,7 +3296,7 @@ TEXT:
 OUTPUT the text with only problematic sentences fixed:"""
 
                     response = await client.generate(prompt, max_tokens=3000)
-                    middle = response.content
+                    middle = _clean_scene_content(response.content)
                     total_tokens += response.input_tokens + response.output_tokens
                     scene_fixes += remaining_tells["total_tells"]
 

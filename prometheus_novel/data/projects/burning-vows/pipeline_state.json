@@ -1,0 +1,30 @@
+{
+  "project_name": "burning-vows",
+  "current_stage": 0,
+  "completed_stages": [
+    "high_concept"
+  ],
+  "high_concept": "High Concept: In the sun-drenched villas of Amalfi, where stone walls hug cliff-side secrets and lemon groves whisper of bitter-sweetness, Lena Castillo\u2014a divorce attorney jaded by love\u2014collides once again with Marco Vitale, her old flame who broke her heart. Forced to co-plan her best friend\u2019s wedding in this picturesque setting, Lena must confront the man and the memory that shattered her belief in true connection. As they navigate shared balconies and hidden coves, their undeniable chemistry reignites against a backdrop of family tragedy and long-buried secrets. But when a revelation from the past threatens to shatter the wedding\u2019s blissful facade and expose Lena's professional truth, she is pushed to choose between her protective cynicism and the vulnerability that real love demands. Will this sun-soaked reunion melt away years of guarded walls or confirm Lena\u2019s worst fears that love always ends in divorce?",
+  "world_bible": null,
+  "beat_sheet": null,
+  "characters": null,
+  "master_outline": null,
+  "scenes": null,
+  "continuity_issues": null,
+  "continuity_issues_2": null,
+  "motif_map": null,
+  "emotional_arc": null,
+  "target_words": 60000,
+  "target_chapters": 27,
+  "total_tokens": 2065,
+  "total_cost_usd": 0.02065,
+  "stage_results": [
+    {
+      "stage_name": "high_concept",
+      "status": "completed",
+      "duration_seconds": 14.886873245239258,
+      "tokens_used": 2065,
+      "cost_usd": 0.02065
+    }
+  ]
+}

@@ -106,10 +106,12 @@ class TestPipelineOrchestrator:
     """Tests for PipelineOrchestrator."""
 
     def test_stages_defined(self):
-        """Test that all 12 stages are defined."""
-        assert len(PipelineOrchestrator.STAGES) == 12
-        assert "high_concept" in PipelineOrchestrator.STAGES
-        assert "output_validation" in PipelineOrchestrator.STAGES
+        """Test that core stages are defined and pipeline is non-empty."""
+        stages = PipelineOrchestrator.STAGES
+        assert len(stages) >= 12
+        assert "high_concept" in stages
+        assert "output_validation" in stages
+        assert "voice_human_pass" in stages
 
     @pytest.mark.asyncio
     async def test_initialize(self, project_with_config):

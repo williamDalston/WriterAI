@@ -273,9 +273,11 @@ class KDPExporter:
         self._add_title_page()
         self._add_copyright_page()
 
-        # Group scenes by chapter
+        # Group scenes by chapter (skip malformed entries)
         chapters: Dict[int, List[Dict]] = {}
         for scene in self.scenes:
+            if not isinstance(scene, dict):
+                continue
             ch = scene.get("chapter", 1)
             if ch not in chapters:
                 chapters[ch] = []
