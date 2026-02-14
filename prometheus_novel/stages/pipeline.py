@@ -305,6 +305,7 @@ def _clean_scene_content(text: str) -> str:
     - "**Changes made:** ..."
     - "=== Quality checklist ==="
     - "Note: I've removed ..."
+    - "The rest of the scene remains unchanged"
     """
     import re
 
@@ -317,6 +318,9 @@ def _clean_scene_content(text: str) -> str:
         r'\n\*\*(?:Scanning|Changes|Notes?|Quality|Summary|Checklist|AI tells)',
         r'\n(?:Scanning|Changes made|Notes?:|Quality|Summary:)',
         r'\n(?:I\'ve |I have |Here\'s what|The (?:above|following|revised))',
+        r'\n(?:The rest of the scene remains? unchanged)',
+        r'\n(?:\[(?:Scene|Chapter|End|Note))',  # [Scene continues...] etc.
+        r'\n(?:ENHANCED SCENE|EXPANDED SCENE|POLISHED SCENE|FIXED SCENE)',
     ]
 
     for pattern in meta_patterns:
@@ -329,6 +333,430 @@ def _clean_scene_content(text: str) -> str:
                 text = candidate
 
     return text.strip()
+
+
+def _enforce_first_person_pov(text: str, protagonist_name: str = "") -> str:
+    """Code-level enforcement of first-person POV.
+
+    Detects and fixes common third-person slips where the model switches
+    from 'I' to 'she/he [character name] [verb]'.
+
+    This is a SAFETY NET — runs after every creative stage.
+    """
+    if not text or not protagonist_name:
+        return text
+
+    # Build protagonist name variants (e.g., "Lena", "Lena Castillo")
+    names = [n.strip() for n in protagonist_name.split() if len(n.strip()) > 1]
+    first_name = names[0] if names else ""
+    if not first_name:
+        return text
+
+    # Common third-person patterns to fix
+    # "Lena felt" -> "I felt", "She noticed" -> "I noticed"
+    fixes = []
+
+    # Pattern: "[Name] [past-tense verb]" at sentence start
+    verbs = (r"felt|thought|noticed|realized|knew|watched|saw|heard|"
+             r"walked|turned|looked|moved|pulled|pushed|grabbed|reached|"
+             r"smiled|laughed|sighed|whispered|murmured|said|asked|"
+             r"wondered|considered|remembered|imagined|wished|hoped|"
+             r"tightened|clenched|tamed|tugged|brushed|ran|stood|sat|"
+             r"leaned|stepped|glanced|stared|paused|stopped|started|"
+             r"shook|nodded|blinked|swallowed|inhaled|exhaled|breathed")
+
+    # Fix "[FirstName] verb" -> "I verb"
+    text = re.sub(
+        rf'\b{re.escape(first_name)}\s+({verbs})\b',
+        r'I \1',
+        text
+    )
+
+    # Fix "She/He verb" at sentence boundaries (text start, after . or newline)
+    for pronoun in ["She", "He"]:
+        text = re.sub(
+            rf'^{pronoun}\s+({verbs})\b',
+            r'I \1',
+            text
+        )
+        text = re.sub(
+            rf'(?<=[.!?]\s){pronoun}\s+({verbs})\b',
+            r'I \1',
+            text
+        )
+        text = re.sub(
+            rf'(?<=\n){pronoun}\s+({verbs})\b',
+            r'I \1',
+            text
+        )
+
+    # Body parts whitelist for possessive fixes
+    body_parts = (r'hand|heart|jaw|throat|stomach|chest|fingers|eyes|voice|'
+                  r'mind|head|breath|hair|shoulder|back|arm|leg|pulse|skin|'
+                  r'lip|lips|cheek|face|gaze|palms|wrist|temple|forehead|'
+                  r'collarbone|ribcage|spine|hips|knees|ankles|neck|chin|'
+                  r'brow|eyebrow|eyelid|nostril|ear|elbow|fingertips|'
+                  r'lungs|ribs|belly|navel|waist')
+
+    # Fix "[Name]'s [body part]" -> "my [body part]"
+    # Use a function to handle capitalization at sentence starts
+    def _possessive_replacement(match):
+        """Replace possessive with 'my'/'My' depending on sentence position."""
+        full = match.group(0)
+        body = match.group(1)
+        start = match.start()
+        # Check if at sentence start (beginning of text or after . ! ? \n)
+        if start == 0:
+            return f'My {body}'
+        preceding = text[max(0, start-2):start]
+        if re.search(r'[.!?]\s*$', preceding) or preceding.endswith('\n'):
+            return f'My {body}'
+        return f'my {body}'
+
+    text = re.sub(
+        rf"\b{re.escape(first_name)}'s\s+({body_parts})\b",
+        _possessive_replacement,
+        text
+    )
+
+    # Fix "Her/His [body part]" -> "My [body part]" at sentence starts and text start
+    for pronoun in ["Her", "His"]:
+        # At text start
+        text = re.sub(
+            rf'^{pronoun}\s+({body_parts})\b',
+            r'My \1',
+            text
+        )
+        # After sentence-ending punctuation
+        text = re.sub(
+            rf'(?<=[.!?]\s){pronoun}\s+({body_parts})\b',
+            r'My \1',
+            text
+        )
+        # After newline
+        text = re.sub(
+            rf'(?<=\n){pronoun}\s+({body_parts})\b',
+            r'My \1',
+            text
+        )
+
+    # Fix mid-sentence "her/his [body part]" -> "my [body part]"
+    # Uses body-part whitelist to avoid false positives like "I saw her"
+    for pronoun in ["her", "his"]:
+        text = re.sub(
+            rf'\b{pronoun}\s+({body_parts})\b',
+            r'my \1',
+            text
+        )
+
+    # Fix remaining "She/He" with auxiliary verbs at sentence boundaries
+    aux_verbs = r"was|had|would|could|didn't|couldn't|wouldn't|wasn't|hadn't"
+    for pronoun in ["She", "He"]:
+        text = re.sub(
+            rf'^{pronoun}\s+({aux_verbs})\b',
+            r'I \1',
+            text
+        )
+        text = re.sub(
+            rf'(?<=[.!?]\s){pronoun}\s+({aux_verbs})\b',
+            r'I \1',
+            text
+        )
+        text = re.sub(
+            rf'(?<=\n){pronoun}\s+({aux_verbs})\b',
+            r'I \1',
+            text
+        )
+
+    # Fix contractions: "She'd/He'd" -> "I'd", "She's/He's" -> "I'm"
+    for pronoun in ["She", "He"]:
+        text = re.sub(rf"(?<=[.!?]\s){pronoun}'d\b", "I'd", text)
+        text = re.sub(rf"(?<=\n){pronoun}'d\b", "I'd", text)
+        text = re.sub(rf"(?<=[.!?]\s){pronoun}'s\b", "I'm", text)
+        text = re.sub(rf"(?<=\n){pronoun}'s\b", "I'm", text)
+
+    return text
+
+
+def _strip_emotional_summaries(text: str) -> str:
+    """Detect and remove paragraph-ending emotional summary sentences.
+
+    These are the #1 quality issue: sentences that explain what a scene
+    means emotionally after the prose already showed it.
+
+    Strategy: extract the last 1-2 sentences of each paragraph and check
+    if they match summary patterns. Remove them if so.
+    """
+    if not text:
+        return text
+
+    # Sentence-start patterns that indicate emotional summarization
+    # These match the BEGINNING of a summary sentence (no leading period required)
+    summary_starters = [
+        # "This wasn't just about X"
+        r"This wasn't just about\b",
+        r"This was(?:n't)? (?:more than|about more)\b",
+        r"It was(?:n't)? just (?:about|a)\b",
+        r"It wasn't (?:about|just)\b",
+        # "Something about..."
+        r"Something about (?:this|the|that|their) (?:moment|night|exchange|gesture|silence|connection|look)",
+        # "A [adj] [abstract]..."
+        r"A (?:fragile|quiet|tentative|unspoken|silent|small|new|strange|sudden|growing|delicate|unexpected) "
+        r"(?:connection|promise|understanding|bond|hope|beginning|trust|shift|warmth|peace|certainty|realization)",
+        # "Tonight/Today [pronoun] realized..."
+        r"(?:Tonight|Today|In that (?:moment|instant|silence)),?\s*(?:I|she|he|they) "
+        r"(?:realized|understood|knew|felt|sensed|recognized)",
+        # "was a reminder that..."
+        r"[A-Z][^.]{0,40}was a reminder that\b",
+        # "a sense of..."
+        r"[A-Z][^.]{0,40}a sense of (?:something|hope|possibility|belonging|peace|closure|completion)",
+        # "It felt like the beginning..."
+        r"It felt like (?:the (?:beginning|start|end)|a (?:turning point|new chapter|threshold)|something (?:new|real|fragile|important))",
+        # "For the first time..."
+        r"For the first time in (?:a long time|years|months|forever|what felt like)",
+        r"For the first time,?\s*(?:I|she|he) (?:felt|believed|thought|allowed|let)",
+        # "Maybe X was about Y" / "Maybe this was..."
+        r"Maybe (?:this|that|it|love|healing|forgiveness) (?:was|wasn't|didn't|couldn't)\b",
+        # "And in that moment..."
+        r"And (?:in that|for the first|somehow|maybe|perhaps),?\s",
+        # "[Name/I] didn't know it yet, but..."
+        r"(?:I|She|He) (?:didn't know|couldn't have known|had no idea)\b",
+        # "That was when/what..."
+        r"That was (?:when|what|the moment|how)\b",
+        # Generic "the X of Y" emotional summaries
+        r"The (?:weight|warmth|promise|reality|truth|beauty|gravity|fragility) of "
+        r"(?:that|this|the|their|what|it)\b",
+    ]
+
+    # Compile patterns for efficiency
+    compiled_starters = [re.compile(p, re.IGNORECASE) for p in summary_starters]
+
+    paragraphs = text.split('\n\n')
+    cleaned_paragraphs = []
+
+    for para in paragraphs:
+        if not para.strip():
+            cleaned_paragraphs.append(para)
+            continue
+
+        # Split paragraph into sentences
+        # Match sentence boundaries: period/!/? followed by space and capital letter (or quote)
+        sent_breaks = list(re.finditer(r'(?<=[.!?])\s+(?=[A-Z"\'\u201c])', para))
+        if not sent_breaks:
+            cleaned_paragraphs.append(para)
+            continue
+
+        # Extract the last sentence
+        last_sent_start = sent_breaks[-1].end()
+        last_sentence = para[last_sent_start:].strip()
+
+        # Also check the last sentence before a semicolon split
+        # "X; it was about Y." -> the "it was about Y" part
+        semicolon_match = re.search(r';\s*(.+)$', last_sentence)
+
+        is_summary = False
+        for compiled in compiled_starters:
+            if compiled.match(last_sentence):
+                is_summary = True
+                break
+            # Also check after semicolon
+            if semicolon_match and compiled.match(semicolon_match.group(1).strip()):
+                is_summary = True
+                break
+
+        if is_summary:
+            # Remove the last sentence, keep the rest
+            candidate = para[:last_sent_start].rstrip()
+            # Safety: keep at least one complete sentence (has a period/!/?)
+            if candidate and re.search(r'[.!?]', candidate):
+                # If there was a semicolon summary, keep up to the semicolon
+                if semicolon_match and not compiled_starters[0].match(last_sentence):
+                    # The summary is after the semicolon - keep text before semicolon
+                    semi_pos = last_sentence.find(';')
+                    before_semi = last_sentence[:semi_pos].rstrip()
+                    if before_semi:
+                        suffix = before_semi if before_semi.endswith('.') else before_semi + '.'
+                        para = candidate + ' ' + suffix
+                    else:
+                        para = candidate if candidate.endswith(('.', '!', '?')) else candidate + '.'
+                else:
+                    para = candidate if candidate.endswith(('.', '!', '?')) else candidate + '.'
+
+                # Check the NEW last sentence too (cascading summaries)
+                # Re-split and check one more time
+                sent_breaks2 = list(re.finditer(r'(?<=[.!?])\s+(?=[A-Z"\'\u201c])', para))
+                if sent_breaks2:
+                    last2_start = sent_breaks2[-1].end()
+                    last2_sentence = para[last2_start:].strip()
+                    for compiled in compiled_starters:
+                        if compiled.match(last2_sentence):
+                            candidate2 = para[:last2_start].rstrip()
+                            if candidate2 and re.search(r'[.!?]', candidate2):
+                                para = candidate2 if candidate2.endswith(('.', '!', '?')) else candidate2 + '.'
+                            break
+
+        cleaned_paragraphs.append(para)
+
+    return '\n\n'.join(cleaned_paragraphs)
+
+
+def _limit_tic_frequency(text: str, max_per_scene: int = 1) -> str:
+    """Limit character tics and repeated physical beats to max_per_scene occurrences.
+
+    Detects phrases like "tamed her curly hair", "tightened around",
+    "jaw clenched", etc. Removes the ENTIRE SENTENCE containing excess
+    occurrences to avoid garbled output.
+    """
+    if not text:
+        return text
+
+    # Common repeated tics to track
+    tic_patterns = [
+        (r'tamed?\s+(?:her |my |his )?(?:curly )?hair\s*(?:compulsively)?', 'hair taming'),
+        (r'(?:fingers?\s+)?tightened\s+around', 'finger tightening'),
+        (r'jaw\s+clenched', 'jaw clenching'),
+        (r'tugg(?:ed|ing)\s+(?:at\s+)?(?:her |my |his )?(?:curly )?hair', 'hair tugging'),
+        (r'ran\s+(?:her |my |his )?(?:fingers?\s+)?through\s+(?:her |my |his )?hair', 'hair running'),
+        (r'heart\s+(?:hammered|pounded|raced|thundered)', 'heart racing'),
+        (r'stomach\s+(?:flipped|dropped|churned|knotted)', 'stomach flipping'),
+        (r'breath\s+(?:caught|hitched|stuttered)', 'breath catching'),
+        (r'pulse\s+(?:quickened|raced|spiked|jumped)', 'pulse racing'),
+        (r'like\s+a\s+knife', 'simile: like a knife'),
+        (r'vamos\s+a\s+ser\s+realistas', 'catchphrase: vamos'),
+    ]
+
+    # Build a set of sentence indices to remove
+    sentences_to_remove = set()
+
+    # Split text into sentences preserving structure
+    # We use a regex that splits on sentence-ending punctuation followed by space
+    # but keeps the punctuation with the sentence
+    sentence_breaks = list(re.finditer(r'(?<=[.!?])\s+(?=[A-Z"\'])', text))
+    sentence_starts = [0] + [m.end() for m in sentence_breaks]
+    sentence_ends = [m.start() for m in sentence_breaks] + [len(text)]
+    sentences = [(sentence_starts[i], sentence_ends[i]) for i in range(len(sentence_starts))]
+
+    for pattern, tic_name in tic_patterns:
+        occurrences = []  # list of sentence indices containing this tic
+        for sent_idx, (start, end) in enumerate(sentences):
+            sent_text = text[start:end]
+            if re.search(pattern, sent_text, re.IGNORECASE):
+                occurrences.append(sent_idx)
+
+        if len(occurrences) > max_per_scene:
+            # Mark excess sentences for removal (keep first N, remove the rest)
+            for sent_idx in occurrences[max_per_scene:]:
+                sentences_to_remove.add(sent_idx)
+
+    if not sentences_to_remove:
+        return text
+
+    # Rebuild text without the removed sentences
+    kept_parts = []
+    for sent_idx, (start, end) in enumerate(sentences):
+        if sent_idx not in sentences_to_remove:
+            kept_parts.append(text[start:end])
+
+    result = ' '.join(kept_parts)
+
+    # Clean up paragraph structure — restore double newlines
+    result = re.sub(r' *\n *\n *', '\n\n', result)
+    # Clean up any double spaces
+    result = re.sub(r'  +', ' ', result)
+
+    return result
+
+
+def _detect_duplicate_content(text: str, similarity_threshold: float = 0.6) -> str:
+    """Detect and remove duplicate/stitched scene content.
+
+    Local models sometimes generate two versions of the same scene stitched
+    together. This detects large blocks of text that share significant overlap
+    and keeps only the first (usually better) version.
+
+    Strategy: split text into large chunks (by scene breaks or paragraph groups),
+    compare overlapping n-grams, and remove the second duplicate.
+    """
+    if not text or len(text) < 200:
+        return text
+
+    # Common markers where models stitch duplicates
+    stitch_markers = [
+        r'\n---+\n',           # --- separators
+        r'\n\*\*\*+\n',       # *** separators
+        r'\n#{1,3}\s',         # Markdown headers mid-scene
+        r'\nVersion \d',       # "Version 2"
+        r'\nAlternative:',     # "Alternative:"
+        r'\nRevised:',         # "Revised:"
+        r'\nTake \d',          # "Take 2"
+    ]
+
+    for marker in stitch_markers:
+        parts = re.split(marker, text, maxsplit=1)
+        if len(parts) == 2 and len(parts[0].strip()) > 100 and len(parts[1].strip()) > 100:
+            # Check similarity between the two halves
+            words_a = set(parts[0].lower().split())
+            words_b = set(parts[1].lower().split())
+            if words_a and words_b:
+                overlap = len(words_a & words_b) / min(len(words_a), len(words_b))
+                if overlap > similarity_threshold:
+                    # Duplicates detected — keep the longer one (usually more complete)
+                    text = parts[0].strip() if len(parts[0]) >= len(parts[1]) else parts[1].strip()
+
+    # Also check for paragraph-level duplication within the text
+    # Split into paragraphs and find near-duplicate pairs
+    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip() and len(p.strip()) > 80]
+    if len(paragraphs) >= 2:
+        seen_fingerprints = {}
+        duplicated_indices = set()
+
+        for idx, para in enumerate(paragraphs):
+            # Fingerprint: first 8 words + last 8 words
+            words = para.split()
+            if len(words) < 10:
+                continue
+            fingerprint = ' '.join(words[:8]).lower()
+
+            if fingerprint in seen_fingerprints:
+                # Check full similarity
+                orig_idx = seen_fingerprints[fingerprint]
+                orig_words = set(paragraphs[orig_idx].lower().split())
+                curr_words = set(para.lower().split())
+                overlap = len(orig_words & curr_words) / min(len(orig_words), len(curr_words))
+                if overlap > similarity_threshold:
+                    duplicated_indices.add(idx)
+            else:
+                seen_fingerprints[fingerprint] = idx
+
+        if duplicated_indices:
+            all_paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+            # Map back to all_paragraphs indices (including short ones)
+            long_to_all = {}
+            long_idx = 0
+            for all_idx, p in enumerate(all_paragraphs):
+                if len(p) > 80:
+                    long_to_all[long_idx] = all_idx
+                    long_idx += 1
+
+            remove_all_indices = {long_to_all[i] for i in duplicated_indices if i in long_to_all}
+            all_paragraphs = [p for i, p in enumerate(all_paragraphs) if i not in remove_all_indices]
+            text = '\n\n'.join(all_paragraphs)
+
+    return text
+
+
+def _postprocess_scene(text: str, protagonist_name: str = "") -> str:
+    """Master post-processor: applies all code-level quality enforcement.
+
+    Called after _clean_scene_content on every creative stage output.
+    Order matters: clean meta-text first, then enforce quality.
+    """
+    text = _clean_scene_content(text)
+    text = _detect_duplicate_content(text)
+    text = _enforce_first_person_pov(text, protagonist_name)
+    text = _strip_emotional_summaries(text)
+    text = _limit_tic_frequency(text)
+    return text
 
 
 def _repair_json_string(json_str: str) -> str:
@@ -1955,6 +2383,21 @@ Return JSON with:
 
         return {"tropes_checked": len(tropes_to_check)}, 50
 
+    def _get_protagonist_name(self) -> str:
+        """Extract protagonist first name from config for POV enforcement."""
+        protagonist = self.state.config.get("protagonist", "") if self.state and self.state.config else ""
+        if not protagonist:
+            return ""
+        # Extract first name: take the first word before any comma or period
+        first_part = protagonist.split(",")[0].split(".")[0].strip()
+        # Take the first word (the actual first name)
+        return first_part.split()[0] if first_part else ""
+
+    def _postprocess(self, text: str) -> str:
+        """Apply all code-level post-processing to scene content.
+        Convenience wrapper that gets protagonist name from config."""
+        return _postprocess_scene(text, self._get_protagonist_name())
+
     def _get_previous_scenes_context(self, scenes: List[Dict], count: int = 3) -> str:
         """Get summary of previous scenes for continuity."""
         if not scenes or len(scenes) == 0:
@@ -2278,7 +2721,7 @@ Write the complete scene:"""
                         "pov": pov_char,
                         "location": location,
                         "spice_level": spice_level,
-                        "content": _clean_scene_content(response.content)
+                        "content": self._postprocess(response.content)
                     })
                     total_tokens += response.input_tokens + response.output_tokens
                 else:
@@ -2370,15 +2813,29 @@ POV: FIRST PERSON — {scene.get('pov', 'protagonist')}
 Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
 
             response = await client.generate(prompt, max_tokens=3000)
-            expanded_scenes.append({
-                **scene,
-                "content": _clean_scene_content(response.content),
-                "expanded": True,
-                "original_words": validation["actual"],
-                "expanded_words": count_words_accurate(response.content)
-            })
+            expanded_content = self._postprocess(response.content)
+
+            # GUARD: Check if the LLM actually expanded (vs rewrote from scratch)
+            # If the first 100 chars of the original aren't in the expanded version,
+            # the model generated an alternate take — keep the original instead.
+            original_content = scene.get('content', '')
+            original_start = original_content[:100].strip()
+            if original_start and original_start not in expanded_content:
+                logger.warning(
+                    f"scene_expansion: Ch{scene.get('chapter')}-S{scene.get('scene_number')} "
+                    f"generated alternate take instead of expanding. Keeping original."
+                )
+                expanded_scenes.append(scene)
+            else:
+                expanded_scenes.append({
+                    **scene,
+                    "content": expanded_content,
+                    "expanded": True,
+                    "original_words": validation["actual"],
+                    "expanded_words": count_words_accurate(expanded_content)
+                })
+                scenes_expanded += 1
             total_tokens += response.input_tokens + response.output_tokens
-            scenes_expanded += 1
 
         self.state.scenes = expanded_scenes
 
@@ -2451,7 +2908,7 @@ Output ONLY the revised scene—no notes, no commentary, no checklist:"""
                 response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                 refined_scenes.append({
                     **scene,
-                    "content": _clean_scene_content(response.content),
+                    "content": self._postprocess(response.content),
                     "refined": True
                 })
                 total_tokens += response.input_tokens + response.output_tokens
@@ -2587,7 +3044,7 @@ FIXED SCENE:"""
                         response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                         fixed_scenes[i] = {
                             **scene,
-                            "content": _clean_scene_content(response.content),
+                            "content": self._postprocess(response.content),
                             "continuity_fixed": True,
                             "fixed_issue": issue_desc
                         }
@@ -2713,7 +3170,7 @@ Output the revised scene:"""
                 response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                 enhanced_scenes.append({
                     **scene,
-                    "content": _clean_scene_content(response.content),
+                    "content": self._postprocess(response.content),
                     "voice_human_passed": True
                 })
                 total_tokens += response.input_tokens + response.output_tokens
@@ -2833,7 +3290,7 @@ Output the scene with ONLY the factual fix applied:"""
                         response = await client.generate(prompt, max_tokens=2500, temperature=0.3)
                         fixed_scenes[i] = {
                             **scene,
-                            "content": _clean_scene_content(response.content),
+                            "content": self._postprocess(response.content),
                             "continuity_fixed_2": True
                         }
                         total_tokens += response.input_tokens + response.output_tokens
@@ -2925,7 +3382,7 @@ Focus ONLY on improving the dialogue and adding physical beats between lines:"""
                 response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                 polished_scenes.append({
                     **scene,
-                    "content": _clean_scene_content(response.content),
+                    "content": self._postprocess(response.content),
                     "dialogue_polished": True
                 })
                 total_tokens += response.input_tokens + response.output_tokens
@@ -3093,7 +3550,7 @@ ENHANCED SCENE:"""
                     response = await client.generate(prompt, max_tokens=2500, temperature=0.75)
                     hooked_scenes.append({
                         **scene,
-                        "content": _clean_scene_content(response.content),
+                        "content": self._postprocess(response.content),
                         "hook_enhanced": True
                     })
                     total_tokens += response.input_tokens + response.output_tokens
@@ -3126,7 +3583,7 @@ ENHANCED SCENE:"""
                     response = await client.generate(prompt, max_tokens=2500, temperature=0.75)
                     hooked_scenes.append({
                         **scene,
-                        "content": _clean_scene_content(response.content),
+                        "content": self._postprocess(response.content),
                         "hook_enhanced": True
                     })
                     total_tokens += response.input_tokens + response.output_tokens
@@ -3238,7 +3695,7 @@ POLISHED SCENE:"""
                 response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
                 polished_scenes.append({
                     **scene,
-                    "content": _clean_scene_content(response.content),
+                    "content": self._postprocess(response.content),
                     "polished": True
                 })
                 total_tokens += response.input_tokens + response.output_tokens
@@ -3385,7 +3842,7 @@ TEXT:
 OUTPUT the text with only problematic sentences fixed:"""
 
                     response = await client.generate(prompt, max_tokens=3000)
-                    middle = _clean_scene_content(response.content)
+                    middle = self._postprocess(response.content)
                     total_tokens += response.input_tokens + response.output_tokens
                     scene_fixes += remaining_tells["total_tells"]
 
@@ -3424,7 +3881,7 @@ TEXT:
 OUTPUT the text with only problematic sentences fixed:"""
 
                     response = await client.generate(prompt, max_tokens=3000)
-                    content = _clean_scene_content(response.content)
+                    content = self._postprocess(response.content)
                     total_tokens += response.input_tokens + response.output_tokens
                     scene_fixes += remaining_tells["total_tells"]
 
