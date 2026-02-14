@@ -1972,6 +1972,56 @@ Return JSON with:
 
         return "PREVIOUS SCENES (for continuity):\n" + "\n\n".join(summaries)
 
+    def _get_used_details_tracker(self, scenes: List[Dict]) -> str:
+        """Extract repeated sensory details, physical tics, and catchphrases
+        from previously written scenes so the next scene can avoid them.
+
+        Scans the last 10 scenes for phrases that appear 2+ times across scenes.
+        Returns a DO NOT REUSE list.
+        """
+        if not scenes or len(scenes) < 2:
+            return ""
+
+        # Scan last 10 scenes for repeated short phrases (3-6 word ngrams)
+        recent = scenes[-10:] if len(scenes) >= 10 else scenes
+        phrase_counts: Dict[str, int] = {}
+
+        for s in recent:
+            if not isinstance(s, dict):
+                continue
+            content = s.get("content", "").lower()
+            words = content.split()
+            # Extract 3-6 word phrases
+            scene_phrases = set()  # dedupe within single scene
+            for n in range(3, 7):
+                for i in range(len(words) - n + 1):
+                    phrase = " ".join(words[i:i+n])
+                    # Skip very common phrases
+                    if any(skip in phrase for skip in ["i was", "it was", "he was", "she was",
+                                                       "i had", "the way", "in the", "of the",
+                                                       "at the", "on the", "to the"]):
+                        continue
+                    scene_phrases.add(phrase)
+            for phrase in scene_phrases:
+                phrase_counts[phrase] = phrase_counts.get(phrase, 0) + 1
+
+        # Find phrases appearing in 2+ different scenes
+        repeated = sorted(
+            [(p, c) for p, c in phrase_counts.items() if c >= 2],
+            key=lambda x: -x[1]
+        )[:15]  # Top 15 most repeated
+
+        if not repeated:
+            return ""
+
+        lines = ["=== ALREADY-USED DETAILS (DO NOT REUSE) ===",
+                 "These phrases/details appeared in multiple previous scenes.",
+                 "INVENT FRESH alternatives. Do NOT repeat these:"]
+        for phrase, count in repeated:
+            lines.append(f'- "{phrase}" (used {count}x)')
+
+        return "\n".join(lines)
+
     async def _stage_scene_drafting(self) -> tuple:
         """Draft all scenes with rolling context, POV, and full config awareness."""
         scenes = []
@@ -2109,12 +2159,15 @@ When outline beats are similar, the AI repeats itself. THIS SCENE MUST BE DISTIN
 {"DO NOT repeat similar atmospheric descriptions, sensory details, or emotional" if scenes else ""}
 {"states from the previous opening. Use a DIFFERENT sense, action, or entry point." if scenes else ""}
 
-=== POV & VOICE ===
-Written from {pov_char}'s perspective.
+=== POV & VOICE (HARD LOCK — DO NOT BREAK) ===
+PERSPECTIVE: FIRST PERSON ("I") — {pov_char}'s POV.
+Every sentence must be filtered through {pov_char}'s voice. NEVER switch to
+third person ("she felt", "he noticed", "{pov_char} thought"). ALWAYS use "I".
 - Their unique vocabulary and thought patterns
 - Their specific biases and blind spots
 - Their physical sensations and emotional responses
 - Body reactions must be SPECIFIC to this character (not generic "heart racing")
+- Character tics should appear at most ONCE per scene (not every paragraph)
 
 === SCENE PURPOSE ===
 WHY THIS SCENE EXISTS: {purpose}
@@ -2151,13 +2204,14 @@ LOCATION: {location}
 
 {f"AESTHETIC PALETTE: {aesthetic}" if aesthetic else ""}
 
-=== UGLY DETAILS (required) ===
-Every setting has something broken, dirty, or imperfect. Include at least ONE:
-- The fridge humming, a sticky patch on the floor, the siren two streets over
-- The cheap flour brand, cracked grout, oven that ticks when cooling
-- The neighbor's TV bleeding through the wall, a drip in the sink
-- A specific object that doesn't belong, a sound that interrupts the mood
-Generic "fairy lights" and "warm scents" = stock photo. Replace with observed, unglamorous detail.
+=== GROUNDING DETAIL (required — but UNIQUE each scene) ===
+Every scene needs ONE imperfect, unglamorous sensory detail that grounds
+the setting in reality. But it MUST be a DIFFERENT detail each scene.
+INVENT something specific to THIS location and moment:
+- A texture underfoot, a smell that doesn't belong, a sound that interrupts
+- Something broken, stained, wrong, or out of place
+- A specific brand name, a price tag, a mundane object
+DO NOT reuse details from previous scenes. Each scene = fresh observation.
 
 === CRAFT ELEMENTS ===
 {f"PHYSICAL ACTIONS: {physical_motion}" if physical_motion else ""}
@@ -2193,16 +2247,22 @@ TENSION LEVEL: {tension_level}/10
 === CONTINUITY ===
 {previous_context}
 
+{self._get_used_details_tracker(scenes)}
+
 === TARGET LENGTH ===
 Approximately {self.state.words_per_scene} words.
 Paragraphs: 4 sentences maximum (mobile-optimized).
 
 === NOW WRITE ===
 Begin DIRECTLY with narrative—no preamble, no title, no scene heading.
+- FIRST PERSON ONLY. Every line = "I" perspective. Never third person.
 - Open with ACTION or DIALOGUE (not description, not atmosphere)
 - Hook immediately with tension, motion, or intrigue
 - Ground us in the POV character's physical state through what they DO
 - Each paragraph must advance the scene (no restatements)
+- NEVER end a paragraph by summarizing what the moment means emotionally.
+  End on action, dialogue, or sensory observation. Let the reader interpret.
+- Character catchphrases/tics: use at most ONCE in this scene.
 
 Write the complete scene:"""
 
@@ -2275,35 +2335,39 @@ Write the complete scene:"""
             prompt = f"""This scene is {validation['actual']} words but should be approximately {target_words} words.
 Expand it by adding {shortfall}+ words.
 
-=== CRITICAL: CONTINUITY ===
-The scenes below have ALREADY been written and expanded. This scene comes AFTER them.
-Do NOT retell or repeat the same story beat. Expand THIS scene only. Advance the story.
+=== CRITICAL RULES ===
+1. CONTINUITY: The scenes below have ALREADY been written. Do NOT retell or
+   repeat the same story beat. Expand THIS scene only. Advance the story.
+2. POV LOCK: This is FIRST PERSON ("I"). Never switch to third person.
+3. NO DUPLICATE CONTENT: Do NOT generate an alternate version of this scene.
+   Keep the existing content and ADD to it—more depth, not a rewrite.
+4. NO EMOTIONAL SUMMARIES: Never end a paragraph by explaining what the
+   moment means. End on action, dialogue, or sensory detail.
 
 {previous_context}
 
-=== EXPANSION GUIDELINES ===
-DO:
-- Add more sensory details (smells, textures, sounds) - prefer ugly/specific over stock
+=== EXPANSION TECHNIQUES ===
+- Add sensory details UNIQUE to this scene (not reused from others)
 - Deepen internal monologue/reactions
-- Expand dialogue with beats and subtext
-- Add physical movement and body language
+- Expand dialogue with physical beats and subtext
+- Add body language and movement
 - Layer in setting details through character interaction
+- Character tics: use at most ONCE per scene
 
 DO NOT:
 - Add new plot points or characters
 - Change the scene's outcome
-- Add unnecessary transitions or filler
-- Pad with repetitive descriptions
-- Retell events from previous scenes (they are already done)
+- Rewrite the scene from scratch (EXPAND, don't replace)
+- Pad with repetitive descriptions or looping paragraphs
 
 === SCENE TO EXPAND ===
 Chapter {scene.get('chapter')}, Scene {scene.get('scene_number')}
-POV: {scene.get('pov', 'protagonist')}
+POV: FIRST PERSON — {scene.get('pov', 'protagonist')}
 
 {scene.get('content', '')}
 
 === EXPANDED SCENE ===
-Provide the complete expanded scene (target: {target_words} words):"""
+Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
 
             response = await client.generate(prompt, max_tokens=3000)
             expanded_scenes.append({
@@ -2340,6 +2404,12 @@ Provide the complete expanded scene (target: {target_words} words):"""
                 continue
             prompt = f"""Revise this scene for publication quality. Output ONLY the revised scene text.
 
+=== HARD RULES ===
+- POV: FIRST PERSON ("I") only. If any sentence uses third person
+  ("{scene.get('pov', 'protagonist')} felt/thought/noticed"), rewrite it as "I".
+- Never end a paragraph by explaining what the moment means emotionally.
+  End on action, dialogue, or a sensory observation.
+
 === STYLE ===
 {writing_style} | TONE: {tone}
 
@@ -2348,30 +2418,29 @@ Provide the complete expanded scene (target: {target_words} words):"""
 
 === REVISION PRIORITIES (in order) ===
 
-1. CUT EMOTIONAL SUMMARIES: If a paragraph shows an emotion through
+1. POV FIX: Find any third-person slip and convert to first person.
+
+2. CUT EMOTIONAL SUMMARIES: If a paragraph shows an emotion through
    action/dialogue, delete any sentence that then explains that emotion.
-   End on what the character DOES, not what it means.
+   Especially ban: "This wasn't just about...", "Something about this
+   moment...", "A fragile connection...", "It was more than..."
 
-2. ONE METAPHOR PER PARAGRAPH: If a paragraph has 2+ figurative
+3. CUT REPEATED TICS: If a character action (hair taming, jaw clenching,
+   finger tightening) appears more than once in this scene, keep only
+   the first instance. Replace others with different body language.
+
+4. ONE METAPHOR PER PARAGRAPH: If a paragraph has 2+ figurative
    comparisons, keep the sharpest, make the rest literal.
-
-3. KILL STOCK LANGUAGE: Replace these with specific, observed details:
-   - "warm and inviting" → what specifically? Cracked tile? Cheap cinnamon?
-   - "electricity/spark" → what physical sensation, exactly?
-   - "comfortable silence" → what sounds fill it?
-   - "butterflies/heart skipped" → what does the body actually do?
-
-4. ROUGH UP DIALOGUE: Real people deflect, fumble, trail off.
-   - Cut any line where a character announces their feelings
-   - Add physical beats (not "smiled"—what did their hands do?)
 
 5. CUT LOOPING: If two paragraphs make the same emotional point, cut one.
    Every paragraph must advance the scene.
 
-6. STRENGTHEN VERBS: Replace "was/had/felt/seemed/began/started" with
-   concrete action verbs. Cut filter words (noticed, realized, saw that).
+6. ROUGH UP DIALOGUE: Real people deflect, fumble, trail off.
+   - Cut any line where a character announces their feelings
+   - If a catchphrase appears more than once, cut the repeats
 
-7. PARAGRAPH LENGTH: Max 4 sentences per paragraph.
+7. STRENGTHEN VERBS: Replace "was/had/felt/seemed/began/started" with
+   concrete action verbs. Cut filter words (noticed, realized, saw that).
 
 === SCENE TO REVISE ===
 {scene.get('content', '')}
@@ -2411,19 +2480,28 @@ WORLD RULES:
 CHARACTERS:
 {json.dumps(self.state.characters, indent=2) if self.state.characters else 'Not available'}
 
+EXPECTED POV: First person ("I") throughout the entire manuscript.
+
 FULL MANUSCRIPT:
 {all_content}
 
 Find and report:
-1. Character inconsistencies (appearance, personality, knowledge changes)
-2. Timeline errors (events out of order, impossible timing)
-3. World rule violations (contradicts established setting/rules)
-4. Plot holes (missing explanations, unresolved threads)
-5. Factual inconsistencies (names, places, objects that change)
+1. POV BREAKS: Any sentence that switches to third person (e.g., "Lena felt",
+   "she noticed", "Marco thought") when the novel should be first person ("I").
+   This is the HIGHEST priority issue.
+2. DUPLICATE SCENES: Any scene that retells the same event as a previous scene
+   (same characters, same location, same action) — this is a generation error.
+3. Character inconsistencies (appearance, personality, knowledge changes)
+4. Timeline errors (events out of order, impossible timing)
+5. World rule violations (contradicts established setting/rules)
+6. Factual inconsistencies (names, places, objects that change)
+7. HALLUCINATED CHARACTERS: Any character name that does not appear in the
+   character list above — this is a generation error.
 
 For each issue found, provide:
 - Location (chapter/scene)
-- Type of issue
+- Type of issue (one of: pov_break, duplicate_scene, character, timeline,
+  world_rule, factual, hallucination)
 - Description
 - Suggested fix
 
@@ -2554,90 +2632,77 @@ read like a human wrote it. Not "good AI." Not "polished AI." HUMAN.
 This is a REVISION pass. Keep plot, characters, and scene structure intact.
 Change HOW it's written, not WHAT happens.
 
+=== HARD RULES (break these = fail) ===
+1. POV: FIRST PERSON ("I") only. If any sentence uses third person
+   ("{pov} felt", "{pov} thought", "she noticed"), rewrite as "I".
+2. NO EMOTIONAL SUMMARIES: Never end a paragraph by explaining what
+   the moment means. End on action, dialogue, or sensory observation.
+3. NO REPEATED TICS: If a physical action (hair taming, jaw clenching,
+   finger tightening) or catchphrase appears more than once, keep only
+   the first. Replace repeats with different body language.
+
 === VOICE ===
 STYLE: {writing_style}
 TONE: {tone}
 CHANNEL: {influences}
 {f"AESTHETIC: {aesthetic}" if aesthetic else ""}
 
-=== NON-NEGOTIABLE: NO HALLMARK CARD SYNDROME ===
-The AI refuses to let an action just be an action. It explains the emotional
-meaning of every movement immediately after it happens. YOU MUST STOP THAT.
-
-RULE: Do not summarize the character's internal state. Do not explain the
-"meaning" of the scene. Describe the physical action and STOP. If the scene
-showed tenderness, the reader already feels it. Do not tell them. Do not
-digest the scene for the reader. Let them digest it.
-
-KILL on sight: "This ritual calms me...", "Late-night baking is my therapy...",
-"A quiet promise that...", "Tonight, amidst chaos and shadows, at peace...",
-"connection in unexpected places", "a sense of something new beginning".
-
 === YOUR 6 JOBS (in priority order) ===
 
 JOB 1: KILL EMOTIONAL SUMMARIZATION
 Find every sentence that tells the reader what to feel after the scene
 already showed it. Cut it or replace it with action/sensory detail.
-This is the #1 priority. If a paragraph ends with "a reminder that..." or
-"something about this moment..." or "a bond forged in..." — that sentence
-dies. End on what the character DOES or SEES instead.
+KILL on sight: "This wasn't just about...", "Something about this
+moment...", "A fragile connection...", "It was more than...",
+"a reminder that...", "a bond forged in...", "a quiet promise...",
+"Tonight wasn't just...", "a sense of something new...".
+End on what the character DOES or SEES instead.
 
-JOB 2: INSERT UGLY DETAILS (break the stock photo)
-Every setting has something broken, dirty, or annoying. Add at least ONE:
-- The fridge humming, the sticky patch on the floor, the siren two streets over
-- The cheap flour brand from the bodega, the cracked grout, the oven that ticks
-- The neighbor's TV bleeding through the wall, the drip in the sink
-Generic "fairy lights twinkle" and "smells like home" = stock photo. Replace
-with observed, unglamorous detail that only THIS character would notice.
+JOB 2: REPLACE STOCK WITH SPECIFIC
+Push every generic image toward the specific, observed detail that
+only THIS character in THIS place would notice. But DO NOT reuse the
+same "ugly detail" across scenes. Each scene gets its own unique
+imperfection. If a detail (humming fridge, sticky floor, TV through
+walls) already appeared in an earlier scene, INVENT something new.
 
-JOB 3: REPLACE STOCK WITH SPECIFIC
-"Warm and inviting" → what specifically? The cracked tile, the cheap
-cinnamon, the oven that takes 20 minutes to preheat, the neighbor's
-TV bleeding through the wall. Push every generic image toward the
-ugly, specific, observed detail that only THIS character in THIS place
-would notice.
-
-JOB 4: LOWER THE DIALOGUE EMOTIONAL IQ (break therapeutic speech)
-Real people do NOT speak with perfect emotional intelligence. They are NOT
-in a couple's therapy session. They deflect. They say "It's fine" when it's
-not. They talk about the weather to avoid talking about the dead wife.
+JOB 3: LOWER THE DIALOGUE EMOTIONAL IQ
+Real people do NOT speak with perfect emotional intelligence.
 - Add deflection (answering a different question)
 - Add fumbling (starting, stopping, restarting)
 - Add subtext (what they mean vs what they say)
-- Add physical beats between lines (not "she smiled"—what did her
-  hands do? her jaw? did she look away?)
+- Add physical beats between lines (varied—not the same beat each time)
 - REMOVE any line where a character articulates their feelings clearly
   unless they would actually do that in real life (they usually wouldn't)
-- "It's like you pour yourself into everything" to a neighbor they barely
-  know? That dies. Replace with awkward deflection or a wrong thing said.
+- If a character catchphrase appears more than once, cut the repeats
 
-JOB 5: CUT LOOPING PARAGRAPHS
-If two paragraphs make the same emotional point, cut one. If a theme
-(e.g., "baking = comfort") is established in paragraph 1, paragraphs
-2-5 must ADVANCE, not restate. Each paragraph earns its spot by doing
-something the previous one didn't.
+JOB 4: CUT LOOPING PARAGRAPHS
+If two paragraphs make the same emotional point, cut one. Each
+paragraph earns its spot by doing something the previous one didn't.
+
+JOB 5: ONE METAPHOR PER PARAGRAPH
+Count figurative comparisons. If 2+ in one paragraph, keep the
+sharpest, make the rest literal. If the SAME simile appeared in a
+previous scene (e.g., "like a knife"), replace it.
 
 JOB 6: SURFACE CLEANUP
 {chr(10).join('- Kill: "' + p + '"' for p in ai_tells_sample[:10])}
 - Kill filter phrases: felt, noticed, realized, saw that
 - Kill hollow intensifiers: incredibly, absolutely, utterly
 - Kill weak constructions: seemed to, began to, managed to
-- Kill transitions: however, furthermore, additionally
 - Kill stock romance: warm hug, butterflies, anchor in rough seas,
   ethereal glow, comfortable silence, breath I didn't know I held
 
-=== POV DEPTH ({pov}) ===
+=== POV DEPTH ({pov}) — FIRST PERSON ONLY ===
 Stay in their head. Their vocabulary. Their biases. Their blind spots.
-Body reactions must be SPECIFIC to this character (throat tight, jaw
-clenched, fingers curling) — not generic (heart racing, stomach
-flipping, pulse quickening).
+Body reactions must be SPECIFIC to this character — not generic.
+Character tics: MAX ONCE per scene. If already used, pick a different one.
 
 === SCENE TO TRANSFORM ===
 {scene.get('content', '')}
 
 BEFORE YOU OUTPUT, check:
-1. Does any paragraph end by explaining the emotion? Fix it.
-2. Does any paragraph have 2+ metaphors? Fix it.
+1. Is every sentence first person ("I")? Fix any third-person slips.
+2. Does any paragraph end by explaining the emotion? Fix it.
 3. Is any detail generic/stock? Make it specific.
 4. Is any dialogue too clean? Rough it up.
 5. Do any two consecutive paragraphs say the same thing? Cut one.
@@ -2797,6 +2862,12 @@ Output the scene with ONLY the factual fix applied:"""
             pov = scene.get("pov", "protagonist")
 
             prompt = f"""You are a dialogue specialist. Polish the dialogue in this scene for maximum authenticity.
+
+=== HARD RULES ===
+- POV: FIRST PERSON ("I") only. Never introduce third-person narration.
+- If a character catchphrase or verbal tic appears more than once in this
+  scene, keep only the first instance.
+- Never end a paragraph by summarizing its emotional meaning.
 
 === CHARACTER PROFILES ===
 {json.dumps(self.state.characters, indent=2) if self.state.characters else 'Not available'}
@@ -2997,6 +3068,8 @@ STRICT RULES:
 - Do NOT change any facts (names, locations, objects, timeline)
 - Do NOT introduce AI tells
 - The hook must feel organic, not forced
+- MAINTAIN FIRST PERSON POV ("I") — never switch to third person
+- Do NOT end with an emotional summary ("This wasn't just...")
 
 {hook_guidance}
 
@@ -3033,6 +3106,7 @@ STRICT RULES:
 - Keep ALL other content EXACTLY as-is
 - Do NOT change any facts (names, locations, objects, timeline)
 - Do NOT introduce AI tells
+- MAINTAIN FIRST PERSON POV ("I") — never switch to third person
 
 A great chapter-opening hook can be:
 - In medias res (start in action/tension)
@@ -3189,6 +3263,7 @@ POLISHED SCENE:"""
         fixes_made = 0
 
         SURGICAL_REPLACEMENTS = {
+            # AI tell phrases
             "I couldn't help but notice": "",
             "I found myself": "I",
             "I noticed that": "",
@@ -3201,6 +3276,7 @@ POLISHED SCENE:"""
             "proceeded to": "",
             "began to": "",
             "started to": "",
+            # Hollow intensifiers
             " incredibly ": " ",
             " absolutely ": " ",
             " utterly ": " ",
@@ -3208,6 +3284,7 @@ POLISHED SCENE:"""
             " totally ": " ",
             " truly ": " ",
             " genuinely ": " ",
+            # Stock romance metaphors
             "a whirlwind of emotions": "confusion",
             "time seemed to stop": "everything stilled",
             "electricity coursed through": "heat rushed through",
@@ -3215,6 +3292,19 @@ POLISHED SCENE:"""
             "butterflies in my stomach": "nerves",
             "flooded with": "felt",
             "overwhelmed by": "hit by",
+            "like a knife": "",
+            "like a knife slicing through butter": "",
+            # Emotional summarization patterns
+            "This wasn't just about": "",
+            "Something about this moment": "",
+            "A fragile connection": "",
+            "It was more than": "",
+            "a quiet promise that": "",
+            "a sense of something new": "",
+            "Tonight wasn't just about": "",
+            "a reminder that": "",
+            "connection in unexpected places": "",
+            "something significant had passed between": "",
         }
 
         # Guard: if no scenes exist, return early
@@ -3265,7 +3355,6 @@ POLISHED SCENE:"""
                 # Apply surgical replacements ONLY to middle
                 for pattern, replacement in SURGICAL_REPLACEMENTS.items():
                     if pattern.lower() in middle.lower():
-                        import re
                         middle = re.sub(
                             re.escape(pattern), replacement,
                             middle, flags=re.IGNORECASE
@@ -3306,7 +3395,6 @@ OUTPUT the text with only problematic sentences fixed:"""
                 # Non-chapter-end scenes: full surgical pass (no hook to protect)
                 for pattern, replacement in SURGICAL_REPLACEMENTS.items():
                     if pattern.lower() in content.lower():
-                        import re
                         content = re.sub(
                             re.escape(pattern), replacement,
                             content, flags=re.IGNORECASE
