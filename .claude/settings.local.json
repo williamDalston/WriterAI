@@ -21,7 +21,11 @@
       "Bash(tasklist /FI \"IMAGENAME eq python.exe\")",
       "Bash(python:*)",
       "Bash(cd:*)",
-      "Bash(ollama list:*)"
+      "Bash(ollama list:*)",
+      "Bash(wasn 't just about...\", \"A fragile connection...\", etc.\\)\n\n5. Repetitive tic limiter: Instructions to use character tics/catchphrases\n   at most ONCE per scene across drafting and refinement stages.\n\n6. Enhanced final_deai: Fixed UnboundLocalError \\(removed shadowing\n   `import re` inside conditional blocks\\), added emotional summarization\n   patterns and simile recycling patterns to surgical replacements.\n\n7. Continuity audit: Now checks for POV breaks, duplicate scenes, and\n   hallucinated characters in addition to original checks.\n\n8. Scene expansion: Strengthened anti-duplication instructions to prevent\n   generating alternate takes instead of expanding existing content.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(carried\", \"my eyes sparkled\", \"I breathed\", \"I admitted\"\n- Prefer action beats over descriptive tags\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(powershell -c:*)",
+      "Bash(git status:*)"
     ]
   }
 }

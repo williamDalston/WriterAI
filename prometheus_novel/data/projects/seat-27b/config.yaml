@@ -1,0 +1,108 @@
+antagonist: 'Distance. 5,500 miles between Austin, TX and Cluj-Napoca, Romania. Also:
+  Ethan''s fear that the real Ana won''t match the version he''s built in his head.
+  Ana''s fear of falling for someone who might ask her to give up her life for his.
+  The memory of one perfect conversation versus the mess of actually trying.
+
+  '
+avoid: "- AI tells: \"I couldn't help but\", \"I found myself\", \"something\n  shifted\"\
+  , \"a warmth spread through\"\n- Instalove — the flight creates chemistry, not commitment\
+  \ - Making Romania exotic/foreign — it's just where she lives - Stereotyping either\
+  \ culture - Purple prose in the texting sections — keep digital communication\n\
+  \  feeling real and casual\n- Perfect reunion — the in-person meeting should be\
+  \ messy and human\n"
+budget_usd: 0
+central_question: 'Can something real be built from a single conversation and 5,500
+  miles of distance?
+
+  '
+genre: romance
+key_plot_points: "- ACT 1: The flight. They meet in seats 27B and 27A. Awkward start\n\
+  \  (he's reading, she asks about his book). Conversation builds. By\n  landing they've\
+  \ shared more than either expected. Customs separates\n  them. He kicks himself\
+  \ for months.\n- ACT 2A: Three months later. He finds her on Instagram via a Mexico\n\
+  \  City food photo she tagged. Sends a message referencing something\n  only she'd\
+  \ remember. She responds. Texting becomes calls becomes\n  video becomes the first\
+  \ thing he checks every morning.\n- ACT 2B: The digital relationship deepens but\
+  \ strains. Time zones\n  make everything harder. They have their first real fight\
+  \ over text\n  (the worst medium). He almost flies to Romania impulsively. She\n\
+  \  talks him out of it — then regrets it.\n- ACT 3: One of them buys a ticket. The\
+  \ reunion is nothing like\n  either imagined — it's awkward and weird and perfect.\
+  \ The real\n  person is different from the voice on the phone. They have to\n  decide\
+  \ if the real version is enough.\n"
+model_defaults:
+  api_model: qwen2.5:14b
+  critic_model: qwen2.5:14b
+  fallback_model: qwen2.5:14b
+  local_model: qwen2.5:14b
+other_characters: 'Ana Dragomir, 27. Romanian, grew up in Cluj-Napoca. Works as a
+  freelance translator (Romanian, English, French). Warm, direct, laughs too loud
+  for airplanes. Traveling through Mexico alone for a month after ending a long engagement.
+  Has a small tattoo of a paper airplane on her wrist she got at nineteen. Speaks
+  English with a slight accent that softens her consonants.
+
+  '
+project_name: seat-27b
+protagonist: 'Ethan Reeves, 29. American software engineer from Austin, Texas. Dry
+  humor, overthinks everything, hasn''t taken a real vacation in three years. His
+  friends call him "the robot" because he plans every hour of every day. Secretly
+  writes bad poetry in his Notes app. Went to Mexico because his therapist told him
+  to do one unplanned thing.
+
+  '
+setting: 'Begins on a flight from Dallas to Mexico City (3.5 hours, economy class,
+  middle and window seat). Then Mexico City for a week. Then Austin, TX and Cluj-Napoca,
+  Romania — connected by screens, voice notes, and the occasional 3am video call.
+  Final act: one of them flies to the other.
+
+  '
+status: completed
+strategic_guidance:
+  market_positioning: 'Contemporary romance with literary crossover appeal. Comp titles:
+    One Day by David Nicholls, Normal People by Sally Rooney, The Flatshare by Beth
+    O''Leary. Spice level: 2-3 (tension builds across distance, payoff when they meet).
+    Target: 25-40 readers who''ve had a "what if" person.
+
+    '
+  pacing_notes: 'Act 1 (0-20%): The flight. Contained, intimate, real-time pacing.
+    Act 2A (20-45%): The search and reconnection. Faster pace, montage energy, texts
+    and calls building. Act 2B (45-70%): Deep digital relationship and strain. Slower,
+    more emotional, the cracks show. Act 3 (70-100%): The reunion and aftermath. Grounded,
+    sensory, present-tense feeling even in past tense.
+
+    '
+  tropes: 'Strangers-to-lovers, missed-connection, long-distance, he-fell-first, one-bed
+    (when they finally meet), found-family (her Romanian friends adopting him)
+
+    '
+synopsis: 'Ethan, a burned-out software engineer, sits next to Ana on a flight to
+  Mexico City. For 3.5 hours they talk about everything — failed relationships, the
+  Romanian word for homesickness, why airport coffee is always terrible. When they
+  land, the chaos of customs separates them. No numbers exchanged. No last names.
+  Just a first name and an accent he can''t stop hearing in his head. Three months
+  later, Ethan finds her Instagram through a Mexico City geotag. He sends a message.
+  She replies. What follows is a love story told across time zones, voice notes, and
+  the terrifying question: is it worth crossing an ocean for someone you''ve spent
+  exactly 3.5 hours with?
+
+  '
+target_length: standard (60k)
+themes: 'The courage to pursue something irrational. How we construct people in our
+  heads vs who they actually are. Loneliness in the age of connection. Home as a person,
+  not a place.
+
+  '
+title: Seat 27B
+tone: Warm, funny, aching, modern. Think Sally Rooney meets David Nicholls.
+world_rules: 'Contemporary setting, 2024. Real places (Austin, Cluj-Napoca, Mexico
+  City). Technology is realistic — WhatsApp, Instagram, FaceTime. Time zone math matters
+  (Romania is 8 hours ahead of Austin). Flights, costs, visas are real constraints.
+  No magical coincidences.
+
+  '
+writing_style: 'First person, Ethan''s POV. Sharp internal monologue, self-deprecating
+  but not annoying. Short paragraphs for his overthinking, longer flowing passages
+  for moments with Ana. Dialogue should feel real — people interrupting each other,
+  half-finished sentences, laughter mid-word. Include texts and voice note transcripts
+  formatted naturally.
+
+  '
