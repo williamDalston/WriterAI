@@ -242,6 +242,139 @@ test("Alex detected as unknown", result == "", f"got '{result}'")
 
 
 # ═══════════════════════════════════════════════════════════════
+# 6. CONTEXTUAL POV REPAIR (_repair_pov_context_errors)
+# ═══════════════════════════════════════════════════════════════
+print("\n=== 6. Contextual POV Repair ===")
+from prometheus_novel.stages.pipeline import _repair_pov_context_errors
+
+# 6a. Pattern 1: "she whispered, my voice" -> "her voice"
+text = "She whispered, my voice barely audible in the dark."
+result = _repair_pov_context_errors(text, "male")
+test("P1: 'she whispered, my voice' → 'her voice'",
+     "her voice" in result and "my voice" not in result, repr(result))
+
+# 6b. Pattern 1 with different verb: "she said, my eyes"
+text = "She said, my eyes sparkling with mischief."
+result = _repair_pov_context_errors(text, "male")
+test("P1: 'she said, my eyes' → 'her eyes'",
+     "her eyes" in result, repr(result))
+
+# 6c. Pattern 2: "[Name] said, my voice" -> "her voice"
+text = "Ana said, my voice soft and clear."
+result = _repair_pov_context_errors(text, "male")
+test("P2: 'Ana said, my voice' → 'her voice'",
+     "her voice" in result, repr(result))
+
+# 6d. Pattern 3: "She rolled my eyes" -> "her eyes"
+text = "She rolled my eyes and turned away."
+result = _repair_pov_context_errors(text, "male")
+test("P3: 'She rolled my eyes' → 'her eyes'",
+     "her eyes" in result, repr(result))
+
+# 6e. Pattern 3: "She tilted my head" -> "her head"
+text = "She tilted my head to the side."
+result = _repair_pov_context_errors(text, "male")
+test("P3: 'She tilted my head' → 'her head'",
+     "her head" in result, repr(result))
+
+# 6f. Pattern 4: "I smiled, gazing at me" -> "She smiled, gazing at me"
+text = "I smiled warmly, gazing at me across the table."
+result = _repair_pov_context_errors(text, "male")
+test("P4: 'I smiled, gazing at me' → 'She smiled'",
+     "She smiled" in result, repr(result))
+
+# 6g. Pattern 5: "I turned to face me" -> "She turned to face me"
+text = "I turned to face me with a serious expression."
+result = _repair_pov_context_errors(text, "male")
+test("P5: 'I turned to face me' → 'She turned'",
+     "She turned" in result, repr(result))
+
+# 6h. Pattern 5: "I looked at me" -> "She looked at me"
+text = "I looked at me with concern."
+result = _repair_pov_context_errors(text, "male")
+test("P5: 'I looked at me' → 'She looked at me'",
+     "She looked at me" in result, repr(result))
+
+# 6i. Pattern 6: "I followed my back" -> "I followed her back"
+text = "I followed my back through the corridor."
+result = _repair_pov_context_errors(text, "male")
+test("P6: 'I followed my back' → 'her back'",
+     "her back" in result, repr(result))
+
+# 6j. Pattern 7: Strip markdown bold/italic
+text = "I felt **terrified** but kept my *composure* intact."
+result = _repair_pov_context_errors(text, "male")
+test("P7: Markdown **bold** stripped",
+     "**" not in result and "terrified" in result, repr(result))
+test("P7: Markdown *italic* stripped",
+     result.count("*") == 0 and "composure" in result, repr(result))
+
+# 6k. Female protagonist: uses "his" instead of "her"
+text = "He whispered, my voice cracking with emotion."
+result = _repair_pov_context_errors(text, "female")
+test("Female P1: 'he whispered, my voice' → 'his voice'",
+     "his voice" in result, repr(result))
+
+# 6l. Unknown gender: returns unchanged
+text = "She whispered, my voice barely audible."
+result = _repair_pov_context_errors(text, "")
+test("Unknown gender: no changes",
+     "my voice" in result, repr(result))
+
+# 6m. No false positive: narrator's own possessive stays
+text = "I whispered, my voice barely audible."
+result = _repair_pov_context_errors(text, "male")
+test("No false positive: 'I whispered, my voice' stays",
+     "my voice" in result, repr(result))
+
+
+# ═══════════════════════════════════════════════════════════════
+# 7. EXPANDED EMOTIONAL SUMMARY STRIPPING
+# ═══════════════════════════════════════════════════════════════
+print("\n=== 7. Expanded Emotional Summary Stripping ===")
+from prometheus_novel.stages.pipeline import _strip_emotional_summaries
+
+# 7a. "This small moment" pattern
+text = "I smiled at her.\n\nShe took my hand. This small moment felt like everything."
+result = _strip_emotional_summaries(text)
+test("'This small moment' stripped",
+     "This small moment" not in result and "I smiled" in result, repr(result))
+
+# 7b. "whatever came next" pattern
+text = "I kissed her forehead.\n\nI held her close. Whatever came next, I was ready."
+result = _strip_emotional_summaries(text)
+test("'Whatever came next' stripped",
+     "Whatever came next" not in result and "I kissed" in result, repr(result))
+
+# 7c. "a testament to" pattern
+text = "The code compiled.\n\nIt worked perfectly. It was a testament to our hard work."
+result = _strip_emotional_summaries(text)
+test("'a testament to' stripped",
+     "testament" not in result, repr(result))
+
+
+# ═══════════════════════════════════════════════════════════════
+# 8. EXPANDED TIC FREQUENCY LIMITER
+# ═══════════════════════════════════════════════════════════════
+print("\n=== 8. Expanded Tic Frequency Limiter ===")
+from prometheus_novel.stages.pipeline import _limit_tic_frequency
+
+# 8a. "comfort zone" repeated too many times
+text = "I left my comfort zone.\n\nThis was out of my comfort zone.\n\nWay outside my comfort zone."
+result = _limit_tic_frequency(text)
+comfort_count = result.lower().count("comfort zone")
+test("'comfort zone' limited to <=2 occurrences",
+     comfort_count <= 2, f"found {comfort_count}")
+
+# 8b. "warmth spread" repeated
+text = "Warmth spread through me.\n\nWarmth spread in my chest.\n\nWarmth spread again."
+result = _limit_tic_frequency(text)
+warmth_count = result.lower().count("warmth spread")
+test("'warmth spread' limited",
+     warmth_count <= 2, f"found {warmth_count}")
+
+
+# ═══════════════════════════════════════════════════════════════
 # SUMMARY
 # ═══════════════════════════════════════════════════════════════
 print(f"\n{'='*60}")

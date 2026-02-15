@@ -300,16 +300,23 @@ class OpenAIClient(BaseLLMClient):
         if json_mode:
             kwargs['response_format'] = {"type": "json_object"}
 
+        # Handle stop sequences explicitly
+        stop = kwargs.pop('stop', None)
+
         for attempt in range(MAX_RETRIES + 1):
             try:
+                create_kwargs = {
+                    "model": self.model_name,
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    **kwargs
+                }
+                if stop:
+                    create_kwargs["stop"] = stop
+
                 response = await asyncio.wait_for(
-                    self.client.chat.completions.create(
-                        model=self.model_name,
-                        messages=messages,
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                        **kwargs
-                    ),
+                    self.client.chat.completions.create(**create_kwargs),
                     timeout=timeout
                 )
 
@@ -587,6 +594,11 @@ class OllamaClient(BaseLLMClient):
             if json_mode:
                 create_kwargs["response_format"] = {"type": "json_object"}
 
+            # Handle stop sequences explicitly
+            stop = kwargs.pop("stop", None)
+            if stop:
+                create_kwargs["stop"] = stop
+
             # Pass through remaining kwargs (excluding internal ones)
             timeout_val = kwargs.pop("timeout", 300)
             create_kwargs.update({k: v for k, v in kwargs.items()})
@@ -696,6 +708,7 @@ class AnthropicClient(BaseLLMClient):
         """Generate text using Anthropic API."""
         await self._ensure_initialized()
         kwargs.pop('json_mode', None)  # Anthropic doesn't support this parameter
+        stop = kwargs.pop('stop', None)  # Map to Anthropic's stop_sequences
 
         if not self.client:
             return LLMResponse(
@@ -707,13 +720,17 @@ class AnthropicClient(BaseLLMClient):
             )
 
         try:
-            message = await self.client.messages.create(
-                model=self.model_name,
-                max_tokens=max_tokens,
-                system=system_prompt or "You are a helpful assistant.",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=temperature
-            )
+            create_kwargs = {
+                "model": self.model_name,
+                "max_tokens": max_tokens,
+                "system": system_prompt or "You are a helpful assistant.",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": temperature,
+            }
+            if stop:
+                create_kwargs["stop_sequences"] = stop
+
+            message = await self.client.messages.create(**create_kwargs)
 
             return LLMResponse(
                 content=message.content[0].text,

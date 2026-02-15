@@ -297,6 +297,41 @@ def validate_config(config: Dict) -> Dict:
     }
 
 
+# --- Cleanup regex constants (spec: genre-agnostic, high-confidence markers only) ---
+REST_UNCHANGED_RE = re.compile(
+    r"(?is)\b("
+    r"the\s+rest\s+(of\s+the\s+(?:scene|chapter)\s+)?remains\s+unchanged"
+    r"|the\s+rest\s+remains\s+unchanged"
+    r"|rest\s+of\s+the\s+(?:scene|chapter)\s+remains\s+unchanged"
+    r"|everything\s+after\s+this\s+remains\s+unchanged"
+    r"|no\s+further\s+changes\s+were\s+made"
+    r")\b"
+)
+
+MIN_PREFIX_CHARS = 400
+MIN_PREFIX_LINES = 8
+
+LLM_PREAMBLE_RE = re.compile(
+    r"(?ims)"
+    r"(?:certainly!?\s*|sure!?\s*|of\s+course!?\s*|as\s+requested,?\s*)?"
+    r"(?:here\s+is|below\s+is)\s+"
+    r"(?:the\s+)?(?:revised|updated|new)\s+"
+    r"(?:opening|version|scene|chapter|section|passage)\b",
+)
+
+
+def _load_cleanup_config() -> Dict[str, Any]:
+    """Load optional cleanup patterns from configs/cleanup_patterns.yaml."""
+    try:
+        config_path = Path(__file__).resolve().parent.parent / "configs" / "cleanup_patterns.yaml"
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+    except Exception:
+        pass
+    return {}
+
+
 def _clean_scene_content(text: str) -> str:
     """Strip meta-text, LLM preambles, editing artifacts, and analysis notes.
 
@@ -307,6 +342,8 @@ def _clean_scene_content(text: str) -> str:
     4. Section markers ("=== EXPANDED SCENE ===", "ENHANCED SCENE:")
     5. UI/formatting artifacts ("Visible: 0%", percentage markers)
     6. Instruction echoes ("Output ONLY the revised scene")
+
+    Optional: configs/cleanup_patterns.yaml can add extra inline patterns.
     """
     import re
 
@@ -321,15 +358,59 @@ def _clean_scene_content(text: str) -> str:
         r'[^.:\n]{0,40}[.:]\s*\n+',
         r'^(?:Sure[,!.]?\s*)?[Hh]ere\s+is\s+(?:the |a |my )?'
         r'(?:revised|enhanced|polished|expanded|edited|updated|improved|rewritten|final)'
-        r'[^.:\n]{0,40}[.:]\s*\n+',
-        r'^(?:Sure|Certainly|Of course|Absolutely)[,!.]\s*(?:here\'?s?|I\'ve|I have|let me)'
-        r'[^\n]{0,80}\n+',
+        r'(?:[^.:\n]{0,60}(?:opening|version|scene|chapter)[^.:\n]{0,40})?[.:]\s*\n+',
+        r'^(?:Sure|Certainly|Of course|Absolutely)[,!.]\s*(?:here\'?s?|I\'ve|I have|let me|here is)'
+        r'[^\n]{0,100}\n+',
         r'^(?:I\'ve |I have )(?:revised|enhanced|polished|expanded|edited|rewritten)'
         r'[^\n]{0,80}\n+',
         r'^(?:Below is|The following is|What follows is)[^\n]{0,60}\n+',
     ]
     for pattern in preamble_patterns:
         text = re.sub(pattern, '', text, count=1, flags=re.IGNORECASE)
+
+    # --- PHASE 1.5: Truncate at "rest remains unchanged" (discard alternate versions) ---
+    rest_match = REST_UNCHANGED_RE.search(text)
+    if rest_match:
+        pre = text[:rest_match.start()].rstrip()
+        text = pre
+        logger.info("Cleanup: truncated at rest-unchanged marker (kept %d chars)", len(pre))
+    else:
+        # Optional YAML markers (add more truncate points)
+        cleanup_cfg = _load_cleanup_config()
+        for marker in cleanup_cfg.get("inline_truncate_markers", []) or []:
+            if not isinstance(marker, str):
+                continue
+            pos = text.lower().find(marker.lower())
+            if pos >= 0:
+                pre = text[:pos].rstrip()
+                text = pre
+                logger.info("Cleanup: truncated at YAML marker %r (kept %d chars)", marker[:40], len(pre))
+                break
+
+    # --- PHASE 1.6: Truncate at LLM preamble mid-text (wrong pasted assistant content) ---
+    mid_match = LLM_PREAMBLE_RE.search(text)
+    if mid_match:
+        pre = text[:mid_match.start()].rstrip()
+        prefix_chars = len(pre)
+        prefix_lines = len(pre.splitlines())
+        if prefix_chars >= MIN_PREFIX_CHARS or prefix_lines >= MIN_PREFIX_LINES:
+            text = pre
+            logger.info(
+                "Cleanup: truncated at mid-text LLM preamble (kept %d chars, %d lines)",
+                prefix_chars, prefix_lines,
+            )
+    else:
+        cleanup_cfg = _load_cleanup_config()
+        for marker in cleanup_cfg.get("inline_preamble_markers", []) or []:
+            if not isinstance(marker, str):
+                continue
+            pos = text.lower().find(marker.lower())
+            if pos >= 0:
+                pre = text[:pos].rstrip()
+                if len(pre) >= MIN_PREFIX_CHARS or len(pre.splitlines()) >= MIN_PREFIX_LINES:
+                    text = pre
+                    logger.info("Cleanup: truncated at YAML preamble marker %r", marker[:40])
+                break
 
     # --- PHASE 2: Strip trailing meta-text (truncate at first meta-marker) ---
     # These signal end-of-prose, start-of-analysis/commentary
@@ -398,6 +479,14 @@ def _clean_scene_content(text: str) -> str:
         r'Emotional beats:\s*(?:\n[-•*][^\n]+)*',
         r'Sensory details:\s*(?:\n[-•*][^\n]+)*',
     ]
+    # Merge optional custom patterns from configs/cleanup_patterns.yaml
+    cleanup_cfg = _load_cleanup_config()
+    for item in cleanup_cfg.get("inline", []) or []:
+        if isinstance(item, str):
+            inline_patterns.append(item)
+    for item in cleanup_cfg.get("regex_patterns", []) or []:
+        if isinstance(item, dict) and item.get("pattern"):
+            inline_patterns.append(item["pattern"])
 
     for pattern in inline_patterns:
         text = re.sub(pattern, '', text, flags=re.IGNORECASE)
@@ -519,6 +608,151 @@ def _enforce_first_person_pov(text: str, protagonist_name: str = "",
     return text
 
 
+def _repair_pov_context_errors(text: str, protagonist_gender: str = "") -> str:
+    """Fix contextual POV corruption where third-person subject + first-person possessive clash.
+
+    The #1 defect in qwen2.5:14b output: when Ana (third person) does something,
+    the LLM writes "my" for her body/voice/face instead of "her".
+
+    High-confidence patterns (almost never produce false positives):
+    1. "she said/whispered/asked, my voice..." -> "her voice"
+    2. "she said, my eyes sparkling" -> "her eyes sparkling"
+    3. "She rolled my eyes" -> "She rolled her eyes"
+    4. "I smiled warmly, gazing at me" -> "She smiled warmly, gazing at me"
+    5. "I turned to face me" -> "She turned to face me"
+    """
+    if not text:
+        return text
+
+    gender = protagonist_gender.lower().strip()
+
+    # Determine the OTHER character's pronouns (the non-narrator)
+    if gender == "male":
+        other_subj = "she"
+        other_subj_cap = "She"
+        other_poss = "her"
+        other_poss_cap = "Her"
+    elif gender == "female":
+        other_subj = "he"
+        other_subj_cap = "He"
+        other_poss = "his"
+        other_poss_cap = "His"
+    else:
+        return text  # Can't fix without knowing gender
+
+    # Body/attribute nouns that get misattributed
+    body_attrs = (r'voice|eyes|face|lips|head|hair|gaze|smile|expression|'
+                  r'brow|eyebrow|chin|jaw|cheek|shoulder|shoulders|hand|hands|'
+                  r'fingers|finger|arm|arms|back|chest|breath|wrist|palm|palms|'
+                  r'forehead|temple|ear|ears|neck|nose|mouth|knees|lap|'
+                  r'foot|feet|leg|legs|hip|hips|skin|throat|tongue')
+
+    # Dialogue/action verbs that signal the SUBJECT is the non-narrator
+    dialogue_verbs = (r'said|whispered|murmured|called|replied|asked|answered|'
+                      r'continued|began|started|added|suggested|admitted|'
+                      r'laughed|smiled|grinned|chuckled|sighed|exclaimed|'
+                      r'urged|teased|joked|offered|warned|promised|'
+                      r'shouted|yelled|cried|sobbed|snapped|hissed|groaned')
+
+    # === PATTERN 1: "she [dialogue_verb], my [body_attr]" -> "her [body_attr]" ===
+    # This catches: "she whispered, my voice barely audible"
+    # The possessive after a comma following her dialogue tag = HER attribute
+    text = re.sub(
+        rf'({other_subj_cap}|{other_subj})\s+({dialogue_verbs})(\s*,\s*)my\s+({body_attrs})\b',
+        lambda m: f'{m.group(1)} {m.group(2)}{m.group(3)}{other_poss} {m.group(4)}',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # === PATTERN 2: "[Name] [dialogue_verb], my [body_attr]" -> "her [body_attr]" ===
+    # Catches: "Ana said, my voice soft and clear"
+    # We match any capitalized word + dialogue verb + comma + "my [body]"
+    text = re.sub(
+        rf'(\b[A-Z][a-z]+)\s+({dialogue_verbs})(\s*,\s*)my\s+({body_attrs})\b',
+        lambda m: f'{m.group(1)} {m.group(2)}{m.group(3)}{other_poss} {m.group(4)}',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # === PATTERN 3: "She [self-action verb] my [body_attr]" -> "her [body_attr]" ===
+    # Catches: "She rolled my eyes", "She tilted my head", "She shook my head"
+    # These verbs imply the subject acts on THEIR OWN body part
+    self_action_verbs = (r'rolled|tilted|shook|nodded|tossed|flipped|'
+                         r'narrowed|widened|closed|squeezed|pursed|'
+                         r'bit|clenched|rubbed|tucked|brushed')
+    text = re.sub(
+        rf'({other_subj_cap})\s+({self_action_verbs})\s+my\s+({body_attrs})\b',
+        lambda m: f'{m.group(1)} {m.group(2)} {other_poss} {m.group(3)}',
+        text
+    )
+
+    # === PATTERN 4: "I [verb], [gerund] at/to me" -> "She [verb], [gerund] at/to me" ===
+    # Catches: "I smiled warmly, gazing at me" (should be "She smiled warmly, gazing at me")
+    # The gerund clause targeting "me" means the subject is the OTHER person
+    gerunds = r'gazing|looking|staring|smiling|grinning|beaming|glancing|peering|waving'
+    text = re.sub(
+        rf'^I\s+({dialogue_verbs})(\s+\w+)?\s*,\s*({gerunds})\s+at\s+me\b',
+        lambda m: f'{other_subj_cap} {m.group(1)}{m.group(2) or ""}, {m.group(3)} at me',
+        text,
+        flags=re.MULTILINE
+    )
+    text = re.sub(
+        rf'(?<=[.!?]\s)I\s+({dialogue_verbs})(\s+\w+)?\s*,\s*({gerunds})\s+at\s+me\b',
+        lambda m: f'{other_subj_cap} {m.group(1)}{m.group(2) or ""}, {m.group(3)} at me',
+        text
+    )
+
+    # === PATTERN 5: "I [verb] at/to me" (self-referential) -> "She [verb] at/to me" ===
+    # Catches: "I turned to face me", "I looked up at me", "I glanced at me"
+    look_verbs = r'turned|looked|glanced|smiled|waved|nodded|called|reached'
+    text = re.sub(
+        rf'^I\s+({look_verbs})\s+(?:to face|at|toward|towards)\s+me\b',
+        lambda m: f'{other_subj_cap} {m.group(1)} {m.group(0).split(m.group(1), 1)[1].strip().split("I ", 1)[-1] if "I " in m.group(0) else m.group(0)[len("I " + m.group(1)):]}',
+        text,
+        flags=re.MULTILINE
+    )
+    # Simpler version for common patterns:
+    text = re.sub(
+        r'\bI turned to face me\b',
+        f'{other_subj_cap} turned to face me',
+        text
+    )
+    text = re.sub(
+        r'\bI looked (?:up )?at me\b',
+        f'{other_subj_cap} looked at me',
+        text
+    )
+    text = re.sub(
+        r'\bI glanced at me\b',
+        f'{other_subj_cap} glanced at me',
+        text
+    )
+    text = re.sub(
+        r'\bI smiled back at me\b',
+        f'{other_subj_cap} smiled back at me',
+        text
+    )
+    text = re.sub(
+        r'\bI stood beside me\b',
+        f'{other_subj_cap} stood beside me',
+        text
+    )
+
+    # === PATTERN 6: "I followed my back" -> "I followed her back" ===
+    text = re.sub(
+        r'\bI followed my\s+(back|lead)\b',
+        lambda m: f'I followed {other_poss} {m.group(1)}',
+        text
+    )
+
+    # === PATTERN 7: Strip stray markdown bold/italic from prose ===
+    # Catches: **word** and *word* in narrative text
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    text = re.sub(r'(?<!\w)\*([^*]+)\*(?!\w)', r'\1', text)
+
+    return text
+
+
 def _strip_emotional_summaries(text: str) -> str:
     """Detect and remove paragraph-ending emotional summary sentences.
 
@@ -550,7 +784,8 @@ def _strip_emotional_summaries(text: str) -> str:
         # "was a reminder that..."
         r"[A-Z][^.]{0,40}was a reminder that\b",
         # "a sense of..."
-        r"[A-Z][^.]{0,40}a sense of (?:something|hope|possibility|belonging|peace|closure|completion)",
+        r"[A-Z][^.]{0,40}a sense of (?:something|hope|possibility|belonging|peace|closure|completion|"
+        r"closure mixed with|anticipation|connection|warmth|longing)",
         # "It felt like the beginning..."
         r"It felt like (?:the (?:beginning|start|end)|a (?:turning point|new chapter|threshold)|something (?:new|real|fragile|important))",
         # "For the first time..."
@@ -565,8 +800,46 @@ def _strip_emotional_summaries(text: str) -> str:
         # "That was when/what..."
         r"That was (?:when|what|the moment|how)\b",
         # Generic "the X of Y" emotional summaries
-        r"The (?:weight|warmth|promise|reality|truth|beauty|gravity|fragility) of "
-        r"(?:that|this|the|their|what|it)\b",
+        r"The (?:weight|warmth|promise|reality|truth|beauty|gravity|fragility|possibilities|"
+        r"thought|notion|idea) of (?:that|this|the|their|what|it|facing|an uncertain|our)\b",
+
+        # === NEW PATTERNS from Seat 27B audit (40+ missed) ===
+        # "sometimes [gerund/stepping/etc.]..."
+        r"[Ss]ometimes(?:,)?\s+(?:stepping|it's in|it takes|the best|you just|love|life)\b",
+        # "This [small/encounter/connection] [verb]..."
+        r"This (?:small moment|encounter|connection|journey) (?:encapsulated|felt|was|had)\b",
+        # "Our connection/journey had..."
+        r"Our (?:connection|journey|night|relationship) (?:had|felt|was|blossomed|deepened)\b",
+        # "The future/world/room/city [verb]..."
+        r"The (?:future|world|room|city|day|night|possibilities) (?:remained|felt|seemed|outside|stretched)\b",
+        # "new and hopeful" / "newfound hope"
+        r"[^.]{0,30}(?:new and hopeful|newfound hope|flicker of hope|glimmering hope|hope that filled)\b",
+        # Aphoristic endings with "it was both..."
+        r"It was both (?:exhilarating|terrifying|beautiful|painful|liberating|overwhelming)\b",
+        # "I felt [abstract noun] [growing/building/settling]..."
+        r"I felt (?:belonging|hope|peace|gratitude|connection|warmth|something)\s+"
+        r"(?:starting to|take root|growing|building|settling|stirring|blossoming)\b",
+        # "a thread/bridge/link between..."
+        r"[^.]{0,30}(?:a thread|a bridge|a link|an invisible thread) between\b",
+        # "Yet amidst the uncertainty..."
+        r"Yet (?:amidst|despite|in spite of|through) the (?:uncertainty|chaos|confusion|distance|pain)\b",
+        # "was setting me on a new path"
+        r"[^.]{0,40}(?:setting me on|putting me on|leading me toward) a new (?:path|direction|chapter)\b",
+        # "each word/step/moment felt like..."
+        r"[Ee]ach (?:word|step|moment|breath|gesture|touch) felt like\b",
+        # "a testament to..."
+        r"[^.]{0,30}a testament to (?:the|our|their|how)\b",
+        # "with [pronoun] by my side..."
+        r"[Ww]ith (?:her|him|Ana|them) by my side,?\s*(?:I felt|everything|the world|nothing)\b",
+        # "what came/comes next" as emotional summary
+        r"[^.]{0,30}(?:whatever|what(?:ever)?)\s+(?:came|comes|lay|lies|awaited)\s+(?:next|ahead)\b",
+        # "there was no going back"
+        r"[Tt]here was no going back\b",
+        # "a chance for something new"
+        r"[^.]{0,30}a chance for something (?:new|different|real|beautiful|more)\b",
+        # "The [noun] around me [verb]"
+        r"The (?:room|world|city|air|space|noise|sounds?) around (?:me|us) (?:seemed|felt|faded|"
+        r"dissolved|melted|blurred)\b",
     ]
 
     # Compile patterns for efficiency
@@ -653,17 +926,35 @@ def _limit_tic_frequency(text: str, max_per_scene: int = 1) -> str:
 
     # Common repeated tics to track
     tic_patterns = [
+        # Physical tics
         (r'tamed?\s+(?:her |my |his )?(?:curly )?hair\s*(?:compulsively)?', 'hair taming'),
         (r'(?:fingers?\s+)?tightened\s+around', 'finger tightening'),
         (r'jaw\s+clenched', 'jaw clenching'),
         (r'tugg(?:ed|ing)\s+(?:at\s+)?(?:her |my |his )?(?:curly )?hair', 'hair tugging'),
         (r'ran\s+(?:her |my |his )?(?:fingers?\s+)?through\s+(?:her |my |his )?hair', 'hair running'),
-        (r'heart\s+(?:hammered|pounded|raced|thundered)', 'heart racing'),
+        (r'heart\s+(?:hammered|pounded|raced|thundered|fluttered|skipped)', 'heart racing'),
         (r'stomach\s+(?:flipped|dropped|churned|knotted)', 'stomach flipping'),
         (r'breath\s+(?:caught|hitched|stuttered)', 'breath catching'),
         (r'pulse\s+(?:quickened|raced|spiked|jumped)', 'pulse racing'),
         (r'like\s+a\s+knife', 'simile: like a knife'),
         (r'vamos\s+a\s+ser\s+realistas', 'catchphrase: vamos'),
+        # NEW from Seat 27B audit
+        (r'(?:my |the )?phone\s+(?:buzzed|vibrated|pinged|chimed|rang)', 'phone buzzed'),
+        (r'eyes?\s+(?:sparkl|twinkl)(?:ed|ing)', 'eyes sparkling'),
+        (r'(?:a )?comfortable\s+silence', 'comfortable silence'),
+        (r'(?:step(?:ping|ped)?\s+(?:out\s+of|outside)\s+(?:my|the|his|her)\s+)?comfort\s+zone', 'comfort zone'),
+        (r'warmth\s+(?:spread|flooded|bloomed|filled|coursed)\s+(?:through|in)', 'warmth spread'),
+        (r'(?:cool|warm|gentle|soft)\s+breeze', 'breeze descriptor'),
+        (r'(?:fingers?\s+)?(?:drumm|tapp|hover)(?:ed|ing)', 'finger drumming'),
+        (r'(?:a )?mix of\s+(?:\w+\s+)?(?:and|yet)', 'a mix of emotions'),
+        (r'weight\s+of\s+(?:the|this|that|his|her|their|uncertainty|decision)', 'weight of abstraction'),
+        (r'(?:the )?city\s+(?:hummed|buzzed|pulsed|thrummed)', 'city hummed'),
+        (r'(?:uncharted|unfamiliar|unknown)\s+territory', 'uncharted territory'),
+        (r"nodded,?\s+even though\s+(?:she|he)\s+couldn't\s+see", 'nodded unseen'),
+        (r"let's\s+see\s+where\s+(?:this|it)\s+(?:goes|takes|leads)", 'see where this goes'),
+        (r'tucked?\s+(?:a\s+)?strand\s+(?:of\s+)?(?:\w+\s+)?hair\s+behind', 'hair tucking'),
+        (r'(?:my|her|his)\s+(?:notebook|journal)\s+(?:out|from|under|on|beside)', 'notebook prop'),
+        (r'each\s+(?:step|word|moment|breath)\s+(?:felt|was|seemed)\s+like', 'each X felt like'),
     ]
 
     # Build a set of sentence indices to remove
@@ -712,39 +1003,52 @@ def _detect_duplicate_content(text: str, similarity_threshold: float = 0.6) -> s
     """Detect and remove duplicate/stitched scene content.
 
     Local models sometimes generate two versions of the same scene stitched
-    together. This detects large blocks of text that share significant overlap
-    and keeps only the first (usually better) version.
-
-    Strategy: split text into large chunks (by scene breaks or paragraph groups),
-    compare overlapping n-grams, and remove the second duplicate.
+    together. Split on stitch markers first (keep segment 0), then run
+    similarity-based duplicate detection.
     """
     if not text or len(text) < 200:
         return text
 
-    # Common markers where models stitch duplicates
+    # Stitch markers: split FIRST, keep segment 0, drop the rest
     stitch_markers = [
-        r'\n---+\n',           # --- separators
-        r'\n\*\*\*+\n',       # *** separators
-        r'\n#{1,3}\s',         # Markdown headers mid-scene
-        r'\nVersion \d',       # "Version 2"
-        r'\nAlternative:',     # "Alternative:"
-        r'\nRevised:',         # "Revised:"
-        r'\nTake \d',          # "Take 2"
+        r"(?i)(?:the\s+)?rest\s+(?:of\s+the\s+(?:scene|chapter)\s+)?(?:remains?|is)\s+unchanged",
+        r"\n---+\n",
+        r"\n\*\*\*+\n",
+        r"\n#{1,3}\s*(?:revised\s+)?version",
+        r"\nVersion\s+\d",
+        r"\nAlternative:",
+        r"\nRevised:",
+        r"\nTake\s+\d",
     ]
 
     for marker in stitch_markers:
+        parts = re.split(marker, text, maxsplit=1, flags=re.IGNORECASE)
+        if len(parts) == 2 and len(parts[0].strip()) > 50:
+            text = parts[0].strip()
+            break
+
+    # Similarity-based duplicate detection
+    stitch_markers_similarity = [
+        r"\n---+\n",
+        r"\n\*\*\*+\n",
+        r"\n#{1,3}\s",
+        r"\nVersion\s+\d",
+        r"\nAlternative:",
+        r"\nRevised:",
+        r"\nTake\s+\d",
+    ]
+
+    for marker in stitch_markers_similarity:
         parts = re.split(marker, text, maxsplit=1)
         if len(parts) == 2 and len(parts[0].strip()) > 100 and len(parts[1].strip()) > 100:
-            # Check similarity between the two halves
             words_a = set(parts[0].lower().split())
             words_b = set(parts[1].lower().split())
             if words_a and words_b:
                 overlap = len(words_a & words_b) / min(len(words_a), len(words_b))
                 if overlap > similarity_threshold:
-                    # Duplicates detected — keep the longer one (usually more complete)
-                    text = parts[0].strip() if len(parts[0]) >= len(parts[1]) else parts[1].strip()
+                    text = parts[0].strip()
 
-    # Also check for paragraph-level duplication within the text
+    # Paragraph-level duplication within the text
     # Split into paragraphs and find near-duplicate pairs
     paragraphs = [p.strip() for p in text.split('\n\n') if p.strip() and len(p.strip()) > 80]
     if len(paragraphs) >= 2:
@@ -868,6 +1172,7 @@ def _postprocess_scene(text: str, protagonist_name: str = "",
     text = _clean_scene_content(text)
     text = _detect_duplicate_content(text)
     text = _enforce_first_person_pov(text, protagonist_name, protagonist_gender)
+    text = _repair_pov_context_errors(text, protagonist_gender)
     text = _strip_emotional_summaries(text)
     text = _limit_tic_frequency(text)
     if setting_language:
@@ -1207,6 +1512,70 @@ class StageStatus(Enum):
     SKIPPED = "skipped"
 
 
+# ============================================================================
+# FORMAT CONTRACT — System prompt for all prose-generating stages
+# Prevents meta-text at generation time (not just cleanup)
+# ============================================================================
+FORMAT_CONTRACT = """You are a fiction author writing a novel. Your output is PROSE ONLY.
+
+ABSOLUTE RULES:
+- Output ONLY narrative prose (dialogue, action, description, interiority)
+- NEVER output: "Certainly", "Here is", "Sure", "As requested", greetings, sign-offs
+- NEVER output: headings, bullet points, numbered lists, markdown formatting
+- NEVER output: commentary, analysis, "Changes made:", "Notes:", summaries
+- NEVER output: alternatives ("Option A / Option B"), bracketed stage directions
+- NEVER output: "The rest remains unchanged" or any truncation marker
+- NEVER output: "[Scene continues...]" or "[Rest of scene unchanged]"
+- If unsure whether to explain or continue the scene: CONTINUE THE SCENE
+
+BAD (do not do this):
+  "Here's the revised scene with more sensory detail:
+
+  The morning light filtered..."
+
+GOOD (do this):
+  The morning light filtered through salt-crusted windows..."""
+
+# Stop sequences — prevent meta-text from being generated (saves tokens + cost)
+CREATIVE_STOP_SEQUENCES = [
+    "\nCertainly",
+    "\nHere is",
+    "\nAs requested",
+    "\nThe rest remains unchanged",
+    "\n---\n",
+    "\nChanges made:",
+    "\nScanning for",
+    "\nNotes:",
+    "\n**Changes",
+    "\n**Scanning",
+    "\n[The rest",
+    "\n[Scene continues",
+]
+
+# Retry prefix for critic gate failures
+STRICT_RETRY_PREFIX = (
+    "CRITICAL: Your previous output contained non-prose content. "
+    "Output ABSOLUTELY NOTHING except narrative prose. "
+    "No preamble. No commentary. No explanation. No headers. "
+    "Start with the first word of the prose. End with the last word.\n\n"
+)
+
+# Stages that generate prose (not JSON/analysis) — get format contract + stop sequences
+PROSE_STAGES = {
+    "scene_drafting", "scene_expansion", "self_refinement",
+    "continuity_fix", "voice_human_pass", "continuity_fix_2",
+    "dialogue_polish", "prose_polish", "chapter_hooks", "final_deai"
+}
+
+# Stages where full critic gate runs (retry on failure)
+# Excludes final_deai (special word-window logic)
+CRITIC_GATE_STAGES = {
+    "scene_drafting", "scene_expansion", "self_refinement",
+    "continuity_fix", "voice_human_pass", "continuity_fix_2",
+    "dialogue_polish", "prose_polish", "chapter_hooks"
+}
+
+
 @dataclass
 class StageResult:
     """Result from a pipeline stage."""
@@ -1250,6 +1619,17 @@ class PipelineState:
     # Metrics
     total_tokens: int = 0
     total_cost_usd: float = 0.0
+
+    # Artifact tracking — per-scene metrics for model vs system diagnostics
+    artifact_metrics: Dict[str, Any] = field(default_factory=lambda: {
+        "total_scenes_generated": 0,
+        "scenes_with_meta_text": 0,
+        "scenes_with_preamble": 0,
+        "scenes_with_duplicate_marker": 0,
+        "scenes_with_pov_drift": 0,
+        "scenes_retried": 0,
+        "per_stage": {},
+    })
 
     # Checkpoint tracking - which stages completed successfully
     completed_stages: List[str] = field(default_factory=list)
@@ -1322,6 +1702,7 @@ class PipelineState:
             "target_chapters": self.target_chapters,
             "total_tokens": self.total_tokens,
             "total_cost_usd": self.total_cost_usd,
+            "artifact_metrics": self.artifact_metrics,
             "stage_results": [
                 {
                     "stage_name": r.stage_name,
@@ -1370,7 +1751,16 @@ class PipelineState:
             target_words=data.get("target_words", 60000),
             target_chapters=data.get("target_chapters", 20),
             total_tokens=data.get("total_tokens", 0),
-            total_cost_usd=data.get("total_cost_usd", 0.0)
+            total_cost_usd=data.get("total_cost_usd", 0.0),
+            artifact_metrics=data.get("artifact_metrics", {
+                "total_scenes_generated": 0,
+                "scenes_with_meta_text": 0,
+                "scenes_with_preamble": 0,
+                "scenes_with_duplicate_marker": 0,
+                "scenes_with_pov_drift": 0,
+                "scenes_retried": 0,
+                "per_stage": {},
+            })
         )
 
         # Recalculate targets from config if loading
@@ -1739,8 +2129,14 @@ class PipelineOrchestrator:
         return self.state
 
     async def _run_stage(self, stage_name: str) -> StageResult:
-        """Run a single pipeline stage."""
+        """Run a single pipeline stage with transaction safety.
+
+        For prose stages: snapshots self.state.scenes before running.
+        If the stage fails or produces obviously corrupt output (scene count
+        drops below 50% of input), restores the snapshot.
+        """
         import time
+        import copy
         start_time = time.time()
 
         stage_handlers = {
@@ -1776,9 +2172,34 @@ class PipelineOrchestrator:
                 error=f"Unknown stage: {stage_name}"
             )
 
+        # Transaction safety: snapshot scenes before prose stages
+        scenes_snapshot = None
+        if stage_name in PROSE_STAGES and self.state.scenes:
+            scenes_snapshot = copy.deepcopy(self.state.scenes)
+
         try:
             output, tokens = await handler()
             duration = time.time() - start_time
+
+            # Validate: stage didn't corrupt scenes
+            if scenes_snapshot and self.state.scenes is not None:
+                new_count = len(self.state.scenes)
+                old_count = len(scenes_snapshot)
+                if new_count < old_count * 0.5:
+                    logger.error(
+                        f"Transaction safety: {stage_name} produced {new_count} scenes "
+                        f"from {old_count} input. Restoring snapshot."
+                    )
+                    self.state.scenes = scenes_snapshot
+                    return StageResult(
+                        stage_name=stage_name,
+                        status=StageStatus.FAILED,
+                        error=f"Scene count dropped from {old_count} to {new_count}",
+                        duration_seconds=duration
+                    )
+
+            # Log artifact metrics for this stage
+            self._log_artifact_summary(stage_name)
 
             return StageResult(
                 stage_name=stage_name,
@@ -1792,6 +2213,12 @@ class PipelineOrchestrator:
         except Exception as e:
             import traceback
             logger.error(f"Stage {stage_name} failed: {e}\n{traceback.format_exc()}")
+
+            # Restore scenes on error
+            if scenes_snapshot is not None:
+                logger.warning(f"Restoring scene snapshot after {stage_name} failure")
+                self.state.scenes = scenes_snapshot
+
             return StageResult(
                 stage_name=stage_name,
                 status=StageStatus.FAILED,
@@ -2255,6 +2682,15 @@ MOTIF MAP (embed these structurally into scenes — settings, objects, character
 
 {prev_summary}
 
+=== MANDATORY PLOT POINTS (these MUST appear in the outline) ===
+{config.get('key_plot_points', 'None specified')}
+Every event listed above MUST be dramatized in at least one scene. Map them to chapters:
+- Events described as "ACT 1" must appear in chapters 1-{max(1, self.state.target_chapters // 4)}
+- Events described as "ACT 2" must appear in chapters {self.state.target_chapters // 4 + 1}-{self.state.target_chapters * 3 // 4}
+- Events described as "ACT 3" must appear in chapters {self.state.target_chapters * 3 // 4 + 1}-{self.state.target_chapters}
+If a key_plot_point describes the INCITING INCIDENT (first meeting, discovery, etc.),
+it MUST be in Chapter 1 or 2. Do NOT skip it or start the story after it happened.
+
 === GENERATE CHAPTERS {batch_start} THROUGH {batch_end} ===
 
 TARGET: {self.state.target_chapters} chapters total, {self.state.scenes_per_chapter} scenes per chapter
@@ -2296,6 +2732,12 @@ The AI tends to collapse similar scenes into the same output. To prevent this, E
    - At least 2 must open with physical action (not thinking/observing)
    - At least 1 must open with a time jump or location change
    - No more than 2 consecutive chapters may open with internal monologue
+
+4. GENRE DISCIPLINE ({config.get('genre', 'general').upper()}):
+{"   - ROMANCE: Do NOT plan any thriller/horror/suspense beats (no shadowy figures, no mysterious notes, no stalkers, no anonymous threats). Tension comes from EMOTIONAL stakes: miscommunication, fear of vulnerability, distance, cultural differences, timing." if 'romance' in config.get('genre', '').lower() else ""}
+{"   - Hooks must come from character emotion and relationship tension, NOT from manufactured danger." if 'romance' in config.get('genre', '').lower() else ""}
+   - Every scene must serve the story's genre. Do not inject elements from other genres.
+   - Location variety: no more than 3 scenes total in cafes/coffee shops across the entire outline.
 
 Respond with a JSON object containing a "chapters" array of {batch_end - batch_start + 1} chapter objects. Each chapter MUST have "chapter", "chapter_title", and "scenes" keys."""
 
@@ -2605,6 +3047,219 @@ Return JSON with:
             self._get_setting_language(),
             self._get_protagonist_gender()
         )
+
+    # ========================================================================
+    # Critic Gate, Artifact Metrics, Prose Generation Wrapper
+    # ========================================================================
+
+    def _validate_scene_output(self, text: str, scene_meta: dict = None) -> dict:
+        """Lightweight critic gate: check raw LLM output for obvious problems.
+
+        Runs BEFORE postprocessing so we can measure what the model actually produced.
+        Returns dict with 'pass' bool and specific issue flags.
+        """
+        if not text:
+            return {"pass": False, "issues": {"empty": True}, "word_count": 0}
+
+        issues = {}
+
+        # Check for preamble / meta-text in first 200 chars
+        preamble_patterns = [
+            r'^(?:Sure|Certainly|Of course|Absolutely)[,!.\s]',
+            r'^(?:Here\s+is|Below\s+is|I\'ve\s+(?:revised|enhanced|rewritten))',
+            r'^(?:The\s+following\s+is)',
+        ]
+        for pat in preamble_patterns:
+            if re.search(pat, text[:200], re.IGNORECASE):
+                issues["preamble"] = True
+                break
+
+        # Check for "rest remains unchanged" / truncation
+        if REST_UNCHANGED_RE.search(text):
+            issues["truncation_marker"] = True
+
+        # Check for duplicate/alternate markers
+        alt_patterns = [
+            r'(?:Option [AB]|Version [12]|Alternative)',
+            r'===\s*(?:EXPANDED|ENHANCED|POLISHED|REVISED)\s*(?:SCENE|VERSION)',
+        ]
+        for pat in alt_patterns:
+            if re.search(pat, text, re.IGNORECASE):
+                issues["alternate_version"] = True
+                break
+
+        # Check for analysis/commentary appended after prose
+        analysis_patterns = [
+            r'\n(?:Changes made|Notes?:|Summary:|Checklist:)',
+            r'\n\*\*(?:Scanning|Changes|Quality)',
+        ]
+        for pat in analysis_patterns:
+            if re.search(pat, text, re.IGNORECASE):
+                issues["analysis_commentary"] = True
+                break
+
+        # Minimum content check
+        word_count = count_words_accurate(text)
+        if word_count < 50:
+            issues["too_short"] = True
+
+        # POV drift check (quick heuristic for first-person stories)
+        writing_style = self.state.config.get("writing_style", "").lower()
+        if "first person" in writing_style:
+            protagonist_name = self._get_protagonist_name()
+            if protagonist_name:
+                third_person_refs = len(re.findall(
+                    rf'\b{re.escape(protagonist_name)}\s+(?:said|thought|felt|walked|looked|smiled|laughed)',
+                    text, re.IGNORECASE
+                ))
+                if third_person_refs >= 3:
+                    issues["pov_drift"] = True
+
+        return {
+            "pass": len(issues) == 0,
+            "issues": issues,
+            "word_count": word_count
+        }
+
+    def _record_artifact_metrics(self, stage_name: str, scene_meta: dict,
+                                  validation: dict, is_retry: bool = False):
+        """Record artifact detection metrics for diagnostics."""
+        metrics = self.state.artifact_metrics
+
+        metrics["total_scenes_generated"] += 1
+
+        if stage_name not in metrics["per_stage"]:
+            metrics["per_stage"][stage_name] = {
+                "scenes": 0, "preamble": 0, "truncation": 0,
+                "alternate": 0, "analysis": 0, "pov_drift": 0,
+                "too_short": 0, "retried": 0
+            }
+
+        sm = metrics["per_stage"][stage_name]
+        sm["scenes"] += 1
+
+        issues = validation.get("issues", {})
+        if issues.get("preamble"):
+            sm["preamble"] += 1
+            metrics["scenes_with_preamble"] += 1
+        if issues.get("truncation_marker"):
+            sm["truncation"] += 1
+            metrics["scenes_with_meta_text"] += 1
+        if issues.get("alternate_version"):
+            sm["alternate"] += 1
+            metrics["scenes_with_duplicate_marker"] += 1
+        if issues.get("analysis_commentary"):
+            sm["analysis"] += 1
+            metrics["scenes_with_meta_text"] += 1
+        if issues.get("pov_drift"):
+            sm["pov_drift"] += 1
+            metrics["scenes_with_pov_drift"] += 1
+        if issues.get("too_short"):
+            sm["too_short"] += 1
+        if is_retry:
+            sm["retried"] += 1
+            metrics["scenes_retried"] += 1
+
+    async def _generate_prose(self, client, prompt: str, stage_name: str,
+                               scene_meta: dict = None, **kwargs) -> tuple:
+        """Generate prose with format contract, stop sequences, critic gate, and metrics.
+
+        Centralizes the generate → validate → retry → postprocess pipeline.
+        Returns (processed_content: str, tokens_used: int).
+        """
+        # Inject format contract as system prompt (stage can override)
+        kwargs.setdefault('system_prompt', FORMAT_CONTRACT)
+
+        # Add stop sequences for creative stages
+        kwargs.setdefault('stop', CREATIVE_STOP_SEQUENCES)
+
+        # Generate
+        response = await client.generate(prompt, **kwargs)
+        total_tokens = response.input_tokens + response.output_tokens
+
+        # Run critic gate on raw output
+        validation = self._validate_scene_output(response.content, scene_meta)
+        self._record_artifact_metrics(stage_name, scene_meta or {}, validation)
+
+        # If critic gate fails on fixable issues, retry once with strict prefix
+        fixable_issues = {"preamble", "truncation_marker", "alternate_version", "analysis_commentary"}
+        detected = set(validation.get("issues", {}).keys())
+        if not validation["pass"] and detected & fixable_issues:
+            logger.warning(
+                f"Critic gate failed for {stage_name} "
+                f"({', '.join(detected)}). Retrying with strict prompt."
+            )
+            strict_kwargs = dict(kwargs)
+            strict_kwargs['system_prompt'] = FORMAT_CONTRACT + "\n" + STRICT_RETRY_PREFIX
+            response2 = await client.generate(prompt, **strict_kwargs)
+            total_tokens += response2.input_tokens + response2.output_tokens
+
+            validation2 = self._validate_scene_output(response2.content, scene_meta)
+            self._record_artifact_metrics(stage_name, scene_meta or {}, validation2, is_retry=True)
+
+            # Use retry output if it's better (fewer or no issues)
+            if len(validation2.get("issues", {})) < len(detected):
+                response = response2
+
+        # Postprocess (cleanup + POV + de-AI + tic limiting)
+        processed = self._postprocess(response.content)
+
+        return processed, total_tokens
+
+    def _build_scene_context(self, scene_index: int, scenes: list = None,
+                              include_story_state: bool = True,
+                              include_previous: int = 2) -> str:
+        """Single approved entry point for scene context assembly.
+
+        Context hygiene rules:
+        - ONLY pulls from current project's state (self.state)
+        - Sources: style constraints, story state (facts), previous scene tails
+        - NEVER injects: other project data, old candidates, debug text, explanations
+        """
+        scenes = scenes or self.state.scenes or []
+        config = self.state.config
+        parts = []
+
+        # Style constraints (always included)
+        parts.append(f"WRITING STYLE: {config.get('writing_style', 'literary prose')}")
+        parts.append(f"TONE: {config.get('tone', '')}")
+        if config.get("avoid"):
+            parts.append(f"AVOID: {config.get('avoid')}")
+
+        # Story state — facts already established (prevents contradiction/loops)
+        if include_story_state and scenes and scene_index > 0:
+            current_scene = scenes[scene_index] if scene_index < len(scenes) else {}
+            story_state = self._build_story_state(
+                scenes[:scene_index],
+                current_chapter=current_scene.get("chapter", 1),
+                current_scene=current_scene.get("scene_number", 1)
+            )
+            if story_state:
+                parts.append(f"\n{story_state}")
+
+        # Previous scene tail — transition continuity
+        if include_previous > 0 and scenes and scene_index > 0:
+            prev_scenes = scenes[max(0, scene_index - include_previous):scene_index]
+            prev_context = self._get_previous_scenes_context(prev_scenes, count=include_previous)
+            if prev_context:
+                parts.append(f"\nPREVIOUS SCENE ENDING:\n{prev_context}")
+
+        return "\n".join(parts)
+
+    def _log_artifact_summary(self, stage_name: str):
+        """Log artifact metrics summary for a completed stage."""
+        sm = self.state.artifact_metrics.get("per_stage", {}).get(stage_name)
+        if not sm or sm["scenes"] == 0:
+            return
+        issues_count = sum(v for k, v in sm.items() if k not in ("scenes", "retried"))
+        if issues_count > 0:
+            logger.info(
+                f"Artifact metrics for {stage_name}: {sm['scenes']} scenes, "
+                f"{issues_count} issues detected "
+                f"(preamble={sm['preamble']}, truncation={sm['truncation']}, "
+                f"alternate={sm['alternate']}, analysis={sm['analysis']}, "
+                f"pov_drift={sm['pov_drift']}), {sm['retried']} retried"
+            )
 
     def _get_previous_scenes_context(self, scenes: List[Dict], count: int = 2) -> str:
         """Get the ending of the most recent scenes for seamless transitions.
@@ -2959,13 +3614,30 @@ When outline beats are similar, the AI repeats itself. THIS SCENE MUST BE DISTIN
 
 === POV & VOICE (HARD LOCK — DO NOT BREAK) ===
 PERSPECTIVE: FIRST PERSON ("I") — {pov_char}'s POV.
-Every sentence must be filtered through {pov_char}'s voice. NEVER switch to
-third person ("she felt", "he noticed", "{pov_char} thought"). ALWAYS use "I".
-- Their unique vocabulary and thought patterns
-- Their specific biases and blind spots
-- Their physical sensations and emotional responses
-- Body reactions must be SPECIFIC to this character (not generic "heart racing")
+Every sentence must be filtered through {pov_char}'s voice.
+- "I" = ONLY {pov_char}. Other characters are "she/he/they".
+- "my" = ONLY {pov_char}'s body/voice/face. Other characters' = "her/his/their".
 - Character tics should appear at most ONCE per scene (not every paragraph)
+
+CRITICAL POV ERRORS TO AVOID (the AI makes these constantly):
+WRONG: "she whispered, my voice barely audible" — "my voice" is wrong, it's HER voice
+WRONG: "She rolled my eyes" — she rolled HER eyes, not mine
+WRONG: "I smiled warmly, gazing at me" — this is nonsensical, should be "She smiled"
+WRONG: "she said, my eyes sparkling" — HER eyes are sparkling, not mine
+WRONG: "I turned to face me" — should be "She turned to face me"
+RIGHT: "she whispered, her voice barely audible"
+RIGHT: "She rolled her eyes"
+RIGHT: "She smiled warmly, gazing at me"
+When "she" does something, everything in that clause (voice, eyes, face, lips, hands)
+belongs to HER, not to "my".
+
+=== DIALOGUE RULES ===
+- Every dialogue tag MUST have a subject: "I said" or "she said" — NEVER just "said softly"
+- {pov_char} and other characters must sound DIFFERENT:
+  - Give each character distinct speech patterns, vocabulary, and sentence length
+  - The love interest should have culturally specific expressions or syntax
+  - Characters should NOT speak in identical therapeutic-affirmation register
+  - Real people interrupt, use slang, trail off, repeat themselves, dodge questions
 
 === SCENE PURPOSE ===
 WHY THIS SCENE EXISTS: {purpose}
@@ -3072,16 +3744,19 @@ Write the complete scene:"""
                     # Use 2.5x multiplier for buffer and comprehensive scenes
                     max_tokens = max(int(self.state.words_per_scene * 2.5), 2500)
                     temp = self.get_temperature_for_stage("scene_drafting")
-                    response = await client.generate(prompt, max_tokens=max_tokens, temperature=temp)
+                    content, tokens = await self._generate_prose(
+                        client, prompt, "scene_drafting",
+                        scene_meta={"chapter": chapter_num, "scene": scene_num},
+                        max_tokens=max_tokens, temperature=temp)
                     scenes.append({
                         "chapter": chapter_num,
                         "scene_number": scene_num,
                         "pov": pov_char,
                         "location": location,
                         "spice_level": spice_level,
-                        "content": self._postprocess(response.content)
+                        "content": content
                     })
-                    total_tokens += response.input_tokens + response.output_tokens
+                    total_tokens += tokens
                 else:
                     scenes.append({
                         "chapter": chapter_num,
@@ -3170,8 +3845,10 @@ POV: FIRST PERSON — {scene.get('pov', 'protagonist')}
 === EXPANDED SCENE ===
 Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
 
-            response = await client.generate(prompt, max_tokens=3000)
-            expanded_content = self._postprocess(response.content)
+            expanded_content, exp_tokens = await self._generate_prose(
+                client, prompt, "scene_expansion",
+                scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                max_tokens=3000)
 
             # GUARD: Check if the LLM actually expanded (vs rewrote from scratch)
             # If the first 100 chars of the original aren't in the expanded version,
@@ -3193,7 +3870,7 @@ Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
                     "expanded_words": count_words_accurate(expanded_content)
                 })
                 scenes_expanded += 1
-            total_tokens += response.input_tokens + response.output_tokens
+            total_tokens += exp_tokens
 
         self.state.scenes = expanded_scenes
 
@@ -3263,13 +3940,16 @@ Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
 Output ONLY the revised scene—no notes, no commentary, no checklist:"""
 
             if client:
-                response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
+                content, tokens = await self._generate_prose(
+                    client, prompt, "self_refinement",
+                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                    max_tokens=2500, temperature=0.7)
                 refined_scenes.append({
                     **scene,
-                    "content": self._postprocess(response.content),
+                    "content": content,
                     "refined": True
                 })
-                total_tokens += response.input_tokens + response.output_tokens
+                total_tokens += tokens
             else:
                 refined_scenes.append({**scene, "refined": True})
                 total_tokens += 100
@@ -3409,14 +4089,17 @@ Only change what's necessary to fix the issue.
 FIXED SCENE:"""
 
                     if client:
-                        response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
+                        content, tokens = await self._generate_prose(
+                            client, prompt, "continuity_fix",
+                            scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                            max_tokens=2500, temperature=0.7)
                         fixed_scenes[i] = {
                             **scene,
-                            "content": self._postprocess(response.content),
+                            "content": content,
                             "continuity_fixed": True,
                             "fixed_issue": issue_desc
                         }
-                        total_tokens += response.input_tokens + response.output_tokens
+                        total_tokens += tokens
                         fixes_applied += 1
                         logger.info(f"Fixed continuity issue in {scene_loc}: {issue_type}")
                     break
@@ -3592,13 +4275,16 @@ BEFORE YOU OUTPUT, check:
 Output the revised scene:"""
 
             if client:
-                response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
+                content, tokens = await self._generate_prose(
+                    client, prompt, "voice_human_pass",
+                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                    max_tokens=2500, temperature=0.7)
                 enhanced_scenes.append({
                     **scene,
-                    "content": self._postprocess(response.content),
+                    "content": content,
                     "voice_human_passed": True
                 })
-                total_tokens += response.input_tokens + response.output_tokens
+                total_tokens += tokens
             else:
                 enhanced_scenes.append({**scene, "voice_human_passed": True})
                 total_tokens += 100
@@ -3712,13 +4398,16 @@ SCENE:
 Output the scene with ONLY the factual fix applied:"""
 
                     if client:
-                        response = await client.generate(prompt, max_tokens=2500, temperature=0.3)
+                        content, tokens = await self._generate_prose(
+                            client, prompt, "continuity_fix_2",
+                            scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                            max_tokens=2500, temperature=0.3)
                         fixed_scenes[i] = {
                             **scene,
-                            "content": self._postprocess(response.content),
+                            "content": content,
                             "continuity_fixed_2": True
                         }
-                        total_tokens += response.input_tokens + response.output_tokens
+                        total_tokens += tokens
                         fixes_applied += 1
                     break
 
@@ -3818,13 +4507,16 @@ Rewrite with polished, authentic dialogue. Keep all non-dialogue prose intact.
 Focus ONLY on improving the dialogue and adding physical beats between lines:"""
 
             if client:
-                response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
+                content, tokens = await self._generate_prose(
+                    client, prompt, "dialogue_polish",
+                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                    max_tokens=2500, temperature=0.7)
                 polished_scenes.append({
                     **scene,
-                    "content": self._postprocess(response.content),
+                    "content": content,
                     "dialogue_polished": True
                 })
-                total_tokens += response.input_tokens + response.output_tokens
+                total_tokens += tokens
             else:
                 polished_scenes.append({**scene, "dialogue_polished": True})
                 total_tokens += 100
@@ -3996,13 +4688,16 @@ RULES:
 
 Output the complete scene with only the ending paragraphs rewritten:"""
 
-                    response = await client.generate(prompt, max_tokens=2500, temperature=0.75)
+                    content, tokens = await self._generate_prose(
+                        client, prompt, "chapter_hooks",
+                        scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                        max_tokens=2500, temperature=0.75)
                     hooked_scenes.append({
                         **scene,
-                        "content": self._postprocess(response.content),
+                        "content": content,
                         "hook_enhanced": True
                     })
-                    total_tokens += response.input_tokens + response.output_tokens
+                    total_tokens += tokens
 
                 elif is_chapter_start and client:
                     prompt = f"""Rewrite this scene so it opens with an immediate hook. Output ONLY the full scene text — no commentary, no notes, no labels.
@@ -4021,13 +4716,16 @@ RULES:
 
 Output the complete scene with only the opening paragraphs rewritten:"""
 
-                    response = await client.generate(prompt, max_tokens=2500, temperature=0.75)
+                    content, tokens = await self._generate_prose(
+                        client, prompt, "chapter_hooks",
+                        scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                        max_tokens=2500, temperature=0.75)
                     hooked_scenes.append({
                         **scene,
-                        "content": self._postprocess(response.content),
+                        "content": content,
                         "hook_enhanced": True
                     })
-                    total_tokens += response.input_tokens + response.output_tokens
+                    total_tokens += tokens
                 else:
                     hooked_scenes.append(scene)
 
@@ -4133,13 +4831,16 @@ If you accidentally introduced any, remove them.
 POLISHED SCENE:"""
 
             if client:
-                response = await client.generate(prompt, max_tokens=2500, temperature=0.7)
+                content, tokens = await self._generate_prose(
+                    client, prompt, "prose_polish",
+                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                    max_tokens=2500, temperature=0.7)
                 polished_scenes.append({
                     **scene,
-                    "content": self._postprocess(response.content),
+                    "content": content,
                     "polished": True
                 })
-                total_tokens += response.input_tokens + response.output_tokens
+                total_tokens += tokens
             else:
                 polished_scenes.append({**scene, "polished": True})
                 total_tokens += 100
@@ -4282,7 +4983,10 @@ TEXT:
 
 OUTPUT the text with only problematic sentences fixed:"""
 
-                    response = await client.generate(prompt, max_tokens=3000)
+                    response = await client.generate(
+                        prompt, max_tokens=3000,
+                        system_prompt=FORMAT_CONTRACT,
+                        stop=CREATIVE_STOP_SEQUENCES)
                     middle = self._postprocess(response.content)
                     total_tokens += response.input_tokens + response.output_tokens
                     scene_fixes += remaining_tells["total_tells"]
@@ -4321,7 +5025,10 @@ TEXT:
 
 OUTPUT the text with only problematic sentences fixed:"""
 
-                    response = await client.generate(prompt, max_tokens=3000)
+                    response = await client.generate(
+                        prompt, max_tokens=3000,
+                        system_prompt=FORMAT_CONTRACT,
+                        stop=CREATIVE_STOP_SEQUENCES)
                     content = self._postprocess(response.content)
                     total_tokens += response.input_tokens + response.output_tokens
                     scene_fixes += remaining_tells["total_tells"]
@@ -4604,6 +5311,9 @@ Respond with JSON:
             validation_report["word_count_status"] = "under_target"
         else:
             validation_report["word_count_status"] = "significantly_under"
+
+        # Include artifact metrics in validation report
+        validation_report["artifact_metrics"] = self.state.artifact_metrics
 
         # Save final output
         output_dir = self.state.project_path / "output"
