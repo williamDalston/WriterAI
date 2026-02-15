@@ -410,6 +410,42 @@ def cmd_seed(args):
     return result
 
 
+def cmd_bookops(args):
+    """Generate BookOps launch assets and revision guidance."""
+    print_banner()
+    config_path = Path(args.config)
+    if not config_path.exists():
+        print(f"{Colors.RED}Config file not found: {config_path}{Colors.END}")
+        return 1
+
+    print(f"\n{Colors.HEADER}BookOps: Generating Launch & Revision Assets{Colors.END}\n")
+
+    import asyncio
+
+    async def _run():
+        from prometheus_novel.bookops.engine import BookOpsEngine
+        engine = BookOpsEngine.from_config_path(
+            config_path,
+            model_override=getattr(args, "model", None),
+        )
+        doc_filter = args.docs if hasattr(args, "docs") and args.docs else None
+        force = getattr(args, "force", False)
+        result = await engine.generate_all(doc_filter=doc_filter, force=force)
+        engine.print_summary()
+        return result
+
+    try:
+        result = asyncio.run(_run())
+        if result.get("passed"):
+            print(f"{Colors.GREEN}All self-checks passed.{Colors.END}")
+        else:
+            print(f"{Colors.YELLOW}Self-check issues found — see _self_check_report.md{Colors.END}")
+        return 0
+    except Exception as e:
+        print(f"{Colors.RED}BookOps failed: {e}{Colors.END}")
+        return 1
+
+
 # ============================================================================
 # Main Entry Point
 # ============================================================================
@@ -463,6 +499,13 @@ def main():
     seed_parser.add_argument("--no-expand", action="store_true",
                              help="Don't use AI to expand missing sections")
 
+    # bookops command - generate launch assets & revision guidance
+    bookops_parser = subparsers.add_parser("bookops", help="Generate launch assets & revision guidance")
+    bookops_parser.add_argument("--config", "-c", required=True, help="Path to project config.yaml")
+    bookops_parser.add_argument("--model", "-m", help="Override LLM model (e.g., claude-sonnet-4-20250514)")
+    bookops_parser.add_argument("--docs", nargs="*", help="Generate specific docs only (e.g., 01 02 05)")
+    bookops_parser.add_argument("--force", action="store_true", help="Overwrite existing bookops output")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -476,7 +519,8 @@ def main():
         "compile": cmd_compile,
         "ideas": cmd_ideas,
         "serve": cmd_serve,
-        "seed": cmd_seed
+        "seed": cmd_seed,
+        "bookops": cmd_bookops,
     }
 
     handler = commands.get(args.command)
