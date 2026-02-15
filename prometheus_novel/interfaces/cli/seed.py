@@ -196,6 +196,43 @@ AVOID:
 [Example: "No love triangles. No chosen one prophecy. No amnesia as a cheap plot device
  (the amnesia IS the plot). No grimdark - keep some hope."]
 
+--------------------------------------------------------------------------------
+# STRATEGIC GUIDANCE (EDITORIAL / MARKET) - for publishers, savvy authors
+# Sub-fields are parsed automatically: market_positioning, tropes,
+# pacing_notes, dialogue_bank, aesthetic_guide, cultural_notes, commercial_notes
+--------------------------------------------------------------------------------
+
+STRATEGIC_GUIDANCE:
+market_positioning:
+[Target audience, comp titles, spice level, keywords]
+[Example: "Contemporary romance. Comp titles: Beach Read, The Hating Game.
+ Target: romance readers who want wit + emotional depth. Spice level: 3/5."]
+
+tropes:
+[Tropes to execute or subvert]
+[Example: "Enemies-to-lovers, forced proximity, he-falls-first"]
+
+pacing_notes:
+[Act-by-act pacing guidance]
+[Example: "Act 1 (25%): Setup, denial. Midpoint: first kiss. Act 3: crisis, resolution."]
+
+dialogue_bank:
+[Character voice notes, signature lines]
+[Example:
+ - Lena: sharp wit, legal metaphors, switches to Spanish when emotional
+ - Marco: warm teasing, disarming sincerity, occasional Italian phrases]
+
+aesthetic_guide:
+[Visual palette, sensory descriptions, atmospheric details]
+[Example: "Golden hour light, terracotta, deep blue sea, bougainvillea purple.
+ Textures: rough stone, cool linen, salt spray."]
+
+cultural_notes:
+[Authentic details for world/culture]
+
+commercial_notes:
+[Series potential, mobile optimization, marketing hooks]
+
 ================================================================================
                               END OF TEMPLATE
 ================================================================================
@@ -223,6 +260,13 @@ TEMPLATE_SECTIONS = [
     ("WRITING_STYLE", "How it should read", False),
     ("INFLUENCES", "Similar works for reference", False),
     ("AVOID", "Things you don't want", False),
+    ("STRATEGIC_GUIDANCE", "Editorial guidance: market positioning, tropes, pacing, dialogue, aesthetics", False),
+]
+
+# Sub-keys recognized inside the STRATEGIC_GUIDANCE block
+_STRATEGIC_GUIDANCE_KEYS = [
+    "market_positioning", "tropes", "pacing_notes", "dialogue_bank",
+    "aesthetic_guide", "cultural_notes", "commercial_notes", "beat_sheet",
 ]
 
 
@@ -281,6 +325,43 @@ def validate_seed(seed_data: Dict[str, str]) -> tuple[bool, str]:
     if not seed_data.get('IDEA'):
         return False, "IDEA is required. Please provide at least a one-sentence story concept."
     return True, "Valid"
+
+
+def _parse_strategic_guidance(text: str) -> Dict[str, str]:
+    """Parse strategic guidance sub-fields from the STRATEGIC_GUIDANCE seed block.
+
+    Recognises lowercase sub-keys (market_positioning, tropes, etc.) and
+    collects multi-line values until the next sub-key or end of text.
+    """
+    result: Dict[str, str] = {}
+    current_key: Optional[str] = None
+    current_value: list[str] = []
+
+    for line in text.split('\n'):
+        stripped = line.strip()
+        matched = False
+        for key in _STRATEGIC_GUIDANCE_KEYS:
+            if stripped.startswith(f"{key}:"):
+                # Save previous sub-key
+                if current_key and current_value:
+                    result[current_key] = '\n'.join(current_value).strip()
+                current_key = key
+                value_on_line = stripped[len(key) + 1:].strip()
+                current_value = [value_on_line] if value_on_line else []
+                matched = True
+                break
+        if not matched and current_key is not None:
+            current_value.append(line.rstrip())
+
+    # Flush last sub-key
+    if current_key and current_value:
+        result[current_key] = '\n'.join(current_value).strip()
+
+    # Drop empty / placeholder values
+    return {
+        k: v for k, v in result.items()
+        if v and not v.isspace() and not (v.startswith('[') and v.endswith(']'))
+    }
 
 
 # ============================================================================
@@ -392,7 +473,8 @@ def guided_mode() -> Dict[str, str]:
         print(f"\n{C.B}{key}{C.E} {req_marker}")
         print(f"{C.DIM}{description}{C.E}")
 
-        if key in ['IDEA', 'KEY_PLOT_POINTS', 'OTHER_CHARACTERS', 'WORLD_RULES', 'KEY_LOCATIONS']:
+        if key in ['IDEA', 'KEY_PLOT_POINTS', 'OTHER_CHARACTERS', 'WORLD_RULES',
+                   'KEY_LOCATIONS', 'STRATEGIC_GUIDANCE']:
             # Multi-line input
             print(f"{C.DIM}(Multi-line: type 'DONE' when finished, or Enter to skip){C.E}")
             lines = []
@@ -462,8 +544,10 @@ async def expand_seed(seed_data: Dict[str, str], llm_client=None) -> Dict[str, A
         for key, value in seed_data.items()
     ])
 
-    # Identify what needs to be generated
-    missing = [key for key, _, _ in TEMPLATE_SECTIONS if key not in seed_data]
+    # Identify what needs to be generated (skip editorial fields — author-only)
+    _SKIP_EXPANSION = {'STRATEGIC_GUIDANCE'}
+    missing = [key for key, _, _ in TEMPLATE_SECTIONS
+               if key not in seed_data and key not in _SKIP_EXPANSION]
 
     if not missing:
         print(f"{C.G}All sections provided - no AI expansion needed.{C.E}")
@@ -581,6 +665,13 @@ def create_project_from_seed(seed_data: Dict[str, Any], project_name: str = None
         },
         "status": "seeded"
     }
+
+    # Parse and inject strategic guidance sub-fields
+    strategic_raw = seed_data.get('STRATEGIC_GUIDANCE', '')
+    if strategic_raw:
+        strategic_guidance = _parse_strategic_guidance(strategic_raw)
+        if strategic_guidance:
+            config["strategic_guidance"] = strategic_guidance
 
     # Save config
     config_file = project_dir / "config.yaml"
