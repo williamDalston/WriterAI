@@ -26,6 +26,7 @@ from enum import Enum
 import json
 import secrets
 import yaml
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +274,207 @@ def count_ai_tells(text: str) -> Dict:
     }
 
 
+# ============================================================================
+# HIGH CONCEPT — Validation, Fingerprinting, Drift Detection
+# ============================================================================
+
+# Generic phrases that signal the LLM fell back to vague filler
+CONCEPT_GENERIC_PHRASES = [
+    "must confront", "dark secrets", "nothing is as it seems",
+    "everything changes", "will never be the same", "a journey of",
+    "discovers the truth", "faces their greatest challenge",
+    "a tale of love and loss", "in a world where",
+    "against all odds", "race against time", "uncover the mystery",
+    "hidden truths", "dark past", "shocking revelation",
+    "unlikely hero", "must choose between",
+]
+
+# Stop sequences for planning stages (non-prose outputs)
+PLANNING_STOP_SEQUENCES = [
+    "\nCertainly", "\nHere is", "\nAs requested",
+    "\nI hope this", "\nLet me know", "\nWould you like",
+    "\nNote:", "\n---\n",
+]
+
+HIGH_CONCEPT_SYSTEM_PROMPT = """You are a senior acquisitions editor at a major publishing house.
+Your job: distill a novel's premise into a single compelling paragraph that would make an agent
+request the full manuscript.
+
+RULES:
+- Output ONLY the high concept paragraph. No preamble, no commentary, no alternatives.
+- Be SPECIFIC: name the protagonist, the setting, the central tension, and the emotional stakes.
+- Avoid generic phrasing: "must confront", "dark secrets", "nothing is as it seems" — these are filler.
+- The concept should make clear WHY this story is fresh and WHO it's for.
+- Do NOT restate the synopsis verbatim. Distill and sharpen it.
+- Maximum 4 sentences. Every word must earn its place."""
+
+
+def validate_high_concept(text: str, config: Dict) -> Dict[str, Any]:
+    """Validate a high concept candidate. Returns score + issues dict.
+
+    Checks: preamble, length, truncation, multi-paragraph, generic phrases,
+    specificity (named protagonist, setting), synopsis restatement.
+    """
+    issues = {}
+    original = text
+
+    # 1. Strip preamble
+    preamble_patterns = [
+        r'^(?:Sure[,!.]?\s*)?[Hh]ere\'?s?\s+(?:the |a |my )?(?:high\s+concept|concept)[^.:\n]{0,40}[.:]\s*\n+',
+        r'^(?:Sure|Certainly|Of course)[,!.]\s*[^\n]{0,60}\n+',
+        r'^(?:High\s+Concept:?\s*\n+)',
+    ]
+    for pat in preamble_patterns:
+        text = re.sub(pat, '', text, count=1)
+    text = text.strip()
+    if text != original.strip():
+        issues["preamble_stripped"] = True
+
+    # 2. Length check
+    word_count = len(text.split())
+    if word_count < 15:
+        issues["too_short"] = word_count
+    if word_count > 120:
+        issues["too_long"] = word_count
+
+    # 3. Truncation detection
+    if text and text[-1] not in '.!?"\'':
+        issues["possible_truncation"] = text[-30:]
+
+    # 4. Multi-paragraph trim (keep only first substantive paragraph)
+    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+    if len(paragraphs) > 1:
+        # Keep only the longest paragraph (likely the concept itself)
+        text = max(paragraphs, key=len)
+        issues["multi_paragraph_trimmed"] = len(paragraphs)
+
+    # 5. Generic phrase detection
+    text_lower = text.lower()
+    found_generic = [p for p in CONCEPT_GENERIC_PHRASES if p in text_lower]
+    if found_generic:
+        issues["generic_phrases"] = found_generic
+
+    # 6. Specificity check — protagonist name should appear
+    protagonist = config.get("protagonist", "")
+    if protagonist:
+        # Extract first name from protagonist field
+        proto_first = protagonist.split(",")[0].split("(")[0].strip().split()[0]
+        if proto_first and len(proto_first) > 2 and proto_first.lower() not in text_lower:
+            issues["missing_protagonist_name"] = proto_first
+
+    # 7. Synopsis restatement guard (bigram overlap)
+    synopsis = config.get("synopsis", "")
+    if synopsis and text:
+        syn_words = synopsis.lower().split()
+        txt_words = text_lower.split()
+        if len(syn_words) >= 4 and len(txt_words) >= 4:
+            syn_bigrams = set(zip(syn_words[:-1], syn_words[1:]))
+            txt_bigrams = set(zip(txt_words[:-1], txt_words[1:]))
+            if syn_bigrams:
+                overlap = len(syn_bigrams & txt_bigrams) / len(syn_bigrams)
+                if overlap > 0.5:
+                    issues["synopsis_restatement"] = round(overlap, 2)
+
+    # Score: start at 100, deduct for issues
+    score = 100
+    if "too_short" in issues:
+        score -= 40
+    if "too_long" in issues:
+        score -= 10
+    if "possible_truncation" in issues:
+        score -= 20
+    if "generic_phrases" in issues:
+        score -= 8 * len(issues["generic_phrases"])
+    if "missing_protagonist_name" in issues:
+        score -= 15
+    if "synopsis_restatement" in issues:
+        score -= 30
+    if "preamble_stripped" in issues:
+        score -= 5
+
+    return {
+        "text": text,
+        "score": max(0, score),
+        "word_count": word_count,
+        "issues": issues,
+        "pass": score >= 50 and "too_short" not in issues,
+    }
+
+
+def build_concept_fingerprint(text: str) -> Dict[str, Any]:
+    """Build a fingerprint for drift detection: hash + keywords + entities."""
+    import hashlib
+    clean = text.strip()
+
+    # SHA256 hash for exact-match detection
+    content_hash = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:16]
+
+    # Keyword extraction: significant words (4+ chars, not stopwords)
+    stopwords = {
+        "this", "that", "with", "from", "have", "been", "will", "would",
+        "could", "should", "their", "there", "where", "when", "what",
+        "about", "which", "into", "than", "then", "them", "they", "these",
+        "those", "each", "every", "some", "more", "also", "just", "only",
+        "very", "most", "much", "such", "like", "even", "after", "before",
+        "between", "through", "during", "against", "without", "because",
+        "while", "being", "having", "doing", "other", "another",
+    }
+    words = re.findall(r'\b[a-zA-Z]{4,}\b', clean.lower())
+    word_freq = {}
+    for w in words:
+        if w not in stopwords:
+            word_freq[w] = word_freq.get(w, 0) + 1
+    keywords = sorted(word_freq, key=word_freq.get, reverse=True)[:15]
+
+    # Entity extraction: capitalized words that aren't sentence starters
+    sentences = re.split(r'[.!?]\s+', clean)
+    entities = set()
+    for sent in sentences:
+        words_in_sent = sent.split()
+        for i, w in enumerate(words_in_sent):
+            if i > 0 and w[0:1].isupper() and w not in COMMON_CAPS and len(w) > 2:
+                entities.add(w.rstrip(".,;:!?'\""))
+
+    return {
+        "hash": content_hash,
+        "keywords": keywords,
+        "entities": sorted(entities),
+    }
+
+
+def check_concept_drift(fingerprint: Dict[str, Any], stage_output: str,
+                         threshold: float = 0.3) -> Dict[str, Any]:
+    """Check if downstream stage output has drifted from concept fingerprint.
+
+    Returns drift report with keyword overlap ratio and missing entities.
+    """
+    if not fingerprint or not stage_output:
+        return {"drifted": False, "reason": "insufficient_data"}
+
+    output_lower = stage_output.lower()
+    fp_keywords = fingerprint.get("keywords", [])
+    fp_entities = fingerprint.get("entities", [])
+
+    # Keyword overlap
+    if fp_keywords:
+        present = sum(1 for kw in fp_keywords if kw in output_lower)
+        keyword_overlap = present / len(fp_keywords)
+    else:
+        keyword_overlap = 1.0
+
+    # Entity presence
+    missing_entities = [e for e in fp_entities if e.lower() not in output_lower]
+
+    drifted = keyword_overlap < threshold
+    return {
+        "drifted": drifted,
+        "keyword_overlap": round(keyword_overlap, 2),
+        "keywords_checked": len(fp_keywords),
+        "keywords_found": int(keyword_overlap * len(fp_keywords)) if fp_keywords else 0,
+        "missing_entities": missing_entities,
+    }
+
+
 def validate_config(config: Dict) -> Dict:
     """Validate config has required fields."""
     errors = []
@@ -297,6 +499,24 @@ def validate_config(config: Dict) -> Dict:
         "completeness": (len(config) / (len(REQUIRED_CONFIG_FIELDS) + len(OPTIONAL_BUT_RECOMMENDED))) * 100
     }
 
+
+# Common capitalized words that are NOT entity names (sentence starters, titles, etc.)
+# Used by entity guard to avoid counting these as "shared nouns"
+COMMON_CAPS = {
+    "The", "This", "That", "These", "Those", "There", "Their", "They",
+    "She", "Her", "His", "Him", "Not", "But", "And", "For", "Its",
+    "Was", "Were", "Are", "Has", "Had", "Have", "Did", "Does",
+    "May", "Can", "Will", "Would", "Could", "Should", "Might",
+    "Now", "Then", "Here", "Where", "When", "How", "Why", "What",
+    "Who", "Whom", "Which", "Each", "Every", "Some", "Any", "All",
+    "Before", "After", "During", "Between", "Among",
+    "Chapter", "Scene", "Part", "Section", "Page",
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+    "January", "February", "March", "April", "June", "July",
+    "August", "September", "October", "November", "December",
+    "General", "Captain", "Doctor", "Professor", "Father", "Mother",
+    "Sir", "Lord", "Lady", "King", "Queen", "Prince", "Princess",
+}
 
 # --- Cleanup regex constants (spec: genre-agnostic, high-confidence markers only) ---
 REST_UNCHANGED_RE = re.compile(
@@ -394,6 +614,17 @@ def _flush_morgue(project_path):
         return
     try:
         morgue_path = Path(project_path) / "cleanup_morgue.jsonl"
+        # Morgue size limit: rotate if file exceeds 5MB
+        _MORGUE_MAX_BYTES = 5 * 1024 * 1024
+        if morgue_path.exists() and morgue_path.stat().st_size > _MORGUE_MAX_BYTES:
+            rotated = morgue_path.with_suffix(".jsonl.old")
+            try:
+                if rotated.exists():
+                    rotated.unlink()
+                morgue_path.rename(rotated)
+                logger.info(f"Cleanup morgue rotated (>{_MORGUE_MAX_BYTES // (1024*1024)}MB)")
+            except Exception as rot_e:
+                logger.warning(f"Morgue rotation failed: {rot_e}")
         with open(morgue_path, "a", encoding="utf-8") as f:
             for entry in _cleanup_morgue:
                 f.write(json.dumps(entry) + "\n")
@@ -401,6 +632,63 @@ def _flush_morgue(project_path):
     except Exception as e:
         logger.warning(f"Failed to write cleanup morgue: {e}")
     _cleanup_morgue = []
+
+
+# Incident log: structured records for rollbacks and defense events
+_incident_buffer: List[Dict[str, Any]] = []
+
+
+# Transient failure patterns (API/infrastructure issues, retryable)
+_TRANSIENT_ERROR_PATTERNS = [
+    r"timeout", r"rate.?limit", r"429", r"503", r"502", r"connection",
+    r"network", r"socket", r"ssl", r"dns", r"ECONNRESET", r"ETIMEDOUT",
+    r"api.*error", r"service.*unavailable", r"quota.*exceeded",
+]
+
+
+def _classify_failure(error_msg: str) -> str:
+    """Classify a failure as 'transient' (infrastructure) or 'content' (validation)."""
+    if not error_msg:
+        return "unknown"
+    msg_lower = error_msg.lower()
+    for pat in _TRANSIENT_ERROR_PATTERNS:
+        if re.search(pat, msg_lower):
+            return "transient"
+    return "content"
+
+
+def _log_incident(stage: str, category: str, detail: str, severity: str = "error",
+                  scene_count_before: int = 0, scene_count_after: int = 0,
+                  failure_type: str = ""):
+    """Log an incident for post-run analysis (rollbacks, circuit breaker trips, etc.)."""
+    if not failure_type:
+        failure_type = _classify_failure(detail)
+    _incident_buffer.append({
+        "timestamp": datetime.now().isoformat(),
+        "stage": stage,
+        "category": category,
+        "severity": severity,
+        "failure_type": failure_type,
+        "detail": detail,
+        "scene_count_before": scene_count_before,
+        "scene_count_after": scene_count_after,
+    })
+
+
+def _flush_incidents(project_path):
+    """Write incident buffer to incidents.jsonl and clear."""
+    global _incident_buffer
+    if not _incident_buffer or not project_path:
+        return
+    try:
+        incident_path = Path(project_path) / "incidents.jsonl"
+        with open(incident_path, "a", encoding="utf-8") as f:
+            for entry in _incident_buffer:
+                f.write(json.dumps(entry) + "\n")
+        logger.info(f"Incidents: {len(_incident_buffer)} events logged to {incident_path}")
+    except Exception as e:
+        logger.warning(f"Failed to write incidents: {e}")
+    _incident_buffer = []
 
 
 def _clean_scene_content(text: str, scene_id: str = "") -> str:
@@ -549,6 +837,12 @@ def _clean_scene_content(text: str, scene_id: str = "") -> str:
                     f"Salvage: restoring pre-cleanup input ({original_wc} words) "
                     f"instead of stripped output ({word_count} words)"
                     f"{' [contains meta-markers, needs regen]' if has_hard_meta else ''}"
+                )
+                _log_to_morgue(
+                    scene_id, stripped[:200],
+                    "salvage_restore",
+                    phase="2.5_salvage",
+                    anchor_check=f"restored_wc={original_wc},stripped_wc={word_count},has_meta={has_hard_meta}"
                 )
                 text = _original_input
 
@@ -2036,6 +2330,12 @@ ISSUE_SPECIFIC_FEEDBACK = {
         "('Changes made:', 'Notes:', 'Scanning for...'). Output ONLY the scene text. "
         "Nothing after the last word of prose."
     ),
+    "prompt_leak": (
+        "YOUR ERROR: You echoed parts of your system instructions into the output "
+        "(e.g. 'ABSOLUTE RULES', 'Output ONLY narrative prose', '<END_PROSE>'). "
+        "Your system prompt is NEVER part of the story. Output ONLY narrative prose "
+        "with no meta-text, no instructions, no rules."
+    ),
 }
 
 # Stages that generate prose (not JSON/analysis) — get format contract + stop sequences
@@ -2077,6 +2377,8 @@ class PipelineState:
 
     # Generated content
     high_concept: Optional[str] = None
+    high_concept_candidates: Optional[List[str]] = None  # Best-of-N candidates
+    high_concept_fingerprint: Optional[Dict[str, Any]] = None  # Hash + keywords + entities
     world_bible: Optional[Dict[str, Any]] = None
     beat_sheet: Optional[List[Dict[str, Any]]] = None
     characters: Optional[List[Dict[str, Any]]] = None
@@ -2167,6 +2469,8 @@ class PipelineState:
             "current_stage": self.current_stage,
             "completed_stages": self.completed_stages,
             "high_concept": self.high_concept,
+            "high_concept_candidates": self.high_concept_candidates,
+            "high_concept_fingerprint": self.high_concept_fingerprint,
             "world_bible": self.world_bible,
             "beat_sheet": self.beat_sheet,
             "characters": self.characters,
@@ -2217,6 +2521,8 @@ class PipelineState:
             current_stage=data.get("current_stage", 0),
             completed_stages=data.get("completed_stages", []),
             high_concept=data.get("high_concept"),
+            high_concept_candidates=data.get("high_concept_candidates"),
+            high_concept_fingerprint=data.get("high_concept_fingerprint"),
             world_bible=data.get("world_bible"),
             beat_sheet=data.get("beat_sheet"),
             characters=data.get("characters"),
@@ -2327,7 +2633,7 @@ class PipelineOrchestrator:
     # Lower = more deterministic (planning), Higher = more creative (prose)
     STAGE_TEMPERATURES = {
         # Planning stages - need consistency (0.3-0.5)
-        "high_concept": 0.4,
+        "high_concept": 0.65,
         "world_building": 0.4,
         "beat_sheet": 0.3,
         "emotional_architecture": 0.5,
@@ -2393,6 +2699,9 @@ class PipelineOrchestrator:
             self._prose_sentinel,
         ] + CREATIVE_STOP_SEQUENCES[1:]  # Keep backup sequences, replace primary
 
+        # Defense mode: observe (log only), protect (default), aggressive (stricter)
+        self._defense_mode = "protect"
+
         # Budget tracker: tracks defense-related resource usage per run
         self._budget_tracker = {
             "retries_per_stage": {},   # stage_name -> retry count
@@ -2422,15 +2731,168 @@ class PipelineOrchestrator:
         "budget_max_retries_per_stage": 3,    # max retries per stage per run
         "budget_max_rewritten_scenes": 15,    # max total scenes rewritten (all feedback loops)
         "budget_max_defense_ratio": 0.30,     # max fraction of total tokens on defense
+        "entity_guard_short_scene_words": 200,  # scenes below this word count use relaxed noun threshold
+        "entity_guard_short_scene_nouns": 1,    # min shared nouns required for short scenes
+    }
+
+    # Defense modes: observe (log only), protect (default — log + intervene), aggressive (stricter thresholds)
+    DEFENSE_MODES = {"observe", "protect", "aggressive"}
+
+    # Bounds for threshold validation: key -> (min, max)
+    # Prevents user misconfiguration (e.g. setting pct thresholds > 1.0 or negative)
+    _THRESHOLD_BOUNDS = {
+        "scene_count_drop_pct": (0.10, 0.95),
+        "prefix_corruption_pct": (0.05, 0.80),
+        "avg_word_plummet_pct": (0.10, 0.90),
+        "forbidden_marker_pct": (0.05, 0.90),
+        "fingerprint_collapse_pct": (0.10, 0.95),
+        "deai_word_delta_pct": (0.05, 0.50),
+        "deai_paragraph_loss_pct": (0.10, 0.90),
+        "salvage_min_words": (10, 1000),
+        "salvage_min_paragraphs": (1, 20),
+        "salvage_restore_ratio": (1.5, 10.0),
+        "freshness_bigram_pct": (0.10, 0.90),
+        "feedback_loop_max_scenes": (1, 50),
+        "feedback_loop_wc_retention": (0.30, 1.0),
+        "circuit_breaker_threshold": (1, 20),
+        "semantic_dedup_threshold": (0.20, 0.95),
+        "duplicate_ngram_threshold": (0.20, 0.95),
+        "budget_max_retries_per_stage": (0, 20),
+        "budget_max_rewritten_scenes": (0, 100),
+        "budget_max_defense_ratio": (0.05, 0.90),
+        "entity_guard_short_scene_words": (50, 500),
+        "entity_guard_short_scene_nouns": (0, 5),
+    }
+
+    # Aggressive mode multipliers: tighten percentage thresholds by this factor
+    # (multiply detection thresholds, meaning MORE sensitive)
+    _AGGRESSIVE_MULTIPLIERS = {
+        "scene_count_drop_pct": 0.7,      # trigger earlier
+        "prefix_corruption_pct": 0.7,
+        "avg_word_plummet_pct": 0.7,
+        "forbidden_marker_pct": 0.7,
+        "fingerprint_collapse_pct": 0.7,
+        "deai_word_delta_pct": 0.7,
+        "semantic_dedup_threshold": 0.85,  # stricter similarity detection
+        "duplicate_ngram_threshold": 0.85,
+        "feedback_loop_wc_retention": 1.1, # require MORE retention
+        "budget_max_defense_ratio": 1.3,   # allow more defense spending
     }
 
     def _get_threshold(self, key: str) -> float:
-        """Get defense threshold from config or default."""
+        """Get defense threshold from config or default, with bounds validation."""
+        value = self._DEFAULT_DEFENSE_THRESHOLDS[key]
         if self.state and self.state.config:
             user_thresholds = self.state.config.get("defense", {}).get("thresholds", {})
             if key in user_thresholds:
-                return float(user_thresholds[key])
-        return self._DEFAULT_DEFENSE_THRESHOLDS[key]
+                value = float(user_thresholds[key])
+        # Aggressive mode: tighten thresholds
+        if self._defense_mode == "aggressive" and key in self._AGGRESSIVE_MULTIPLIERS:
+            value *= self._AGGRESSIVE_MULTIPLIERS[key]
+        # Clamp to valid bounds if defined
+        if key in self._THRESHOLD_BOUNDS:
+            lo, hi = self._THRESHOLD_BOUNDS[key]
+            if value < lo or value > hi:
+                clamped = max(lo, min(hi, value))
+                logger.warning(
+                    f"Threshold '{key}' value {value} out of bounds [{lo}, {hi}], "
+                    f"clamped to {clamped}"
+                )
+                value = clamped
+        return value
+
+    def _write_run_status(self, last_stage: str, result=None):
+        """Write run_status.json at phase boundaries for monitoring."""
+        if not self.state or not self.state.project_path:
+            return
+        try:
+            status = {
+                "timestamp": datetime.now().isoformat(),
+                "last_stage": last_stage,
+                "last_status": result.status.value if result else "unknown",
+                "completed_stages": list(self.state.completed_stages),
+                "total_stages": len(self.state.completed_stages),
+                "total_tokens": self.state.total_tokens,
+                "total_cost_usd": round(self.state.total_cost_usd, 4),
+                "scene_count": len(self.state.scenes) if self.state.scenes else 0,
+                "incidents": len(_incident_buffer),
+                "budget": {
+                    "defense_tokens": self._budget_tracker.get("defense_tokens", 0),
+                    "generation_tokens": self._budget_tracker.get("generation_tokens", 0),
+                    "rewritten_scenes": self._budget_tracker.get("rewritten_scenes", 0),
+                },
+            }
+            status_path = Path(self.state.project_path) / "run_status.json"
+            with open(status_path, "w", encoding="utf-8") as f:
+                json.dump(status, f, indent=2)
+        except Exception as e:
+            logger.debug(f"Failed to write run_status.json: {e}")
+
+    async def _canary_scene_check(self):
+        """Pre-flight model check: send a tiny prose prompt and verify clean output.
+
+        Catches obvious model misconfiguration (wrong API key, model down, model
+        echoing system prompt) BEFORE burning tokens on real scenes.
+        """
+        defense_cfg = {}
+        if self.state and self.state.config:
+            defense_cfg = self.state.config.get("defense", {}) or {}
+        if not defense_cfg.get("canary_enabled", True):
+            return  # User opted out
+
+        canary_prompt = (
+            "Write exactly two sentences of fiction about a cat sitting on a windowsill "
+            "watching rain. Output ONLY the two sentences, nothing else."
+        )
+        # Try each unique client
+        clients_tested = set()
+        for stage_name in ["scene_drafting", "self_refinement", "final_deai"]:
+            try:
+                client = self.get_client_for_stage(stage_name)
+                client_id = id(client)
+                if client_id in clients_tested:
+                    continue
+                clients_tested.add(client_id)
+
+                response = await client.generate(
+                    canary_prompt,
+                    max_tokens=200,
+                    system_prompt=self._format_contract,
+                    stop=self._stop_sequences
+                )
+                text = (response.content or "").strip()
+
+                # Check for obvious problems
+                problems = []
+                if not text or len(text) < 10:
+                    problems.append("empty_response")
+                if any(fp in text for fp in ["ABSOLUTE RULES", "NEVER output", "<END_PROSE>",
+                                              "Output ONLY", "CONTINUE THE SCENE"]):
+                    problems.append("prompt_leak")
+                preamble_pats = [
+                    r'^(?:Sure|Certainly|Of course)[,!.\s]',
+                    r'^(?:Here\s+is|Below\s+is)',
+                ]
+                for pat in preamble_pats:
+                    if re.search(pat, text[:100], re.IGNORECASE):
+                        problems.append("preamble")
+                        break
+
+                if problems:
+                    logger.warning(
+                        f"CANARY CHECK: model for {stage_name} failed pre-flight "
+                        f"({', '.join(problems)}). Output: {text[:100]}"
+                    )
+                    _log_incident(stage_name, "canary_failure",
+                                  f"Pre-flight failed: {', '.join(problems)}",
+                                  severity="warning", failure_type="content")
+                else:
+                    logger.info(f"Canary check passed for {stage_name} model")
+
+            except Exception as e:
+                logger.warning(f"CANARY CHECK: model for {stage_name} unavailable: {e}")
+                _log_incident(stage_name, "canary_failure",
+                              str(e)[:200], severity="warning")
 
     def get_client_for_stage(self, stage_name: str):
         """Get the appropriate LLM client for a given stage.
@@ -2514,6 +2976,16 @@ class PipelineOrchestrator:
         """Run the pipeline with quality-driven iteration and checkpoint resume."""
         await self.initialize(resume=resume)
 
+        # Set defense mode from config
+        defense_cfg = self.state.config.get("defense", {}) or {}
+        mode = str(defense_cfg.get("mode", "protect")).lower()
+        if mode in self.DEFENSE_MODES:
+            self._defense_mode = mode
+        else:
+            logger.warning(f"Unknown defense mode '{mode}', using 'protect'")
+            self._defense_mode = "protect"
+        logger.info(f"Defense mode: {self._defense_mode}")
+
         stages_to_run = stages or self.STAGES
 
         # When resuming, skip already-completed stages based on checkpoint data
@@ -2543,6 +3015,9 @@ class PipelineOrchestrator:
             "defense_tokens": 0,
             "generation_tokens": 0,
         }
+
+        # Pre-flight canary scene check
+        await self._canary_scene_check()
 
         # Circuit breaker: halt after N consecutive stage failures + snapshot restores
         CIRCUIT_BREAKER_THRESHOLD = int(self._get_threshold("circuit_breaker_threshold"))
@@ -2618,6 +3093,7 @@ class PipelineOrchestrator:
                     consecutive_failures = 0  # Reset circuit breaker on success
 
                 self.state.save()
+                self._write_run_status(stage_name, result)
 
                 await self._emit("on_stage_complete", stage_name, result)
 
@@ -2635,6 +3111,11 @@ class PipelineOrchestrator:
                             f"CIRCUIT BREAKER: {consecutive_failures} consecutive stage failures "
                             f"({', '.join(failed_stages)}). Halting pipeline. "
                             f"Diagnostic: check model availability, config validity, and scene state."
+                        )
+                        _log_incident(
+                            ",".join(failed_stages), "circuit_breaker_trip",
+                            f"{consecutive_failures} consecutive failures",
+                            severity="critical"
                         )
                     break
 
@@ -2737,6 +3218,8 @@ class PipelineOrchestrator:
             duration = time.time() - start_time
 
             # Validate: stage didn't corrupt scenes
+            # In observe mode: log incidents but don't restore snapshots
+            _observe_only = self._defense_mode == "observe"
             if scenes_snapshot and self.state.scenes is not None:
                 new_count = len(self.state.scenes)
                 old_count = len(scenes_snapshot)
@@ -2747,13 +3230,17 @@ class PipelineOrchestrator:
                         f"Transaction safety: {stage_name} produced {new_count} scenes "
                         f"from {old_count} input. Restoring snapshot."
                     )
-                    self.state.scenes = scenes_snapshot
-                    return StageResult(
-                        stage_name=stage_name,
-                        status=StageStatus.FAILED,
-                        error=f"Scene count dropped from {old_count} to {new_count}",
-                        duration_seconds=duration
-                    )
+                    _log_incident(stage_name, "scene_count_drop",
+                                  f"Scene count {old_count}->{new_count}",
+                                  scene_count_before=old_count, scene_count_after=new_count)
+                    if not _observe_only:
+                        self.state.scenes = scenes_snapshot
+                        return StageResult(
+                            stage_name=stage_name,
+                            status=StageStatus.FAILED,
+                            error=f"Scene count dropped from {old_count} to {new_count}",
+                            duration_seconds=duration
+                        )
 
                 # Check 2: Content-hash corruption — if >30% of scenes share
                 # identical first 100 chars, the stage likely wrote the same
@@ -2773,13 +3260,17 @@ class PipelineOrchestrator:
                                 f"{count}/{new_count} scenes share identical first 100 chars. "
                                 f"Restoring snapshot."
                             )
-                            self.state.scenes = scenes_snapshot
-                            return StageResult(
-                                stage_name=stage_name,
-                                status=StageStatus.FAILED,
-                                error=f"Content corruption: {count}/{new_count} scenes identical prefix",
-                                duration_seconds=duration
-                            )
+                            _log_incident(stage_name, "prefix_corruption",
+                                          f"{count}/{new_count} scenes share identical prefix",
+                                          scene_count_before=old_count, scene_count_after=new_count)
+                            if not _observe_only:
+                                self.state.scenes = scenes_snapshot
+                                return StageResult(
+                                    stage_name=stage_name,
+                                    status=StageStatus.FAILED,
+                                    error=f"Content corruption: {count}/{new_count} scenes identical prefix",
+                                    duration_seconds=duration
+                                )
 
                 # Check 3: No scene that had content is now empty
                 emptied = 0
@@ -2794,13 +3285,17 @@ class PipelineOrchestrator:
                         f"Transaction safety: {stage_name} emptied {emptied} scenes. "
                         f"Restoring snapshot."
                     )
-                    self.state.scenes = scenes_snapshot
-                    return StageResult(
-                        stage_name=stage_name,
-                        status=StageStatus.FAILED,
-                        error=f"{emptied} scenes emptied by stage",
-                        duration_seconds=duration
-                    )
+                    _log_incident(stage_name, "scenes_emptied",
+                                  f"{emptied} scenes emptied",
+                                  scene_count_before=old_count, scene_count_after=new_count)
+                    if not _observe_only:
+                        self.state.scenes = scenes_snapshot
+                        return StageResult(
+                            stage_name=stage_name,
+                            status=StageStatus.FAILED,
+                            error=f"{emptied} scenes emptied by stage",
+                            duration_seconds=duration
+                        )
 
                 # Check 4: Average word count didn't plummet (>40% avg loss)
                 def _avg_wc(scene_list):
@@ -2819,13 +3314,17 @@ class PipelineOrchestrator:
                         f"{old_avg:.0f} -> {new_avg:.0f} ({(1 - new_avg/old_avg)*100:.0f}% loss). "
                         f"Restoring snapshot."
                     )
-                    self.state.scenes = scenes_snapshot
-                    return StageResult(
-                        stage_name=stage_name,
-                        status=StageStatus.FAILED,
-                        error=f"Avg word count dropped {old_avg:.0f}->{new_avg:.0f}",
-                        duration_seconds=duration
-                    )
+                    _log_incident(stage_name, "avg_word_plummet",
+                                  f"Avg wc {old_avg:.0f}->{new_avg:.0f}",
+                                  scene_count_before=old_count, scene_count_after=new_count)
+                    if not _observe_only:
+                        self.state.scenes = scenes_snapshot
+                        return StageResult(
+                            stage_name=stage_name,
+                            status=StageStatus.FAILED,
+                            error=f"Avg word count dropped {old_avg:.0f}->{new_avg:.0f}",
+                            duration_seconds=duration
+                        )
 
                 # Check 5: Forbidden-marker explosion — if >40% of scenes contain
                 # meta-text markers after the stage, the stage polluted everything
@@ -2848,13 +3347,17 @@ class PipelineOrchestrator:
                             f"{polluted}/{new_count} scenes contain meta-text markers. "
                             f"Restoring snapshot."
                         )
-                        self.state.scenes = scenes_snapshot
-                        return StageResult(
-                            stage_name=stage_name,
-                            status=StageStatus.FAILED,
-                            error=f"Meta-marker pollution: {polluted}/{new_count} scenes",
-                            duration_seconds=duration
-                        )
+                        _log_incident(stage_name, "meta_marker_explosion",
+                                      f"{polluted}/{new_count} scenes polluted",
+                                      scene_count_before=old_count, scene_count_after=new_count)
+                        if not _observe_only:
+                            self.state.scenes = scenes_snapshot
+                            return StageResult(
+                                stage_name=stage_name,
+                                status=StageStatus.FAILED,
+                                error=f"Meta-marker pollution: {polluted}/{new_count} scenes",
+                                duration_seconds=duration
+                            )
 
                 # Check 6: Previously-distinct scenes didn't become identical
                 import hashlib as _hl
@@ -2870,13 +3373,17 @@ class PipelineOrchestrator:
                         f"Transaction safety: {stage_name} fingerprint uniqueness collapsed "
                         f"{old_unique} -> {new_unique} distinct scenes. Restoring snapshot."
                     )
-                    self.state.scenes = scenes_snapshot
-                    return StageResult(
-                        stage_name=stage_name,
-                        status=StageStatus.FAILED,
-                        error=f"Scene uniqueness collapsed: {old_unique}->{new_unique}",
-                        duration_seconds=duration
-                    )
+                    _log_incident(stage_name, "fingerprint_collapse",
+                                  f"Unique scenes {old_unique}->{new_unique}",
+                                  scene_count_before=old_count, scene_count_after=new_count)
+                    if not _observe_only:
+                        self.state.scenes = scenes_snapshot
+                        return StageResult(
+                            stage_name=stage_name,
+                            status=StageStatus.FAILED,
+                            error=f"Scene uniqueness collapsed: {old_unique}->{new_unique}",
+                            duration_seconds=duration
+                        )
 
             # Per-stage forbidden marker rate: track even when under threshold
             if self.state.scenes and len(self.state.scenes) > 0:
@@ -2922,6 +3429,9 @@ class PipelineOrchestrator:
             # Restore scenes on error
             if scenes_snapshot is not None:
                 logger.warning(f"Restoring scene snapshot after {stage_name} failure")
+                _log_incident(stage_name, "exception_rollback",
+                              str(e)[:200], severity="error",
+                              scene_count_before=len(scenes_snapshot))
                 self.state.scenes = scenes_snapshot
 
             return StageResult(
@@ -3036,33 +3546,200 @@ class PipelineOrchestrator:
     # ========================================================================
 
     async def _stage_high_concept(self) -> tuple:
-        """Generate high concept from synopsis."""
+        """Generate high concept using Best-of-3 ensemble + validation + fingerprint.
+
+        Generates 3 candidates with different creative angles (commercial,
+        original, emotional), validates each, selects the best, builds a
+        fingerprint for downstream drift detection.
+        """
         config = self.state.config
-        story_context = self._build_story_context()
-        strategic = self._build_strategic_guidance()
+        genre = config.get("genre", "literary fiction")
 
-        prompt = f"""You are an expert novelist. Generate a compelling high-concept summary for a novel.
+        # Lighter context for this stage: synopsis + genre + protagonist + conflict + themes
+        context_parts = [
+            f"GENRE: {genre}",
+            f"TITLE: {config.get('title', 'Untitled')}",
+        ]
+        if config.get("synopsis"):
+            context_parts.append(f"\nSYNOPSIS:\n{config.get('synopsis')}")
+        if config.get("protagonist"):
+            context_parts.append(f"\nPROTAGONIST:\n{config.get('protagonist')}")
+        if config.get("central_conflict"):
+            context_parts.append(f"\nCENTRAL CONFLICT:\n{config.get('central_conflict')}")
+        if config.get("themes"):
+            context_parts.append(f"\nTHEMES:\n{config.get('themes')}")
+        if config.get("tone"):
+            context_parts.append(f"\nTONE: {config.get('tone')}")
+        if config.get("central_question"):
+            context_parts.append(f"\nCENTRAL QUESTION: {config.get('central_question')}")
+        light_context = "\n".join(context_parts)
 
-{story_context}
-{strategic}
+        # Genre-specific guidance addendum
+        genre_lower = genre.lower()
+        genre_addendum = ""
+        if "romance" in genre_lower:
+            genre_addendum = (
+                "\nFor this ROMANCE: foreground the central relationship tension, "
+                "the trope(s), the emotional stakes of both leads, and why this "
+                "pairing is fresh. Name both protagonists."
+            )
+        elif "thriller" in genre_lower or "mystery" in genre_lower:
+            genre_addendum = (
+                "\nFor this THRILLER/MYSTERY: lead with the inciting crime or threat, "
+                "the protagonist's unique vulnerability, the ticking clock, and the "
+                "twist that separates this from the genre pack."
+            )
+        elif "fantasy" in genre_lower or "sci-fi" in genre_lower or "science fiction" in genre_lower:
+            genre_addendum = (
+                "\nFor this SPECULATIVE FICTION: ground the concept in its unique world rule, "
+                "name the protagonist and their specific power/limitation, and make the "
+                "external threat mirror the internal conflict."
+            )
+        elif "literary" in genre_lower:
+            genre_addendum = (
+                "\nFor LITERARY FICTION: lead with the emotional question, the protagonist's "
+                "central contradiction, and the specific milieu. Prioritize voice and "
+                "thematic resonance over plot mechanics."
+            )
 
-Create a powerful one-paragraph high concept that captures:
-1. The unique hook or twist
-2. The central conflict
-3. The emotional core
-4. What makes this story fresh
-
-High Concept:"""
+        # Three creative angles for Best-of-3
+        angle_instructions = {
+            "commercial": (
+                "Angle: COMMERCIAL HOOK. Lead with the market hook — what makes "
+                "a reader grab this off the shelf. Emphasize the 'what if' premise, "
+                "the stakes, and the genre promise."
+            ),
+            "original": (
+                "Angle: ORIGINALITY. Lead with what makes this story unlike anything "
+                "else in the genre. Emphasize the fresh twist, the subverted expectation, "
+                "the element no reader has seen before."
+            ),
+            "emotional": (
+                "Angle: EMOTIONAL CORE. Lead with the protagonist's deepest fear or "
+                "desire. Make the reader feel the emotional stakes before they understand "
+                "the plot mechanics. This should ache."
+            ),
+        }
 
         client = self.get_client_for_stage("high_concept")
-        if client:
-            response = await client.generate(prompt)
-            self.state.high_concept = response.content
-            return response.content, response.input_tokens + response.output_tokens
+        if not client:
+            self.state.high_concept = "A compelling story about the given synopsis..."
+            return self.state.high_concept, 100
 
-        # Mock response
-        self.state.high_concept = f"A compelling story about the given synopsis..."
-        return self.state.high_concept, 100
+        temp = self.get_temperature_for_stage("high_concept")
+        total_tokens = 0
+        candidates = []
+
+        # Generate 3 candidates in parallel
+        async def _gen_candidate(angle_name: str, angle_instruction: str) -> dict:
+            prompt = f"""{light_context}
+{genre_addendum}
+
+{angle_instruction}
+
+Write ONE paragraph (2-4 sentences) that captures the high concept of this novel.
+Be SPECIFIC: name the protagonist, the setting, the central tension, and what's at stake emotionally.
+Do NOT restate the synopsis. Distill and sharpen it into a pitch."""
+
+            response = await client.generate(
+                prompt,
+                system_prompt=HIGH_CONCEPT_SYSTEM_PROMPT,
+                temperature=temp,
+                max_tokens=500,
+                stop=PLANNING_STOP_SEQUENCES,
+            )
+            tokens = response.input_tokens + response.output_tokens
+            raw = (response.content or "").strip()
+            validation = validate_high_concept(raw, config)
+            return {
+                "angle": angle_name,
+                "raw": raw,
+                "text": validation["text"],
+                "score": validation["score"],
+                "issues": validation["issues"],
+                "pass": validation["pass"],
+                "tokens": tokens,
+            }
+
+        tasks = [
+            _gen_candidate(name, instr)
+            for name, instr in angle_instructions.items()
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for r in results:
+            if isinstance(r, Exception):
+                logger.warning(f"High concept candidate failed: {r}")
+                continue
+            candidates.append(r)
+            total_tokens += r["tokens"]
+
+        # Filter to passing candidates
+        passing = [c for c in candidates if c["pass"]]
+
+        if not passing:
+            # All candidates failed validation — retry once with strict prompt
+            logger.warning("All 3 high concept candidates failed validation. Retrying with strict prompt.")
+            strict_prompt = f"""{light_context}
+
+CRITICAL: Your previous outputs were rejected for being too vague or containing non-concept text.
+Write EXACTLY ONE paragraph (2-4 sentences). Name the protagonist. Name the setting.
+State the central tension and emotional stakes. Be specific, not generic.
+No preamble. No commentary. Start with the first word of the concept."""
+
+            response = await client.generate(
+                strict_prompt,
+                system_prompt=HIGH_CONCEPT_SYSTEM_PROMPT,
+                temperature=0.5,
+                max_tokens=500,
+                stop=PLANNING_STOP_SEQUENCES,
+            )
+            total_tokens += response.input_tokens + response.output_tokens
+            raw = (response.content or "").strip()
+            validation = validate_high_concept(raw, config)
+            if validation["pass"]:
+                passing = [{
+                    "angle": "strict_retry",
+                    "raw": raw,
+                    "text": validation["text"],
+                    "score": validation["score"],
+                    "issues": validation["issues"],
+                    "pass": True,
+                    "tokens": response.input_tokens + response.output_tokens,
+                }]
+            else:
+                # Last resort: use the best-scoring candidate even if it didn't pass
+                if candidates:
+                    best_failing = max(candidates, key=lambda c: c["score"])
+                    logger.warning(
+                        f"High concept: using best failing candidate "
+                        f"(score={best_failing['score']}, issues={best_failing['issues']})"
+                    )
+                    passing = [best_failing]
+                else:
+                    raise RuntimeError("High concept generation failed: no candidates produced")
+
+        # Select best passing candidate
+        best = max(passing, key=lambda c: c["score"])
+        self.state.high_concept = best["text"]
+
+        # Store all candidates for inspection
+        self.state.high_concept_candidates = [
+            {"angle": c["angle"], "text": c["text"], "score": c["score"], "issues": c["issues"]}
+            for c in candidates
+        ]
+
+        # Build fingerprint for drift detection
+        self.state.high_concept_fingerprint = build_concept_fingerprint(best["text"])
+
+        logger.info(
+            f"High concept selected: angle={best['angle']}, score={best['score']}, "
+            f"candidates={len(candidates)}, passing={len(passing)}"
+        )
+        if best.get("issues"):
+            logger.info(f"High concept issues (accepted): {best['issues']}")
+
+        return self.state.high_concept, total_tokens
 
     async def _stage_world_building(self) -> tuple:
         """Build world bible."""
@@ -3169,6 +3846,16 @@ Respond as a JSON array of beats."""
             except Exception as e:
                 logger.warning(f"Beat sheet JSON parse failed: {e}")
                 self.state.beat_sheet = [{"beat": "Catalyst", "description": "..."}, {"beat": "Midpoint", "description": "..."}]
+
+            # Concept drift check
+            if self.state.high_concept_fingerprint and response and response.content:
+                drift = check_concept_drift(self.state.high_concept_fingerprint, response.content)
+                if drift.get("drifted"):
+                    logger.warning(
+                        f"CONCEPT DRIFT in beat_sheet: keyword_overlap={drift['keyword_overlap']}, "
+                        f"missing_entities={drift.get('missing_entities', [])}"
+                    )
+
             return self.state.beat_sheet, (response.input_tokens + response.output_tokens) if response else 0
 
         # Mock response
@@ -3540,6 +4227,17 @@ Respond with a JSON object containing a "chapters" array of {batch_end - batch_s
         logger.info(f"Master outline complete: {len(all_chapters)} chapters, {total_scenes} total scenes")
         if len(all_chapters) == 0:
             logger.warning("Master outline is empty - scene_drafting will have nothing to process")
+
+        # Concept drift check on full outline text
+        if self.state.high_concept_fingerprint and all_chapters:
+            outline_text = json.dumps(all_chapters, indent=1)
+            drift = check_concept_drift(self.state.high_concept_fingerprint, outline_text)
+            if drift.get("drifted"):
+                logger.warning(
+                    f"CONCEPT DRIFT in master_outline: keyword_overlap={drift['keyword_overlap']}, "
+                    f"missing_entities={drift.get('missing_entities', [])}"
+                )
+
         return self.state.master_outline, total_tokens
 
     def _repair_truncated_json(self, raw: str) -> list:
@@ -3844,6 +4542,23 @@ Return JSON with:
         if REST_UNCHANGED_RE.search(text):
             issues["truncation_marker"] = True
 
+        # Sneaky continuation markers (subtle truncation the model uses to cut short)
+        # Only check the last 100 chars to avoid false positives from dialogue
+        tail = text[-100:] if len(text) > 100 else text
+        _CONTINUATION_PATTERNS = [
+            r'\.\.\.\s*$',                          # trailing ellipsis
+            r'\(continued\)\s*$',                    # (continued)
+            r'\[continued\]\s*$',                    # [continued]
+            r'(?i)to\s+be\s+continued\.?\s*$',       # To be continued
+            r'\[Scene\s+continues\]',                # [Scene continues]
+            r'\[Rest\s+of\s+scene[^\]]*\]',          # [Rest of scene...]
+            r'(?i)and\s+so\s+(?:on|forth)\.?\s*$',   # and so on/forth
+        ]
+        for pat in _CONTINUATION_PATTERNS:
+            if re.search(pat, tail):
+                issues["continuation_marker"] = True
+                break
+
         # Check for duplicate/alternate markers
         alt_patterns = [
             r'(?:Option [AB]|Version [12]|Alternative)',
@@ -3881,6 +4596,59 @@ Return JSON with:
                 if third_person_refs >= 3:
                     issues["pov_drift"] = True
 
+        # Prompt echo/leak detector: FORMAT_CONTRACT fragments in prose
+        _PROMPT_LEAK_FINGERPRINTS = [
+            "ABSOLUTE RULES",
+            "Output ONLY narrative prose",
+            "NEVER output:",
+            "NEVER output: headings",
+            "End your output with <END_PROSE>",
+            "<END_PROSE>",
+            "CONTINUE THE SCENE",
+            "commentary, analysis",
+            "bracketed stage directions",
+            "truncation marker",
+            "BAD (do not do this)",
+            "GOOD (do this)",
+        ]
+        for fp in _PROMPT_LEAK_FINGERPRINTS:
+            if fp in text:
+                issues["prompt_leak"] = True
+                logger.warning(f"Prompt leak detected: '{fp}' found in scene output")
+                break
+
+        # Dialogue integrity check: unbalanced quotes or extreme dialogue ratio
+        if word_count >= 100:
+            open_quotes = text.count('\u201c') + text.count('"')  # " and "
+            close_quotes = text.count('\u201d') + text.count('"')  # " and "
+            # For straight quotes ("), count should be even
+            straight_quotes = text.count('"')
+            smart_open = text.count('\u201c')
+            smart_close = text.count('\u201d')
+            if smart_open + smart_close > 0:
+                # Smart quotes: open/close should match within tolerance
+                if abs(smart_open - smart_close) > 2:
+                    issues["dialogue_unbalanced"] = True
+                    logger.debug(
+                        f"Unbalanced smart quotes: {smart_open} open vs {smart_close} close"
+                    )
+            elif straight_quotes > 0 and straight_quotes % 2 != 0:
+                # Odd number of straight quotes = likely unbalanced
+                if straight_quotes > 3:  # Ignore single quote edge cases
+                    issues["dialogue_unbalanced"] = True
+                    logger.debug(f"Odd straight quote count: {straight_quotes}")
+
+            # Dialogue ratio guard: too much or too little dialogue can indicate problems
+            # Count words inside quotes as a rough dialogue ratio
+            dialogue_segments = re.findall(
+                r'[\u201c"]([^"\u201d]{5,})[\u201d"]', text
+            )
+            dialogue_words = sum(len(seg.split()) for seg in dialogue_segments)
+            dialogue_ratio = dialogue_words / word_count if word_count > 0 else 0
+            if dialogue_ratio > 0.85:
+                issues["dialogue_ratio_high"] = True
+                logger.debug(f"Dialogue ratio very high: {dialogue_ratio:.0%}")
+
         return {
             "pass": len(issues) == 0,
             "issues": issues,
@@ -3898,7 +4666,7 @@ Return JSON with:
             metrics["per_stage"][stage_name] = {
                 "scenes": 0, "preamble": 0, "truncation": 0,
                 "alternate": 0, "analysis": 0, "pov_drift": 0,
-                "too_short": 0, "retried": 0
+                "too_short": 0, "prompt_leak": 0, "retried": 0
             }
 
         sm = metrics["per_stage"][stage_name]
@@ -3922,6 +4690,9 @@ Return JSON with:
             metrics["scenes_with_pov_drift"] += 1
         if issues.get("too_short"):
             sm["too_short"] += 1
+        if issues.get("prompt_leak"):
+            sm["prompt_leak"] = sm.get("prompt_leak", 0) + 1
+            metrics["scenes_with_meta_text"] += 1
         if is_retry:
             sm["retried"] += 1
             metrics["scenes_retried"] += 1
@@ -4094,7 +4865,7 @@ Return JSON with:
         self._record_artifact_metrics(stage_name, scene_meta or {}, validation)
 
         # If critic gate fails on fixable issues, retry once with issue-specific feedback
-        fixable_issues = {"preamble", "truncation_marker", "alternate_version", "analysis_commentary"}
+        fixable_issues = {"preamble", "truncation_marker", "alternate_version", "analysis_commentary", "prompt_leak"}
         detected = set(validation.get("issues", {}).keys())
 
         # Budget guard: check retry budget before attempting
@@ -4134,7 +4905,7 @@ Return JSON with:
                 issues = val.get("issues", {})
                 # Hard penalties (artifacts that ruin the output)
                 score -= 100 * len({"preamble", "truncation_marker", "alternate_version",
-                                     "analysis_commentary"} & set(issues.keys()))
+                                     "analysis_commentary", "prompt_leak"} & set(issues.keys()))
                 # Soft penalties
                 if issues.get("too_short"):
                     score -= 30
@@ -4213,11 +4984,17 @@ Return JSON with:
                 parts.append(f"\n{story_state}")
 
         # Previous scene tail — transition continuity
+        # Wrapped in containment boundary to prevent scene content from being
+        # interpreted as instructions (defense against prompt injection via content)
         if include_previous > 0 and scenes and scene_index > 0:
             prev_scenes = scenes[max(0, scene_index - include_previous):scene_index]
             prev_context = self._get_previous_scenes_context(prev_scenes, count=include_previous)
             if prev_context:
-                parts.append(f"\nPREVIOUS SCENE ENDING:\n{prev_context}")
+                parts.append(
+                    f"\n<user_content_boundary>"
+                    f"\nPREVIOUS SCENE ENDING:\n{prev_context}"
+                    f"\n</user_content_boundary>"
+                )
 
         # Periodic alignment check: warn if scenes are drifting from beat sheet
         alignment_warning = self._check_alignment(scene_index)
@@ -4283,6 +5060,9 @@ Return JSON with:
                 f"HIGH-CONFIDENCE prompt injection at scene {scene_index}: "
                 f"injection phrase + structural cue both present."
             )
+            _log_incident(f"scene_{scene_index}", "prompt_injection",
+                          "High-confidence injection: phrase + structural cue",
+                          severity="critical", failure_type="content")
         elif has_phrase:
             logger.warning(
                 f"Possible prompt injection at scene {scene_index} "
@@ -6655,9 +7435,9 @@ OUTPUT the text with only problematic sentences fixed:"""
                     # Accept rewrite only if it preserves length AND key entities
                     _retention = self._get_threshold("feedback_loop_wc_retention")
                     if len(rewritten.split()) >= len(content.split()) * _retention:
-                        # Entity preservation: protagonist + at least 2 nouns from original
-                        orig_nouns = set(re.findall(r'\b[A-Z][a-z]{2,}\b', content))
-                        new_nouns = set(re.findall(r'\b[A-Z][a-z]{2,}\b', rewritten))
+                        # Entity preservation: protagonist + shared nouns (scaled by scene length)
+                        orig_nouns = set(re.findall(r'\b[A-Z][a-z]{2,}\b', content)) - COMMON_CAPS
+                        new_nouns = set(re.findall(r'\b[A-Z][a-z]{2,}\b', rewritten)) - COMMON_CAPS
                         protag_first = (protagonist or "").split()[0] if protagonist else ""
                         protag_preserved = (
                             not protag_first or
@@ -6665,15 +7445,22 @@ OUTPUT the text with only problematic sentences fixed:"""
                             "I " in rewritten  # First-person POV counts
                         )
                         shared_nouns = len(orig_nouns & new_nouns)
-                        if protag_preserved and (shared_nouns >= 2 or len(orig_nouns) < 3):
+                        # Scale noun requirement by scene length
+                        scene_wc = len(content.split())
+                        short_threshold = int(self._get_threshold("entity_guard_short_scene_words"))
+                        if scene_wc < short_threshold:
+                            min_nouns = int(self._get_threshold("entity_guard_short_scene_nouns"))
+                        else:
+                            min_nouns = 2
+                        if protag_preserved and (shared_nouns >= min_nouns or len(orig_nouns) < 3):
                             scenes_list[idx]["content"] = rewritten
                             fixed += 1
                             self._budget_tracker["rewritten_scenes"] += 1
-                            logger.info(f"Feedback loop: rewrote scene {idx}")
+                            logger.info(f"Feedback loop: rewrote scene {idx} (entity check: shared={shared_nouns}, min={min_nouns}, wc={scene_wc})")
                         else:
                             logger.warning(
                                 f"Feedback loop: rejected rewrite for scene {idx} "
-                                f"(entity drift: protag={protag_preserved}, shared={shared_nouns}/{len(orig_nouns)})"
+                                f"(entity drift: protag={protag_preserved}, shared={shared_nouns}/{len(orig_nouns)}, min_required={min_nouns}, wc={scene_wc})"
                             )
                 except Exception as e:
                     logger.warning(f"Feedback loop rewrite failed for scene {idx}: {e}")
@@ -6798,6 +7585,9 @@ Respond with JSON:
 
         # Flush cleanup morgue to JSONL for auditability
         _flush_morgue(self.state.project_path)
+
+        # Flush incident log for rollback/defense event analysis
+        _flush_incidents(self.state.project_path)
 
         # Persist artifact metrics for cross-run trend analysis
         self._persist_artifact_metrics()

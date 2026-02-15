@@ -1352,6 +1352,252 @@ test("Semantic dedup: unique text preserved",
 
 
 # ═══════════════════════════════════════════════════════════════
+# 14. BATCH 6: DEFENSE ARCHITECTURE ENHANCEMENTS
+# ═══════════════════════════════════════════════════════════════
+print("\n=== 14. Batch 6: Defense Architecture Enhancements ===")
+
+# --- 14a: Entity guard scaling by scene length ---
+print("  --- 14a: Entity guard scaling ---")
+from prometheus_novel.stages.pipeline import PipelineOrchestrator
+import inspect
+
+# Check new threshold keys exist
+defaults = PipelineOrchestrator._DEFAULT_DEFENSE_THRESHOLDS
+test("Entity guard: short_scene_words threshold exists",
+     "entity_guard_short_scene_words" in defaults)
+test("Entity guard: short_scene_nouns threshold exists",
+     "entity_guard_short_scene_nouns" in defaults)
+test("Entity guard: short_scene_words default=200",
+     defaults["entity_guard_short_scene_words"] == 200)
+test("Entity guard: short_scene_nouns default=1",
+     defaults["entity_guard_short_scene_nouns"] == 1)
+
+# Check the code references the new thresholds
+src = inspect.getsource(PipelineOrchestrator)
+test("Entity guard: code uses entity_guard_short_scene_words",
+     "entity_guard_short_scene_words" in src)
+test("Entity guard: code uses entity_guard_short_scene_nouns",
+     "entity_guard_short_scene_nouns" in src)
+
+# Total threshold count
+test(f"Threshold count >= 21 (batch 6 additions)",
+     len(defaults) >= 21,
+     f"got {len(defaults)}")
+
+# --- 14b: Threshold bounds validation ---
+print("  --- 14b: Threshold bounds ---")
+bounds = PipelineOrchestrator._THRESHOLD_BOUNDS
+test("Bounds table exists",
+     isinstance(bounds, dict) and len(bounds) > 0)
+test("Bounds: every default has bounds",
+     all(k in bounds for k in defaults),
+     f"missing: {set(defaults) - set(bounds)}")
+test("Bounds: all bounds are (min, max) tuples",
+     all(isinstance(v, tuple) and len(v) == 2 for v in bounds.values()))
+test("Bounds: all defaults within bounds",
+     all(bounds[k][0] <= defaults[k] <= bounds[k][1] for k in defaults if k in bounds),
+     f"out of bounds: {[k for k in defaults if k in bounds and not (bounds[k][0] <= defaults[k] <= bounds[k][1])]}")
+
+# _get_threshold clamp test
+src_get = inspect.getsource(PipelineOrchestrator._get_threshold)
+test("Bounds: _get_threshold clamps out-of-range values",
+     "clamped" in src_get)
+
+# --- 14c: Prompt leak detector ---
+print("  --- 14c: Prompt leak detector ---")
+src_validate = inspect.getsource(PipelineOrchestrator._validate_scene_output)
+test("Prompt leak: detector exists in _validate_scene_output",
+     "prompt_leak" in src_validate)
+test("Prompt leak: checks ABSOLUTE RULES",
+     "ABSOLUTE RULES" in src_validate)
+test("Prompt leak: checks <END_PROSE>",
+     "END_PROSE" in src_validate)
+
+# Check it's in fixable issues
+src_prose = inspect.getsource(PipelineOrchestrator._generate_prose)
+test("Prompt leak: is a fixable issue for retry",
+     "prompt_leak" in src_prose)
+
+# Check feedback message exists
+from prometheus_novel.stages.pipeline import ISSUE_SPECIFIC_FEEDBACK
+test("Prompt leak: has issue-specific feedback",
+     "prompt_leak" in ISSUE_SPECIFIC_FEEDBACK)
+
+# --- 14d: Dialogue integrity check ---
+print("  --- 14d: Dialogue integrity ---")
+test("Dialogue: unbalanced check in validator",
+     "dialogue_unbalanced" in src_validate)
+test("Dialogue: ratio check in validator",
+     "dialogue_ratio_high" in src_validate)
+# Smart quote detection
+test("Dialogue: checks smart quotes (\\u201c/\\u201d)",
+     "\\u201c" in src_validate or "\u201c" in src_validate)
+
+# --- 14e: Incident packet (incidents.jsonl) ---
+print("  --- 14e: Incident packet ---")
+from prometheus_novel.stages.pipeline import (
+    _log_incident, _flush_incidents, _incident_buffer, _classify_failure
+)
+test("Incident: _log_incident function exists",
+     callable(_log_incident))
+test("Incident: _flush_incidents function exists",
+     callable(_flush_incidents))
+test("Incident: buffer is a list",
+     isinstance(_incident_buffer, list))
+
+# Test classify_failure
+test("Classify: timeout -> transient",
+     _classify_failure("Connection timeout") == "transient")
+test("Classify: 429 -> transient",
+     _classify_failure("HTTP 429 rate limit") == "transient")
+test("Classify: scene count -> content",
+     _classify_failure("Scene count dropped from 20 to 5") == "content")
+test("Classify: empty -> unknown",
+     _classify_failure("") == "unknown")
+
+# Test _log_incident
+_incident_buffer.clear()
+_log_incident("test_stage", "test_category", "test detail")
+test("Incident: logging adds to buffer",
+     len(_incident_buffer) == 1)
+test("Incident: entry has failure_type",
+     "failure_type" in _incident_buffer[0])
+test("Incident: entry has timestamp",
+     "timestamp" in _incident_buffer[0])
+test("Incident: entry has category",
+     _incident_buffer[0]["category"] == "test_category")
+_incident_buffer.clear()
+
+# Check incidents are hooked into rollback checks
+src_run_stage = inspect.getsource(PipelineOrchestrator._run_stage)
+src_run = inspect.getsource(PipelineOrchestrator.run)
+test("Incident: hooked into scene_count_drop",
+     "scene_count_drop" in src_run_stage)
+test("Incident: hooked into prefix_corruption",
+     "prefix_corruption" in src_run_stage)
+test("Incident: hooked into fingerprint_collapse",
+     "fingerprint_collapse" in src_run_stage)
+test("Incident: hooked into circuit_breaker_trip",
+     "circuit_breaker_trip" in src_run_stage or "circuit_breaker_trip" in src_run)
+
+# --- 14f: Run status checkpoint ---
+print("  --- 14f: Run status checkpoint ---")
+test("Run status: _write_run_status method exists",
+     hasattr(PipelineOrchestrator, '_write_run_status'))
+src_status = inspect.getsource(PipelineOrchestrator._write_run_status)
+test("Run status: writes run_status.json",
+     "run_status.json" in src_status)
+test("Run status: includes completed_stages",
+     "completed_stages" in src_status)
+test("Run status: includes budget info",
+     "budget" in src_status)
+test("Run status: includes incident count",
+     "incidents" in src_status)
+
+# Check it's called in run loop
+test("Run status: called in run loop",
+     "_write_run_status" in src_run or "_write_run_status" in src_run_stage)
+
+# --- 14g: Circuit breaker failure categorization ---
+print("  --- 14g: Failure categorization ---")
+from prometheus_novel.stages.pipeline import _TRANSIENT_ERROR_PATTERNS
+test("Failure categorization: transient patterns exist",
+     isinstance(_TRANSIENT_ERROR_PATTERNS, list) and len(_TRANSIENT_ERROR_PATTERNS) > 0)
+test("Failure categorization: includes timeout",
+     any("timeout" in p for p in _TRANSIENT_ERROR_PATTERNS))
+test("Failure categorization: includes 429",
+     any("429" in p for p in _TRANSIENT_ERROR_PATTERNS))
+test("Failure categorization: includes 503",
+     any("503" in p for p in _TRANSIENT_ERROR_PATTERNS))
+
+# --- 14h: Canary scene ---
+print("  --- 14h: Canary scene ---")
+test("Canary: _canary_scene_check method exists",
+     hasattr(PipelineOrchestrator, '_canary_scene_check'))
+src_canary = inspect.getsource(PipelineOrchestrator._canary_scene_check)
+test("Canary: checks for prompt leak",
+     "prompt_leak" in src_canary)
+test("Canary: checks for preamble",
+     "preamble" in src_canary)
+test("Canary: respects canary_enabled config",
+     "canary_enabled" in src_canary)
+test("Canary: called in run()",
+     "_canary_scene_check" in src_run)
+
+# --- 14i: Defense mode switch ---
+print("  --- 14i: Defense mode ---")
+test("Defense mode: DEFENSE_MODES set exists",
+     hasattr(PipelineOrchestrator, 'DEFENSE_MODES'))
+test("Defense mode: contains observe/protect/aggressive",
+     PipelineOrchestrator.DEFENSE_MODES == {"observe", "protect", "aggressive"})
+test("Defense mode: _defense_mode initialized in __init__",
+     "_defense_mode" in inspect.getsource(PipelineOrchestrator.__init__))
+test("Defense mode: read from config in run()",
+     "defense_mode" in src_run or "_defense_mode" in src_run)
+
+# Aggressive multipliers
+test("Defense mode: _AGGRESSIVE_MULTIPLIERS exists",
+     hasattr(PipelineOrchestrator, '_AGGRESSIVE_MULTIPLIERS'))
+aggr = PipelineOrchestrator._AGGRESSIVE_MULTIPLIERS
+test("Defense mode: aggressive multiplier for scene_count_drop_pct",
+     "scene_count_drop_pct" in aggr)
+test("Defense mode: aggressive tightens (multiplier < 1)",
+     aggr.get("scene_count_drop_pct", 1.0) < 1.0)
+
+# Observe mode check
+test("Defense mode: observe_only check in _run_stage",
+     "_observe_only" in src_run_stage)
+
+# --- 14j: Continuation marker detection ---
+print("  --- 14j: Continuation markers ---")
+test("Continuation: detector in _validate_scene_output",
+     "continuation_marker" in src_validate)
+test("Continuation: checks trailing ellipsis",
+     "\\.\\.\\." in src_validate or "ellipsis" in src_validate.lower())
+test("Continuation: checks 'to be continued'",
+     "continued" in src_validate.lower())
+
+# --- 14k: Morgue size limit ---
+print("  --- 14k: Morgue size limit ---")
+from prometheus_novel.stages.pipeline import _flush_morgue
+src_morgue = inspect.getsource(_flush_morgue)
+test("Morgue: size limit check exists",
+     "_MORGUE_MAX_BYTES" in src_morgue or "st_size" in src_morgue)
+test("Morgue: rotation to .old file",
+     ".jsonl.old" in src_morgue or "rotated" in src_morgue)
+
+# --- 14l: Common caps expansion ---
+print("  --- 14l: Common caps ---")
+from prometheus_novel.stages.pipeline import COMMON_CAPS
+test("Common caps: set exists",
+     isinstance(COMMON_CAPS, set) and len(COMMON_CAPS) > 0)
+test("Common caps: contains 'The'", "The" in COMMON_CAPS)
+test("Common caps: contains 'General'", "General" in COMMON_CAPS)
+test("Common caps: contains 'Chapter'", "Chapter" in COMMON_CAPS)
+test("Common caps: contains 'Monday'", "Monday" in COMMON_CAPS)
+# Check entity guard uses COMMON_CAPS
+test("Common caps: entity guard filters with COMMON_CAPS",
+     "COMMON_CAPS" in src)
+
+# --- 14m: Context containment boundary ---
+print("  --- 14m: Context containment ---")
+src_ctx = inspect.getsource(PipelineOrchestrator._build_scene_context)
+test("Containment: user_content_boundary in context assembly",
+     "user_content_boundary" in src_ctx)
+
+src_schema = inspect.getsource(PipelineOrchestrator._validate_context_schema)
+test("Containment: injection detection logs incidents",
+     "_log_incident" in src_schema)
+
+# --- 14n: Salvage restore logging ---
+print("  --- 14n: Salvage restore logging ---")
+from prometheus_novel.stages.pipeline import _clean_scene_content
+src_clean = inspect.getsource(_clean_scene_content)
+test("Salvage: _log_to_morgue called on salvage restore",
+     "salvage_restore" in src_clean)
+
+
+# ═══════════════════════════════════════════════════════════════
 # SUMMARY
 # ═══════════════════════════════════════════════════════════════
 print(f"\n{'='*60}")

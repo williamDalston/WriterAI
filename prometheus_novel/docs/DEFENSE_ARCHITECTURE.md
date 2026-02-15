@@ -40,6 +40,20 @@
 | Model drift alarm | Preamble/meta-text rate jump >50% AND >3 absolute triggers alarm with config fingerprint |
 | YAML config validation | Schema validation on cleanup_patterns and surgical_replacements load (keys + regex compilation) |
 | Feedback loop retention guard | ≥80% word count retention required for LLM rewrites (up from 50%) |
+| Entity guard scaling | Short scenes (<200w) require only ≥1 shared noun (vs ≥2 for normal), prevents false rejection |
+| Threshold bounds validation | All thresholds clamped to valid [min, max] range; logs warning on out-of-bounds config |
+| Prompt echo/leak detection | 12 FORMAT_CONTRACT fingerprints checked in output; prompt_leak is fixable with retry |
+| Dialogue integrity check | Unbalanced smart/straight quotes + dialogue-to-narration ratio >85% flagged |
+| Incident packet logging | `incidents.jsonl` records all rollbacks, circuit breaker trips with failure categorization |
+| Run status checkpoint | `run_status.json` updated after each stage: completed stages, budget, incidents |
+| Circuit breaker failure categorization | Transient (API/timeout/429) vs content (validation) classification on each incident |
+| Canary scene pre-flight | Tests each unique model with a tiny prose prompt before real run; catches prompt leak/preamble/downtime |
+| Defense mode switch | observe (log only) / protect (default) / aggressive (stricter thresholds via multipliers) |
+| Continuation marker detection | Trailing "...", "(continued)", "[Scene continues]", "to be continued" caught in critic gate |
+| Morgue size rotation | JSONL morgue auto-rotates at 5MB; prevents unbounded file growth across runs |
+| Common caps entity filter | `COMMON_CAPS` set filters 60+ sentence-start words from entity guard (avoids false "The"/"General" matches) |
+| Context containment boundary | `<user_content_boundary>` XML fences around scene content in prompts; injection incident logging |
+| Salvage restore audit | Salvage restores logged to cleanup morgue with `salvage_restore` phase tag |
 
 **Non-goals:** No genre policing unless config opts in. No heavy-handed rewriting -- cleanup truncates; validation flags.
 
@@ -408,6 +422,49 @@ Each entry: `{scene_id, deleted_text (first 200 chars), trigger_pattern, phase, 
 
 Triggers when `scenes_with_preamble` or `scenes_with_meta_text` jumps >50% AND increases by >3 absolute. Logs `MODEL DRIFT ALARM` with run nonce, model IDs, and config hashes for debugging.
 
+### Layer M: Incident Packet + Run Status (v6)
+
+**Location:** `_log_incident()`, `_flush_incidents()`, `_write_run_status()` in `pipeline.py`
+**When:** On every rollback, circuit breaker trip, canary failure; run_status updated after each stage
+**Purpose:** Structured post-mortem data for debugging failed runs.
+
+- `incidents.jsonl`: Each entry has `timestamp`, `stage`, `category`, `severity`, `failure_type` (transient/content), `detail`, `scene_count_before/after`
+- `run_status.json`: Overwritten after each stage with completed stages, budget snapshot, incident count, scene count, total tokens/cost
+- Failure categorization: `_classify_failure()` checks error message against `_TRANSIENT_ERROR_PATTERNS` (timeout, 429, 503, connection, etc.) to separate infrastructure issues from content problems
+
+### Layer N: Canary Scene Pre-Flight (v6)
+
+**Location:** `_canary_scene_check()` in `pipeline.py`
+**When:** After `run()` initializes, before main stage loop
+**Purpose:** Quick model health check that catches prompt leak, preamble, and API failures before burning tokens.
+
+- Sends "Write exactly two sentences of fiction about a cat sitting on a windowsill watching rain" to each unique model client
+- Checks for: empty response, FORMAT_CONTRACT fingerprints in output, preamble patterns
+- Logs canary_failure incidents but does NOT halt the run (warning, not error)
+- Can be disabled via `defense.canary_enabled: false` in config
+
+### Layer O: Defense Mode Switch (v6)
+
+**Location:** `_defense_mode` attribute, `_get_threshold()`, `_run_stage()` in `pipeline.py`
+**When:** Set from `config.yaml defense.mode` at start of `run()`
+**Purpose:** Allow users to tune defense aggressiveness per-project.
+
+| Mode | Behavior |
+|------|----------|
+| **observe** | All checks run and incidents are logged, but NO snapshot restores happen. Scene content flows through unchecked. For debugging/analysis. |
+| **protect** | Default. All checks active; rollback on failure. |
+| **aggressive** | All `_AGGRESSIVE_MULTIPLIERS` applied: detection thresholds tightened by ~30% (e.g. `scene_count_drop_pct` × 0.7). Catches subtler corruption at the cost of more false positives/restores. |
+
+### Layer P: Dialogue + Continuation Integrity (v6)
+
+**Location:** `_validate_scene_output()` in `pipeline.py`
+**When:** Critic gate, runs on every prose stage output
+**Purpose:** Catch sneaky truncation and garbled dialogue.
+
+- **Dialogue unbalanced:** Smart quotes (`\u201c`/`\u201d`) must match within ±2; odd straight quote count > 3 flagged
+- **Dialogue ratio high:** >85% of scene words inside quotes indicates possible all-dialogue corruption
+- **Continuation markers:** 7 patterns in last 100 chars: trailing `...`, `(continued)`, `[continued]`, "to be continued", "[Scene continues]", "[Rest of scene...]", "and so on/forth"
+
 ---
 
 ### Validation-Phase Stages (final_deai, quality_audit, output_validation)
@@ -455,6 +512,19 @@ These run after polish and have their own logic:
 | Model quality regression between runs | Model drift alarm (rate jump detection + config fingerprint diff) | -- |
 | Invalid YAML configs | Schema validation on load (unknown keys, broken regexes flagged) | -- |
 | Mid-scene paraphrased restart | Sliding window semantic dedup (non-overlapping windows) | Old midpoint check replaced |
+| Prompt echo / system prompt in output | P (12 FORMAT_CONTRACT fingerprints) | D prompt_leak → E (retry with feedback) |
+| Sneaky truncation ("...", "to be continued") | P (7 continuation marker patterns in tail) | D truncation_marker |
+| Unbalanced dialogue quotes | P (smart quote ±2, odd straight quote > 3) | Warning, not error |
+| Short scene rewrite rejected (entity guard) | G entity guard scaling (≥1 noun for <200w) | COMMON_CAPS filter |
+| Model down / API timeout before run | N canary scene pre-flight | Incident logged as transient |
+| False positive entity guard ("The", "General") | COMMON_CAPS exclusion set (60+ common words) | -- |
+| Rollback event not traceable | M incident packet (incidents.jsonl) | -- |
+| Run interrupted (no progress data) | M run_status.json (written after each stage) | -- |
+| Over-aggressive defense thresholds | O defense mode switch (observe/protect/aggressive) | Threshold bounds validation |
+| Invalid threshold in config | Bounds validation (clamp + warning) | Default used as fallback |
+| Morgue file grows unbounded | Morgue rotation (5MB limit, .jsonl.old archive) | -- |
+| Context injection via scene content | C containment boundary (`<user_content_boundary>` fences) | Two-factor injection detection |
+| Salvage restore event not auditable | Salvage logged to morgue with phase=2.5_salvage | -- |
 
 ---
 
@@ -740,8 +810,20 @@ defense:
     budget_max_retries_per_stage: 3
     budget_max_rewritten_scenes: 15
     budget_max_defense_ratio: 0.30
+    entity_guard_short_scene_words: 200
+    entity_guard_short_scene_nouns: 1
   foreign_word_whitelist:
     - "khachapuri"
     - "amore mio"
     # Add project-specific words/phrases here
+  mode: protect           # observe | protect | aggressive
+  canary_enabled: true    # Pre-flight model check before run
 ```
+
+### v6 Output Files
+
+| File | Location | Purpose |
+|------|----------|---------|
+| `incidents.jsonl` | `{project}/incidents.jsonl` | Rollback events, circuit breaker trips, canary failures with failure_type categorization |
+| `run_status.json` | `{project}/run_status.json` | Current run progress: last stage, completed stages, budget snapshot, incident count |
+| `cleanup_morgue.jsonl` | `{project}/cleanup_morgue.jsonl` | Audit trail of all text deletions + salvage restores (auto-rotated at 5MB) |
