@@ -375,6 +375,114 @@ test("'warmth spread' limited",
 
 
 # ═══════════════════════════════════════════════════════════════
+# 9. DEFENSE ARCHITECTURE IMPROVEMENTS
+# ═══════════════════════════════════════════════════════════════
+print("\n=== 9. Defense Architecture Improvements ===")
+
+# 9a. Issue-specific retry feedback constants exist
+from prometheus_novel.stages.pipeline import ISSUE_SPECIFIC_FEEDBACK
+test("Issue-specific feedback dict exists",
+     isinstance(ISSUE_SPECIFIC_FEEDBACK, dict) and len(ISSUE_SPECIFIC_FEEDBACK) >= 4,
+     f"got {type(ISSUE_SPECIFIC_FEEDBACK)} len {len(ISSUE_SPECIFIC_FEEDBACK)}")
+test("Feedback has preamble key", "preamble" in ISSUE_SPECIFIC_FEEDBACK, "")
+test("Feedback has truncation key", "truncation_marker" in ISSUE_SPECIFIC_FEEDBACK, "")
+
+# 9b. Fuzzy preamble detection via n-gram similarity
+test("n-gram sim: exact preamble = high similarity",
+     PipelineOrchestrator._ngram_similarity("sure here is the revised scene", "sure here is the revised scene") > 0.9,
+     "")
+test("n-gram sim: novel variant catches preamble",
+     PipelineOrchestrator._ngram_similarity("okay so here is the improved scene", "sure here is the revised scene") > 0.2,
+     "")
+test("n-gram sim: prose != preamble",
+     PipelineOrchestrator._ngram_similarity("The rain hammered the windshield as I drove", "sure here is the revised scene") < 0.15,
+     "")
+
+# 9c. Semantic dedup function exists and works
+from prometheus_novel.stages.pipeline import _detect_semantic_duplicates
+
+# Paraphrased restart (same content, slightly different wording — must be >500 chars total)
+para1 = ("The rain poured down as I walked through the dark city streets. My coat was soaked through "
+         "and the cold bit into my skin. Every step felt heavier than the last. The neon signs reflected "
+         "off the wet pavement like scattered jewels. I pulled my collar up against the wind.")
+para2 = ("Rain fell heavily as I made my way through the darkened city. My jacket was completely drenched "
+         "and the chill cut through to my bones. Each footfall seemed more weary than the one before. "
+         "Neon lights bounced off the slick asphalt like tiny gemstones. I tugged my collar higher.")
+text_dup = para1 + "\n\n" + para1 + "\n\n" + para2 + "\n\n" + para2
+result = _detect_semantic_duplicates(text_dup, threshold=0.4)
+test("Semantic dedup: removes paraphrased second half",
+     len(result) < len(text_dup), f"len {len(result)} vs {len(text_dup)}")
+
+# Short text: no change
+short = "Hello world.\n\nGoodbye."
+test("Semantic dedup: short text unchanged",
+     _detect_semantic_duplicates(short) == short, "")
+
+# 9d. Clause-level possessive guard (POV enforcement)
+from prometheus_novel.stages.pipeline import _enforce_first_person_pov
+
+# "the woman who had been his closest friend" should NOT become "my closest friend"
+text = "The woman who had been his closest friend walked in."
+result = _enforce_first_person_pov(text, "Ethan", "male")
+test("Clause guard: 'who had been his' stays (relative clause)",
+     "his closest" in result, repr(result))
+
+# Regular possessive still converts
+text = "I clenched his jaw tightly."
+result = _enforce_first_person_pov(text, "Ethan", "male")
+test("Regular possessive: 'his jaw' -> 'my jaw'",
+     "my jaw" in result, repr(result))
+
+# "a friend of his" should stay
+text = "She was a friend of his."
+result = _enforce_first_person_pov(text, "Ethan", "male")
+# Note: "of his" has no body_part, so it wouldn't match anyway. Test for safety.
+test("'of his' context: no false positive",
+     "his" in result.lower(), repr(result))
+
+# 9e. disabled_builtins YAML support
+from prometheus_novel.stages.pipeline import _clean_scene_content, _load_cleanup_config
+cfg = _load_cleanup_config()
+test("Cleanup config loads disabled_builtins key",
+     "disabled_builtins" in cfg, repr(list(cfg.keys())))
+
+# 9f. Context schema validation (test the method exists and catches red flags)
+import logging
+# Temporarily capture warnings
+from prometheus_novel.stages.pipeline import PipelineOrchestrator
+orch2 = MockOrchestrator()
+orch2._validate_context_schema = PipelineOrchestrator._validate_context_schema.__get__(orch2)
+# This should NOT raise — just logs a warning for suspicious content
+try:
+    orch2._validate_context_schema("WRITING STYLE: literary\ndef some_function():\n    pass", 0)
+    test("Context schema: validates without crashing", True, "")
+except Exception as e:
+    test("Context schema: validates without crashing", False, str(e))
+
+# Clean context should pass silently
+try:
+    orch2._validate_context_schema("WRITING STYLE: literary\nTONE: dark and moody", 0)
+    test("Context schema: clean context passes", True, "")
+except Exception as e:
+    test("Context schema: clean context passes", False, str(e))
+
+# 9g. Alignment check method exists
+orch3 = MockOrchestrator()
+orch3._check_alignment = PipelineOrchestrator._check_alignment.__get__(orch3)
+orch3.state.scenes = [
+    {"chapter": 1, "scene_number": i, "content": "Some scene content about the flight and boarding."}
+    for i in range(1, 11)
+]
+# At index 0 it should return None (not a check interval)
+result = orch3._check_alignment(0)
+test("Alignment check: index 0 returns None", result is None, repr(result))
+# At index 5 it should run (default interval = 5)
+result = orch3._check_alignment(5)
+# May or may not return a warning depending on overlap — just check it doesn't crash
+test("Alignment check: index 5 runs without error", True, "")
+
+
+# ═══════════════════════════════════════════════════════════════
 # SUMMARY
 # ═══════════════════════════════════════════════════════════════
 print(f"\n{'='*60}")

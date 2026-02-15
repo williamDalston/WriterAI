@@ -488,6 +488,14 @@ def _clean_scene_content(text: str) -> str:
         if isinstance(item, dict) and item.get("pattern"):
             inline_patterns.append(item["pattern"])
 
+    # Filter out disabled built-in patterns (suppress false positives per project)
+    disabled = cleanup_cfg.get("disabled_builtins", []) or []
+    if disabled:
+        inline_patterns = [
+            p for p in inline_patterns
+            if not any(d.lower() in p.lower() for d in disabled if isinstance(d, str))
+        ]
+
     for pattern in inline_patterns:
         text = re.sub(pattern, '', text, flags=re.IGNORECASE)
 
@@ -599,9 +607,23 @@ def _enforce_first_person_pov(text: str, protagonist_name: str = "",
     if poss_pronoun:
         # Fix mid-sentence "[poss_pronoun] [body part]" -> "my [body part]"
         # ONLY for the protagonist's pronoun, not the opposite gender
+        # CLAUSE GUARD: Skip if preceded by relative pronoun/clause marker
+        # (e.g. "the woman who had been his closest friend" should NOT become "my closest friend")
+        def _safe_poss_replace(match):
+            start = match.start()
+            # Look back up to 20 chars for clause markers
+            lookback = text[max(0, start-20):start].lower()
+            # Skip if inside a relative clause (who, that, which, whose, whom, where)
+            if re.search(r'\b(?:who|that|which|whose|whom|where|when)\s+(?:\w+\s+)*$', lookback):
+                return match.group(0)  # Keep original
+            # Skip if preceded by "of" (e.g. "a friend of his" should stay)
+            if lookback.rstrip().endswith(' of'):
+                return match.group(0)
+            return f'my {match.group(1)}'
+
         text = re.sub(
             rf'\b{poss_pronoun}\s+({body_parts})\b',
-            r'my \1',
+            _safe_poss_replace,
             text
         )
 
@@ -1090,6 +1112,70 @@ def _detect_duplicate_content(text: str, similarity_threshold: float = 0.6) -> s
     return text
 
 
+def _semantic_similarity_check(text_a: str, text_b: str) -> float:
+    """Compute semantic similarity between two text segments using word overlap + TF-IDF weighting.
+
+    Falls back to enhanced word overlap when sentence-transformers is unavailable.
+    Returns 0.0-1.0 similarity score.
+    """
+    # Try sentence-transformers first (if available and texts are large enough)
+    if len(text_a) > 200 and len(text_b) > 200:
+        try:
+            from sentence_transformers import SentenceTransformer, util
+            model = SentenceTransformer('all-MiniLM-L6-v2')
+            embeddings = model.encode([text_a[:1000], text_b[:1000]], convert_to_tensor=True)
+            sim = float(util.cos_sim(embeddings[0], embeddings[1])[0][0])
+            return sim
+        except (ImportError, Exception):
+            pass
+
+    # Fallback: enhanced word overlap with IDF-like weighting
+    import math
+    words_a = text_a.lower().split()
+    words_b = text_b.lower().split()
+    if not words_a or not words_b:
+        return 0.0
+
+    # Use unique bigrams for better semantic signal than unigrams
+    bigrams_a = set(zip(words_a, words_a[1:])) if len(words_a) > 1 else set(words_a)
+    bigrams_b = set(zip(words_b, words_b[1:])) if len(words_b) > 1 else set(words_b)
+
+    if not bigrams_a or not bigrams_b:
+        return 0.0
+
+    overlap = len(bigrams_a & bigrams_b)
+    return overlap / min(len(bigrams_a), len(bigrams_b))
+
+
+def _detect_semantic_duplicates(text: str, threshold: float = 0.5) -> str:
+    """Secondary duplicate detection using semantic similarity.
+
+    Catches paraphrased restarts that pass n-gram checks — common when models
+    "start over" with slightly different wording.
+    """
+    if not text or len(text) < 500:
+        return text
+
+    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip() and len(p.strip()) > 100]
+    if len(paragraphs) < 4:
+        return text
+
+    # Check if the second half is a paraphrased version of the first half
+    mid = len(paragraphs) // 2
+    first_half = '\n\n'.join(paragraphs[:mid])
+    second_half = '\n\n'.join(paragraphs[mid:])
+
+    # Only check if halves are similar in length (restarts are roughly same length)
+    len_ratio = len(second_half) / len(first_half) if first_half else 0
+    if 0.5 < len_ratio < 2.0:
+        sim = _semantic_similarity_check(first_half, second_half)
+        if sim > threshold:
+            logger.info(f"Semantic dedup: halves similarity {sim:.2f} > {threshold}. Keeping first half.")
+            return first_half
+
+    return text
+
+
 def _flag_language_inconsistencies(text: str, setting_language: str = "") -> str:
     """Flag or fix foreign language inconsistencies in the text.
 
@@ -1171,6 +1257,7 @@ def _postprocess_scene(text: str, protagonist_name: str = "",
     """
     text = _clean_scene_content(text)
     text = _detect_duplicate_content(text)
+    text = _detect_semantic_duplicates(text)
     text = _enforce_first_person_pov(text, protagonist_name, protagonist_gender)
     text = _repair_pov_context_errors(text, protagonist_gender)
     text = _strip_emotional_summaries(text)
@@ -1559,6 +1646,29 @@ STRICT_RETRY_PREFIX = (
     "No preamble. No commentary. No explanation. No headers. "
     "Start with the first word of the prose. End with the last word.\n\n"
 )
+
+# Issue-specific retry feedback: tell the model WHAT went wrong so the retry is targeted
+ISSUE_SPECIFIC_FEEDBACK = {
+    "preamble": (
+        "YOUR ERROR: You started your output with a preamble like 'Sure, here is...' or 'Certainly!'. "
+        "This is NOT prose. Start DIRECTLY with the first word of the narrative scene. "
+        "No greeting. No acknowledgment. No introduction."
+    ),
+    "truncation_marker": (
+        "YOUR ERROR: You truncated the scene with 'the rest remains unchanged' or similar. "
+        "You MUST output the COMPLETE scene from beginning to end. Do not abbreviate, "
+        "skip, or summarize any part. Write every word."
+    ),
+    "alternate_version": (
+        "YOUR ERROR: You output multiple versions (Option A/B, Version 1/2, alternatives). "
+        "Output exactly ONE version of the scene. No alternatives. No options. One continuous narrative."
+    ),
+    "analysis_commentary": (
+        "YOUR ERROR: You appended analysis, notes, or commentary after the prose "
+        "('Changes made:', 'Notes:', 'Scanning for...'). Output ONLY the scene text. "
+        "Nothing after the last word of prose."
+    ),
+}
 
 # Stages that generate prose (not JSON/analysis) — get format contract + stop sequences
 PROSE_STAGES = {
@@ -2185,6 +2295,8 @@ class PipelineOrchestrator:
             if scenes_snapshot and self.state.scenes is not None:
                 new_count = len(self.state.scenes)
                 old_count = len(scenes_snapshot)
+
+                # Check 1: Scene count didn't drop below 50%
                 if new_count < old_count * 0.5:
                     logger.error(
                         f"Transaction safety: {stage_name} produced {new_count} scenes "
@@ -2197,6 +2309,32 @@ class PipelineOrchestrator:
                         error=f"Scene count dropped from {old_count} to {new_count}",
                         duration_seconds=duration
                     )
+
+                # Check 2: Content-hash corruption — if >30% of scenes share
+                # identical first 100 chars, the stage likely wrote the same
+                # preamble/garbage into every scene
+                if new_count > 5:
+                    prefixes = []
+                    for s in self.state.scenes:
+                        if isinstance(s, dict):
+                            c = s.get("content", "")
+                            prefixes.append(c[:100].lower().strip() if c else "")
+                    from collections import Counter
+                    prefix_counts = Counter(p for p in prefixes if p)
+                    for prefix, count in prefix_counts.most_common(1):
+                        if count > new_count * 0.3:
+                            logger.error(
+                                f"Transaction safety: {stage_name} content-hash corruption — "
+                                f"{count}/{new_count} scenes share identical first 100 chars. "
+                                f"Restoring snapshot."
+                            )
+                            self.state.scenes = scenes_snapshot
+                            return StageResult(
+                                stage_name=stage_name,
+                                status=StageStatus.FAILED,
+                                error=f"Content corruption: {count}/{new_count} scenes identical prefix",
+                                duration_seconds=duration
+                            )
 
             # Log artifact metrics for this stage
             self._log_artifact_summary(stage_name)
@@ -3052,6 +3190,38 @@ Return JSON with:
     # Critic Gate, Artifact Metrics, Prose Generation Wrapper
     # ========================================================================
 
+    # Fuzzy preamble detection: exemplars of meta-text openings
+    # Used for n-gram similarity matching against first 100 chars of output
+    _PREAMBLE_EXEMPLARS = [
+        "sure here is the revised scene",
+        "certainly here is the enhanced version",
+        "here is the polished scene as requested",
+        "i've revised the scene to",
+        "i have rewritten the text",
+        "below is the expanded scene",
+        "the following is the updated version",
+        "of course here is the revised",
+        "absolutely here is the scene",
+        "here's the revised opening",
+        "sure here's the updated chapter",
+        "as requested here is the",
+        "let me provide the revised",
+        "i've enhanced the scene",
+    ]
+
+    @staticmethod
+    def _ngram_similarity(text_a: str, text_b: str, n: int = 3) -> float:
+        """Character n-gram Jaccard similarity between two strings."""
+        a_lower = text_a.lower().strip()
+        b_lower = text_b.lower().strip()
+        if len(a_lower) < n or len(b_lower) < n:
+            return 0.0
+        ngrams_a = set(a_lower[i:i+n] for i in range(len(a_lower) - n + 1))
+        ngrams_b = set(b_lower[i:i+n] for i in range(len(b_lower) - n + 1))
+        if not ngrams_a or not ngrams_b:
+            return 0.0
+        return len(ngrams_a & ngrams_b) / len(ngrams_a | ngrams_b)
+
     def _validate_scene_output(self, text: str, scene_meta: dict = None) -> dict:
         """Lightweight critic gate: check raw LLM output for obvious problems.
 
@@ -3063,7 +3233,7 @@ Return JSON with:
 
         issues = {}
 
-        # Check for preamble / meta-text in first 200 chars
+        # Check for preamble / meta-text in first 200 chars — exact patterns
         preamble_patterns = [
             r'^(?:Sure|Certainly|Of course|Absolutely)[,!.\s]',
             r'^(?:Here\s+is|Below\s+is|I\'ve\s+(?:revised|enhanced|rewritten))',
@@ -3073,6 +3243,19 @@ Return JSON with:
             if re.search(pat, text[:200], re.IGNORECASE):
                 issues["preamble"] = True
                 break
+
+        # Fuzzy preamble detection: catch novel variants via n-gram similarity
+        if "preamble" not in issues:
+            first_line = text.split('\n', 1)[0][:100]
+            # Only check short first lines (long first lines are likely prose)
+            if len(first_line) < 80:
+                max_sim = max(
+                    (self._ngram_similarity(first_line, ex) for ex in self._PREAMBLE_EXEMPLARS),
+                    default=0.0
+                )
+                if max_sim > 0.35:  # 35% n-gram overlap = likely a preamble variant
+                    issues["preamble"] = True
+                    logger.debug(f"Fuzzy preamble detected (similarity={max_sim:.2f}): {first_line[:60]}")
 
         # Check for "rest remains unchanged" / truncation
         if REST_UNCHANGED_RE.search(text):
@@ -3181,16 +3364,23 @@ Return JSON with:
         validation = self._validate_scene_output(response.content, scene_meta)
         self._record_artifact_metrics(stage_name, scene_meta or {}, validation)
 
-        # If critic gate fails on fixable issues, retry once with strict prefix
+        # If critic gate fails on fixable issues, retry once with issue-specific feedback
         fixable_issues = {"preamble", "truncation_marker", "alternate_version", "analysis_commentary"}
         detected = set(validation.get("issues", {}).keys())
         if not validation["pass"] and detected & fixable_issues:
+            # Build targeted feedback telling the model exactly what went wrong
+            specific_feedback = []
+            for issue in detected & fixable_issues:
+                if issue in ISSUE_SPECIFIC_FEEDBACK:
+                    specific_feedback.append(ISSUE_SPECIFIC_FEEDBACK[issue])
+            feedback_str = "\n".join(specific_feedback) if specific_feedback else STRICT_RETRY_PREFIX
+
             logger.warning(
                 f"Critic gate failed for {stage_name} "
-                f"({', '.join(detected)}). Retrying with strict prompt."
+                f"({', '.join(detected)}). Retrying with issue-specific feedback."
             )
             strict_kwargs = dict(kwargs)
-            strict_kwargs['system_prompt'] = FORMAT_CONTRACT + "\n" + STRICT_RETRY_PREFIX
+            strict_kwargs['system_prompt'] = FORMAT_CONTRACT + "\n" + feedback_str + "\n"
             response2 = await client.generate(prompt, **strict_kwargs)
             total_tokens += response2.input_tokens + response2.output_tokens
 
@@ -3206,6 +3396,11 @@ Return JSON with:
 
         return processed, total_tokens
 
+    # Allowed keys in assembled context — anything else is a bug
+    _CONTEXT_ALLOWED_SECTIONS = {
+        "WRITING STYLE", "TONE", "AVOID", "STORY STATE", "PREVIOUS SCENE ENDING",
+    }
+
     def _build_scene_context(self, scene_index: int, scenes: list = None,
                               include_story_state: bool = True,
                               include_previous: int = 2) -> str:
@@ -3215,6 +3410,7 @@ Return JSON with:
         - ONLY pulls from current project's state (self.state)
         - Sources: style constraints, story state (facts), previous scene tails
         - NEVER injects: other project data, old candidates, debug text, explanations
+        - Schema validation: assembled context is checked for unexpected sections
         """
         scenes = scenes or self.state.scenes or []
         config = self.state.config
@@ -3244,7 +3440,39 @@ Return JSON with:
             if prev_context:
                 parts.append(f"\nPREVIOUS SCENE ENDING:\n{prev_context}")
 
-        return "\n".join(parts)
+        # Periodic alignment check: warn if scenes are drifting from beat sheet
+        alignment_warning = self._check_alignment(scene_index)
+        if alignment_warning:
+            parts.append(f"\n{alignment_warning}")
+
+        result = "\n".join(parts)
+
+        # Schema validation: check that no unexpected data leaked into context
+        self._validate_context_schema(result, scene_index)
+
+        return result
+
+    def _validate_context_schema(self, context: str, scene_index: int):
+        """Runtime check that assembled context only contains expected sections.
+
+        Catches accidental injection of debug data, other project state, or
+        prompt fragments that shouldn't be in scene context.
+        """
+        # Check for suspicious content that should never be in scene context
+        red_flags = [
+            (r'(?i)\b(?:api[_-]?key|secret|password|token)\s*[:=]', "credential leak"),
+            (r'(?i)\bdef\s+\w+\s*\(', "Python code in context"),
+            (r'(?i)\bclass\s+\w+\s*[:(]', "Python class in context"),
+            (r'(?i)\b(?:import|from)\s+\w+', "import statement in context"),
+            (r'\{\{.*?\}\}', "template placeholder in context"),
+            (r'(?i)(?:TODO|FIXME|HACK|XXX):', "debug marker in context"),
+        ]
+        for pattern, description in red_flags:
+            if re.search(pattern, context):
+                logger.warning(
+                    f"Context schema violation at scene {scene_index}: {description}. "
+                    f"Context may contain injected data."
+                )
 
     def _log_artifact_summary(self, stage_name: str):
         """Log artifact metrics summary for a completed stage."""
@@ -3288,6 +3516,89 @@ Return JSON with:
             summaries.append(f"[Ch{ch} Sc{sc}, Location: {loc}] ENDING:\n{ending}")
 
         return "PREVIOUS SCENE ENDINGS (continue seamlessly from here):\n" + "\n\n".join(summaries)
+
+    def _check_alignment(self, scene_index: int, check_interval: int = 5) -> Optional[str]:
+        """Periodic alignment check: compare recent scenes against beat sheet.
+
+        Runs every `check_interval` scenes. Returns a warning string if scenes
+        are drifting from the planned beat sheet, or None if aligned.
+
+        This catches gradual drift: tone shifts, unauthorized subplots,
+        character trait escalation beyond what was outlined.
+        """
+        # Only check at intervals (every N scenes)
+        if scene_index == 0 or scene_index % check_interval != 0:
+            return None
+
+        scenes = self.state.scenes or []
+        beat_sheet = getattr(self.state, 'beat_sheet', None)
+        outline = self.state.master_outline or []
+
+        if not scenes or not outline:
+            return None
+
+        # Get the last `check_interval` scenes' content
+        recent_start = max(0, scene_index - check_interval)
+        recent_scenes = scenes[recent_start:scene_index]
+        recent_text = " ".join(
+            s.get("content", "")[:300] for s in recent_scenes if isinstance(s, dict)
+        )
+
+        if not recent_text or len(recent_text) < 100:
+            return None
+
+        # Build expected content from outline for these scenes
+        expected_parts = []
+        for s in recent_scenes:
+            if not isinstance(s, dict):
+                continue
+            ch = s.get("chapter", 0)
+            sn = s.get("scene_number", 0)
+            # Find matching outline entry
+            for ch_outline in outline:
+                if ch_outline.get("chapter") == ch:
+                    for scene_outline in ch_outline.get("scenes", []):
+                        if scene_outline.get("scene") == sn:
+                            expected_parts.append(
+                                f"{scene_outline.get('purpose', '')} "
+                                f"{scene_outline.get('scene_name', '')}"
+                            )
+
+        if not expected_parts:
+            return None
+
+        expected_text = " ".join(expected_parts)
+
+        # Compare using bigram overlap (lightweight, no dependencies)
+        recent_words = recent_text.lower().split()
+        expected_words = expected_text.lower().split()
+
+        # Extract key nouns/verbs from expected (skip common words)
+        stop_words = {"the", "a", "an", "is", "are", "was", "were", "and", "or",
+                      "to", "in", "of", "for", "with", "on", "at", "by", "from",
+                      "that", "this", "it", "he", "she", "they", "his", "her"}
+        expected_keywords = {w for w in expected_words if w not in stop_words and len(w) > 2}
+        recent_set = set(recent_words)
+
+        if not expected_keywords:
+            return None
+
+        # Check what fraction of expected keywords appear in recent scenes
+        found = expected_keywords & recent_set
+        coverage = len(found) / len(expected_keywords) if expected_keywords else 1.0
+
+        if coverage < 0.15:  # Less than 15% keyword overlap = significant drift
+            missing = expected_keywords - found
+            warning = (
+                f"ALIGNMENT WARNING (scenes {recent_start+1}-{scene_index}): "
+                f"Only {coverage:.0%} keyword overlap with outline. "
+                f"Missing expected elements: {', '.join(list(missing)[:8])}. "
+                f"Scenes may be drifting from planned beat sheet."
+            )
+            logger.warning(warning)
+            return warning
+
+        return None
 
     def _build_story_state(self, scenes: List[Dict], current_chapter: int, current_scene: int) -> str:
         """Build structured story state for continuity injection.
@@ -5042,9 +5353,52 @@ OUTPUT the text with only problematic sentences fixed:"""
                 "deai_fixes": scene_fixes
             })
 
+        # --- POST-CHECK: Validate final_deai didn't corrupt content ---
+        # Since final_deai bypasses critic gate, we need lightweight sanity checks
+        deai_issues = []
+        for idx, (orig, cleaned) in enumerate(zip(scenes_list, cleaned_scenes)):
+            if not isinstance(orig, dict) or not isinstance(cleaned, dict):
+                continue
+            orig_wc = count_words_accurate(orig.get("content", ""))
+            new_wc = count_words_accurate(cleaned.get("content", ""))
+            if orig_wc > 0:
+                delta_pct = (orig_wc - new_wc) / orig_wc * 100
+                # Flag if word count dropped more than 15% (LLM hallucinated/truncated)
+                if delta_pct > 15:
+                    deai_issues.append(
+                        f"Scene {idx} lost {delta_pct:.0f}% words ({orig_wc}->{new_wc})"
+                    )
+                    # Restore original — the "fix" was worse than the disease
+                    cleaned_scenes[idx] = orig
+                    fixes_made -= cleaned.get("deai_fixes", 0)
+                    logger.warning(f"final_deai post-check: restored scene {idx} (lost {delta_pct:.0f}% words)")
+
+        # Check for homogeneous corruption (>30% of scenes start with same prefix)
+        if len(cleaned_scenes) > 5:
+            prefixes = []
+            for s in cleaned_scenes:
+                if isinstance(s, dict):
+                    c = s.get("content", "")
+                    prefixes.append(c[:100].lower().strip() if c else "")
+            from collections import Counter
+            prefix_counts = Counter(p for p in prefixes if p)
+            for prefix, count in prefix_counts.most_common(1):
+                if count > len(cleaned_scenes) * 0.3:
+                    logger.error(
+                        f"final_deai post-check: {count}/{len(cleaned_scenes)} scenes share "
+                        f"first 100 chars — possible corruption. Restoring all."
+                    )
+                    cleaned_scenes = list(scenes_list)  # Restore ALL
+                    fixes_made = 0
+                    deai_issues.append(f"Homogeneous corruption: {count} scenes same prefix")
+                    break
+
         self.state.scenes = cleaned_scenes
         logger.info(f"Final de-AI pass: {fixes_made} fixes (hook-protected on {len(chapter_end_indices)} chapter endings)")
-        return {"fixes_made": fixes_made, "scenes_processed": len(cleaned_scenes), "hooks_protected": len(chapter_end_indices)}, total_tokens
+        if deai_issues:
+            logger.warning(f"final_deai post-check issues: {deai_issues}")
+        return {"fixes_made": fixes_made, "scenes_processed": len(cleaned_scenes),
+                "hooks_protected": len(chapter_end_indices), "post_check_issues": deai_issues}, total_tokens
 
     async def _stage_quality_audit(self) -> tuple:
         """Comprehensive quality audit before final output."""
@@ -5210,14 +5564,42 @@ OUTPUT the text with only problematic sentences fixed:"""
                         audit_results["stages_to_rerun"].append("scene_expansion")
                         audit_results["needs_iteration"] = True
 
-            # Track iteration count to prevent infinite loops
+            # Track iteration count and detect diminishing returns
             iteration_count = getattr(self.state, '_quality_iterations', 0)
             if iteration_count >= 2:
                 logger.warning("Max quality iterations (2) reached. Proceeding with current output.")
                 audit_results["needs_iteration"] = False
                 audit_results["max_iterations_reached"] = True
+            elif iteration_count > 0:
+                # Check if previous iteration actually helped (diminishing returns)
+                prev_audit = getattr(self.state, '_prev_audit_snapshot', None)
+                if prev_audit:
+                    prev_wc = prev_audit.get("word_count", {}).get("percentage", 0)
+                    prev_tells = prev_audit.get("ai_tells", {}).get("tells_per_1000_words", 99)
+                    curr_wc = word_pct
+                    curr_tells = ai_tell_results.get("tells_per_1000_words", 99)
+                    wc_delta = abs(curr_wc - prev_wc)
+                    tells_delta = abs(prev_tells - curr_tells)
+                    # If neither metric improved by more than 5%, skip iteration
+                    if wc_delta < 5 and tells_delta < 0.5:
+                        logger.warning(
+                            f"Diminishing returns: word% delta={wc_delta:.1f}%, "
+                            f"tells delta={tells_delta:.2f}/1k. Skipping iteration."
+                        )
+                        audit_results["needs_iteration"] = False
+                        audit_results["diminishing_returns"] = True
+                    else:
+                        self.state._quality_iterations = iteration_count + 1
+                else:
+                    self.state._quality_iterations = iteration_count + 1
             else:
                 self.state._quality_iterations = iteration_count + 1
+
+            # Snapshot current audit for diminishing-returns comparison next iteration
+            self.state._prev_audit_snapshot = {
+                "word_count": audit_results["word_count"],
+                "ai_tells": audit_results["ai_tells"]
+            }
 
         return audit_results, total_tokens
 

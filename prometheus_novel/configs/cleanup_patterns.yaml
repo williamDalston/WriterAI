@@ -1,0 +1,30 @@
+# Configurable cleanup patterns for scene content
+# Built-ins always present; YAML adds more.
+# Use disabled_builtins to suppress specific built-in patterns per project.
+
+inline_truncate_markers:
+  - "the rest remains unchanged"
+  - "rest of the scene remains unchanged"
+  - "rest of the chapter remains unchanged"
+  - "everything after this remains unchanged"
+  - "no further changes were made"
+
+inline_preamble_markers:
+  - "certainly! here is"
+  - "here is the revised"
+  - "below is the updated"
+  - "as requested, here is"
+  - "sure! here's"
+
+# Extra inline patterns (regex) merged into Phase 3 removal
+regex_patterns:
+  - name: meta_opening
+    pattern: "(?is)^\\s*(certainly|sure|as requested).{0,40}(here is|below is).{0,60}(revised|updated).*$"
+
+# Suppress specific built-in patterns that cause false positives for your project.
+# List pattern substrings here; any built-in pattern containing the substring will be skipped.
+# Example:
+#   disabled_builtins:
+#     - "Physical beats"     # Our prose legitimately uses this phrase
+#     - "hook can be"        # False positive in dialogue
+disabled_builtins: []
