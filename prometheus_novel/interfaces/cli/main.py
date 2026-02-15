@@ -242,44 +242,107 @@ def cmd_generate(args):
     print_info(f"Genre: {config.get('genre', 'unknown')}")
     print_info(f"Budget: ${config.get('budget_usd', 100)}")
 
-    # Define pipeline stages
-    stages = [
-        ("high_concept", "Generating high concept..."),
-        ("world_building", "Building world..."),
-        ("beat_sheet", "Creating beat sheet..."),
-        ("character_profiles", "Developing characters..."),
-        ("scene_planning", "Planning scenes..."),
-        ("drafting", "Drafting scenes..."),
-        ("self_refinement", "Self-refining content..."),
-        ("continuity_audit", "Auditing continuity..."),
-        ("polish", "Final polish...")
-    ]
+    # Set up LLM clients (same pattern as web dashboard)
+    from prometheus_novel.prometheus_lib.llm.clients import get_client, is_ollama_model
+    from prometheus_novel.stages.pipeline import PipelineOrchestrator
 
-    # Run pipeline (simulated for now)
-    print(f"\n{Colors.CYAN}Running 12-Stage Pipeline{Colors.END}\n")
+    model_defaults = config.get("model_defaults", {})
+    api_model = model_defaults.get("api_model", "qwen2.5:7b")
+    critic_model = model_defaults.get("critic_model", api_model)
+    fallback_model = model_defaults.get("fallback_model", api_model)
 
-    for i, (stage_name, message) in enumerate(stages, 1):
-        print(f"  [{i}/{len(stages)}] {message}", end="", flush=True)
+    llm_clients = {}
+    default_client = get_client(api_model)
+    llm_clients["gpt"] = default_client
+    llm_clients["claude"] = get_client(critic_model)
+    llm_clients["gemini"] = get_client(fallback_model)
 
-        # Simulate stage execution
-        asyncio.run(run_stage(stage_name, config))
+    local_tag = "Ollama" if is_ollama_model(api_model) else "API"
+    print_info(f"Model: {api_model} ({local_tag})")
+    if critic_model != api_model:
+        print_info(f"Critic: {critic_model}")
+    if fallback_model != api_model:
+        print_info(f"Fallback: {fallback_model}")
 
-        print(f" {Colors.GREEN}Done{Colors.END}")
+    project_path = config_path.parent
+    orchestrator = PipelineOrchestrator(
+        project_path,
+        llm_client=default_client,
+        llm_clients=llm_clients
+    )
 
-    print_success("\nNovel generation complete!")
+    # Determine stage range
+    all_stages = orchestrator.STAGES
+    stages_to_run = None  # None = all stages (default)
 
-    # Output location
-    project_dir = config_path.parent
-    output_dir = project_dir / "output"
-    print_info(f"Output saved to: {output_dir}")
+    if args.stage:
+        # Single stage
+        if args.stage not in all_stages:
+            print_error(f"Unknown stage: {args.stage}")
+            print_info(f"Available stages: {', '.join(all_stages)}")
+            return 1
+        stages_to_run = [args.stage]
+        print_info(f"Running single stage: {args.stage}")
+
+    elif args.start_stage or args.end_stage:
+        # Stage range
+        start = args.start_stage or all_stages[0]
+        end = args.end_stage or all_stages[-1]
+
+        if start not in all_stages:
+            print_error(f"Unknown start stage: {start}")
+            print_info(f"Available stages: {', '.join(all_stages)}")
+            return 1
+        if end not in all_stages:
+            print_error(f"Unknown end stage: {end}")
+            print_info(f"Available stages: {', '.join(all_stages)}")
+            return 1
+
+        start_idx = all_stages.index(start)
+        end_idx = all_stages.index(end)
+        if start_idx > end_idx:
+            print_error(f"Start stage '{start}' comes after end stage '{end}'")
+            return 1
+
+        stages_to_run = all_stages[start_idx:end_idx + 1]
+        print_info(f"Running stages {start} → {end} ({len(stages_to_run)} stages)")
+
+    else:
+        print_info(f"Running full {len(all_stages)}-stage pipeline")
+
+    if args.resume:
+        print_info("Resuming from last checkpoint")
+
+    # List stages if --list-stages
+    if getattr(args, 'list_stages', False):
+        print(f"\n{Colors.CYAN}Available stages ({len(all_stages)}):{Colors.END}\n")
+        for i, s in enumerate(all_stages, 1):
+            print(f"  {i:2d}. {s}")
+        return 0
+
+    # Run
+    print(f"\n{Colors.CYAN}Starting pipeline...{Colors.END}\n")
+
+    async def _run():
+        return await orchestrator.run(stages=stages_to_run, resume=args.resume)
+
+    try:
+        final_state = asyncio.run(_run())
+    except KeyboardInterrupt:
+        print_warning("\nPipeline interrupted. State saved at last checkpoint.")
+        return 1
+    except Exception as e:
+        print_error(f"Pipeline failed: {e}")
+        return 1
+
+    print_success("\nPipeline complete!")
+    if hasattr(final_state, 'total_tokens'):
+        print_info(f"Total tokens: {final_state.total_tokens:,}")
+    if hasattr(final_state, 'total_cost_usd'):
+        print_info(f"Total cost: ${final_state.total_cost_usd:.4f}")
+    print_info(f"Output: {project_path / 'output'}")
 
     return 0
-
-
-async def run_stage(stage_name: str, config: dict):
-    """Run a single pipeline stage."""
-    # Placeholder - would invoke actual stage logic
-    await asyncio.sleep(0.5)  # Simulate work
 
 
 def cmd_compile(args):
@@ -472,7 +535,10 @@ def main():
     gen_parser = subparsers.add_parser("generate", help="Generate novel from project")
     gen_parser.add_argument("--config", "-c", required=True, help="Path to project config.yaml")
     gen_parser.add_argument("--all", action="store_true", help="Run all stages")
-    gen_parser.add_argument("--stage", help="Run specific stage")
+    gen_parser.add_argument("--stage", help="Run a single specific stage")
+    gen_parser.add_argument("--start-stage", dest="start_stage", help="Start from this stage (inclusive)")
+    gen_parser.add_argument("--end-stage", dest="end_stage", help="Stop after this stage (inclusive)")
+    gen_parser.add_argument("--list-stages", dest="list_stages", action="store_true", help="List all pipeline stages and exit")
     gen_parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint")
 
     # compile command

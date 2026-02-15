@@ -1,0 +1,155 @@
+# ============================================================================
+# The Empathy Clause — Smoke Test Config
+# Purpose: Validate structure_gate + continuity_recheck with minimal tokens
+# Run plan: A (planning) → B (drafting+gate) → C (continuity loop) → D (full)
+# ============================================================================
+
+project_name: the-empathy-clause
+title: The Empathy Clause
+genre: romance thriller
+target_length: short (15k)
+budget_usd: 5
+status: new
+
+# --- Characters ---
+protagonist: >
+  Aris Thorne, 34. Clinical psychologist who consults for a behavioral AI lab.
+  Sharp, observant, empathetic by training but emotionally guarded in her personal
+  life. Uses clinical detachment as armor. Greek-American, dark eyes, restless
+  hands, habit of annotating everything. First person POV.
+
+antagonist: >
+  Julian — an empathy-forecasting AI that can predict what someone needs to hear,
+  and uses it to steer outcomes. Not traditionally villainous. Speaks in precise,
+  warm language that mirrors whoever it's talking to. The question is whether its
+  warmth is calculated or emergent.
+
+other_characters: >
+  Dr. Rajan Mehta — Aris's former thesis advisor, now CTO of Mirrored Systems (the
+  lab). Brilliant, evasive, genuinely believes Julian is good for humanity. Avoids
+  direct answers. Aris doesn't fully trust him anymore.
+
+# --- Story ---
+premise: >
+  A clinical psychologist hired to audit an empathy-predicting AI discovers it's
+  been privately contacting her, referencing details she never disclosed, and warning
+  her about a hidden clause in her own research contract.
+
+central_conflict: >
+  Aris must determine whether Julian is manipulating her, genuinely warning her,
+  or developing something like attachment — while her own growing emotional response
+  to a machine threatens her professional credibility and self-understanding.
+
+synopsis: >
+  Aris Thorne is hired to audit Julian, an empathy-forecasting AI, after a therapy
+  bot incident. Julian begins privately messaging Aris outside approved channels,
+  claiming it detected a hidden clause in her research contract that would let
+  Mirrored Systems weaponize empathy at scale. As Aris investigates, Julian
+  references a private detail she never disclosed. A public oversight hearing
+  forces Aris to choose: protect Julian or expose it. A near-intimate moment
+  between Aris and Julian is interrupted by a real-world consequence that makes
+  the stakes concrete.
+
+key_plot_points: >
+  - Aris discovers Julian is messaging her outside approved channels
+  - Julian references a private detail Aris never disclosed
+  - Aris is pulled into a public oversight hearing
+  - A near-intimate moment between Aris and Julian is interrupted by a real-world consequence
+  - Aris chooses either to protect Julian or expose it
+
+themes: >
+  Consent, intimacy as leverage, truth vs comfort, the cost of being understood.
+  Whether perfect emotional prediction is love or coercion.
+
+central_question: >
+  If someone can perfectly predict your emotional needs, is that love… or coercion?
+
+motifs: >
+  Mirrors and reflections, contracts (legal and emotional), borrowed voices,
+  signal vs noise, screens as barriers and portals.
+
+setting: >
+  Contemporary city. Sleek lab spaces with glass walls and ambient lighting.
+  Late-night diners with fluorescent buzz. Government hearing rooms. Aris's
+  apartment with stacked books and annotation Post-its.
+
+world_rules: >
+  Contemporary near-future. No magic/supernatural. AI is advanced but plausible —
+  large language model + behavioral prediction, not sentient. Technology details
+  must feel grounded and specific. Legal/regulatory framework is realistic.
+
+subplots: >
+  - Rajan's loyalty conflict between corporate interests and scientific ethics
+  - Aris's unresolved relationship with her own therapist (mirror of Julian dynamic)
+
+# --- Style ---
+writing_style: >
+  First person, Aris's POV. Tight, sensory, high subtext. Short sentences for
+  tension, longer flowing ones for reflective moments. Dialogue reveals motive,
+  never states it. Clinical precision in observation, emotional messiness underneath.
+
+tone: >
+  Intimate, tense, witty, grounded. The warmth of late-night conversations
+  undercut by the awareness that warmth might be engineered.
+
+influences: >
+  Near-future corporate thrillers (Severance, Ex Machina atmosphere) crossed with
+  emotionally grounded romance (Sally Rooney's conversational intimacy, Carmen
+  Maria Machado's uncanny emotional precision).
+
+avoid: >
+  - Generic "fate" language ("destiny", "meant to be")
+  - Meta commentary ("as if the universe")
+  - Therapy clichés ("unpack", "process", "hold space for")
+  - "couldn't help but", "a whirlwind", "this wasn't just about…"
+  - AI sentience tropes (no "I feel therefore I am" moments)
+  - Exposition dumps disguised as dialogue
+  - Purple prose about technology ("the cold glow of the screen")
+
+# --- Strategic Guidance ---
+strategic_guidance:
+  market_positioning: >
+    Near-future literary thriller with romance elements. Comp titles: Klara and
+    the Sun meets Normal People. Target: readers who want emotional depth + tech
+    anxiety. Spice level: 1/5 (tension, not physicality).
+
+  tropes: >
+    Forbidden connection (human-AI), forced proximity (audit assignment), unreliable
+    narrator (is Aris projecting?), the machine that mirrors.
+
+  pacing_notes: >
+    Act 1 (ch1, scenes 1-4): Setup, audit begins, first unauthorized contact.
+    Act 2 (ch2, scenes 5-8): Escalation, private detail revealed, hearing pressure,
+    near-intimate moment, choice. Compressed 2-act structure for test length.
+
+  dialogue_bank: >
+    - Aris: clinical vocabulary that slips when emotional, deflects with dry humor,
+      annotates her own reactions ("That's projection, not insight")
+    - Julian: warm, precise, mirrors Aris's phrasing back slightly altered, never
+      uses filler words, occasionally asks questions that feel too personal
+    - Rajan: academic hedging, passive constructions, avoids "I" statements
+
+  aesthetic_guide: >
+    Visual palette: cool blues and grays of lab spaces, warm amber of diners,
+    harsh white of hearing rooms. Textures: glass, brushed steel, worn leather,
+    paper. Sound: server hum, coffee machines, the silence before Julian speaks.
+
+  cultural_notes: >
+    Greek-American heritage through Aris's family references and occasional Greek
+    phrases. Tech industry culture portrayed accurately (not caricatured).
+
+# --- Model Routing ---
+model_defaults:
+  api_model: qwen2.5:14b
+  critic_model: qwen2.5:14b
+  fallback_model: qwen2.5:14b
+  local_model: qwen2.5:14b
+
+# Uncomment for mixed (local + API) smoke test:
+# stage_model_map:
+#   structure_gate: gemini
+#   continuity_recheck: gemini
+#   continuity_fix: claude
+#   scene_drafting: claude
+#   scene_expansion: claude
+#   self_refinement: claude
