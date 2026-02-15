@@ -18,10 +18,28 @@
 | Transaction safety with rollback | 6-check integrity validation with snapshot restore (includes forbidden-marker explosion) |
 | Prevent cross-run prose collision | Per-run nonce sentinel (`<END_PROSE_{hex}>`) |
 | Detect recycled language | Freshness score (bigram overlap against prior 3 scenes) |
-| Detect prompt injection in context | 5 injection patterns in schema validation |
-| Auto-fix validation errors | G→Pipeline feedback loop (postprocess + LLM rewrite) |
-| Track quality trends across runs | Cross-run JSONL metrics persistence + delta analysis |
+| Detect prompt injection in context | Two-factor detection: injection phrase + structural cue (avoids false positives on villain dialogue) |
+| Auto-fix validation errors | G→Pipeline feedback loop (prioritized by severity, with entity preservation guard) |
+| Track quality trends across runs | Cross-run JSONL metrics + config fingerprint + delta analysis |
 | Hot-configurable DE-AI patterns | `configs/surgical_replacements.yaml` (loaded at runtime) |
+| Prevent aggressive LLM rewrites | Per-paragraph word count guard in final_deai middle section |
+| Halt cascading failures | Circuit breaker: 3 consecutive stage failures halts pipeline |
+| Track per-stage meta-text rate | Forbidden marker rate metric after each prose stage |
+| Precise pattern suppression | `disabled_builtins` by exact pattern_name (with legacy substring fallback) |
+| Preserve entities on rewrite | Entity intersection check: protagonist + >=2 shared named entities required |
+| Filter freshness false positives | Content-word bigrams (stopwords + character names filtered) |
+| Salvage meta-marker awareness | Active salvage flags restored content containing hard meta-markers for regen |
+| Configurable defense thresholds | All hardcoded thresholds overridable via `config.yaml defense.thresholds` namespace |
+| Budget guards | Max retries/stage, max rewritten scenes, defense cost ratio — prevents runaway defense spending |
+| Prose integrity checksums | SHA256 hashes at raw and clean stages per scene (`content_hash_raw`, `content_hash_clean`) |
+| Extended quote masking | Italic thoughts, block quotes, bracketed messages excluded from POV/cleanup passes |
+| Foreign word whitelist | Per-project whitelist in config + sentence-length guard (single words preserved unless in foreign cluster) |
+| Sliding window semantic dedup | Non-overlapping window comparison replaces midpoint split — catches mid-scene restarts |
+| Cleanup audit trail | Cleanup morgue JSONL logs every deletion with trigger pattern, context, and phase |
+| Name-aware pronoun guard | Per-paragraph He/She→I skips paragraphs mentioning other same-gender characters |
+| Model drift alarm | Preamble/meta-text rate jump >50% AND >3 absolute triggers alarm with config fingerprint |
+| YAML config validation | Schema validation on cleanup_patterns and surgical_replacements load (keys + regex compilation) |
+| Feedback loop retention guard | ≥80% word count retention required for LLM rewrites (up from 50%) |
 
 **Non-goals:** No genre policing unless config opts in. No heavy-handed rewriting -- cleanup truncates; validation flags.
 
@@ -30,7 +48,7 @@
 ## 2. Pipeline Flow (21 stages, 7 phases)
 
 ```
-PLANNING -> DRAFTING -> REFINEMENT -> POLISH -> VALIDATION -> OUTPUT -> FEEDBACK
+PLANNING -> DRAFTING -> CONTINUITY -> REFINEMENT -> POLISH -> DE-AI -> VALIDATION
 ```
 
 | Phase | Stages |
@@ -41,7 +59,7 @@ PLANNING -> DRAFTING -> REFINEMENT -> POLISH -> VALIDATION -> OUTPUT -> FEEDBACK
 | **Refinement** (3) | voice_human_pass, continuity_audit_2, continuity_fix_2 |
 | **Polish** (3) | dialogue_polish, prose_polish, chapter_hooks |
 | **DE-AI** (1) | final_deai |
-| **Validation** (1) | quality_audit, output_validation |
+| **Validation** (2) | quality_audit, output_validation (includes G→Pipeline feedback loop as sub-step) |
 
 **Prose stages** (get FORMAT_CONTRACT + stop sequences):
 scene_drafting, scene_expansion, self_refinement, continuity_fix, voice_human_pass, continuity_fix_2, dialogue_polish, prose_polish, chapter_hooks, final_deai
@@ -63,10 +81,11 @@ ABSOLUTE RULES:
 - Output ONLY narrative prose
 - NEVER: "Certainly", "Here is", "Sure", headings, bullet points, commentary
 - NEVER: "The rest remains unchanged", alternatives, "[Scene continues...]"
-- End your output with <END_PROSE_{nonce}> on its own line when finished.
+- End your output with <END_PROSE_a3f1b2c9> on its own line when finished.
 ```
+(Where `a3f1b2c9` is the per-run nonce — a different hex string each time.)
 
-**Nonce sentinel:** Each pipeline run generates a unique 8-hex-char nonce via `secrets.token_hex(4)` (e.g. `a3f1b2c9`). The static `<END_PROSE>` is replaced with `<END_PROSE_{nonce}>` in the format contract, making the stop token unpredictable (won't appear in training data) and unique per run (prevents cross-run prose collisions). The postprocessor strips both static and nonce variants via regex `<END_PROSE(?:_[a-f0-9]+)?>`.
+**Nonce sentinel:** Each pipeline run generates a unique 8-hex-char nonce via `secrets.token_hex(4)`. The static `<END_PROSE>` in FORMAT_CONTRACT is replaced with `<END_PROSE_{nonce}>` (e.g. `<END_PROSE_a3f1b2c9>`), making the stop token unpredictable (won't appear in training data) and unique per run (prevents cross-run prose collisions). The postprocessor strips both static and nonce variants via regex `(?i)<END_PROSE(?:_[a-f0-9]+)?>`.
 
 **Override:** Stages can pass a custom `system_prompt`; otherwise the nonce-aware format contract is default.
 
@@ -80,7 +99,7 @@ ABSOLUTE RULES:
 
 | Token | Purpose |
 |-------|---------|
-| `\n<END_PROSE_{nonce}>` | **Primary nonce sentinel** -- unique per run, unpredictable |
+| `\n<END_PROSE_a3f1...>` | **Primary nonce sentinel** -- unique per run, unpredictable |
 | `\nCertainly! Here` | Blocks assistant-mode preamble restart |
 | `\nHere is the` | Blocks "Here is the revised..." |
 | `\nAs requested,` | Blocks assistant acknowledgment |
@@ -121,7 +140,7 @@ ABSOLUTE RULES:
 
 | Component | Purpose |
 |-----------|---------|
-| `_validate_context_schema()` | Runtime check for red flags: credentials, Python code, import statements, template placeholders, debug markers, **prompt injection attempts** (5 patterns: "ignore previous instructions", role injection, system override, context override, instruction reset). Logs warnings; does not block. |
+| `_validate_context_schema()` | Runtime check for red flags: credentials, Python code, import statements, template placeholders, debug markers, **prompt injection attempts** (two-factor detection: 5 injection phrases × 7 structural cues. Both present = ERROR (high-confidence injection). Phrase alone = WARNING (may be villain dialogue). Prevents false positives on "ignore him" type prose). Logs warnings; does not block. |
 | `_check_alignment()` | Every 5 scenes, compares scene content keywords against outline entries. Warns if <15% keyword overlap (scenes drifting from beat sheet). |
 | **Context hashing + origin stamps** | SHA256 hash (12-char truncated) of assembled context logged at DEBUG level with origin section names and char count. Enables tracing which context produced which scene output. |
 
@@ -191,7 +210,7 @@ This tells the model *exactly what went wrong* instead of repeating a generic wa
 **When:** After every prose generation (and retry, if any)
 **Order:** Sentinel strip -> Clean -> Duplicate detect -> Semantic dedup -> POV enforce -> POV repair -> Strip emotional summaries -> Limit tics -> Language fix
 
-#### F1: `_clean_scene_content()` -- 5 phases
+#### F1: `_clean_scene_content()` -- multi-phase cleanup
 
 | Phase | Purpose |
 |-------|---------|
@@ -199,13 +218,13 @@ This tells the model *exactly what went wrong* instead of repeating a generic wa
 | **1.5** | **Truncate** at "rest remains unchanged" (and YAML markers). Keep text before; drop alternate. |
 | **1.6** | **Truncate** at mid-text LLM preamble ("Certainly! Here is the revised opening...") if prefix >= 400 chars or >= 8 lines |
 | **2** | Truncate at tail markers (---, ***, "Changes made:", etc.) |
-| **2.5** | **Salvage guardrail (active)**: If remaining text < 150 words or < 2 paragraphs, log warning. If < 50 words **and the original pre-cleanup input had 3x more words (≥50)**, automatically **restores the pre-cleanup input** (over-stripping is worse than leaving artifacts). Otherwise logs as "salvage failed". |
+| **2.5** | **Salvage guardrail (active + meta-aware)**: If remaining text < 150 words or < 2 paragraphs, log warning. If < 50 words **and the original pre-cleanup input had 3x more words (≥50)**, automatically **restores the pre-cleanup input**. Before restoring, checks for **hard meta-markers** (preambles, "rest unchanged", "changes made:", "here is the revised") — if found, restores but flags `[contains meta-markers, needs regen]` so downstream feedback loop can prioritize it. |
 | **3** | Inline removal (CURRENT SCENE:, Physical beats:, XML tags, etc.) |
 | **4** | Whitespace cleanup |
 
 **YAML extension:** `configs/cleanup_patterns.yaml` adds `inline_truncate_markers`, `inline_preamble_markers`, `regex_patterns`.
 
-**`disabled_builtins`:** YAML list of substring matches. Any built-in pattern containing a listed substring is skipped for that project. Prevents false positives (e.g., if your prose legitimately uses "Physical beats").
+**`disabled_builtins`:** YAML list of exact pattern names (preferred) or substring matches (legacy fallback). Each built-in pattern has a unique name (e.g., `beat_sheet_physical`, `rest_unchanged`, `hook_instruction_bleed`). Listing a pattern_name in `disabled_builtins` skips that exact pattern. Substring matching still works as fallback for backwards compatibility.
 
 #### F2: `_detect_duplicate_content()`
 
@@ -215,28 +234,31 @@ Three detection layers:
 2. **Suffix/prefix overlap:** Check if the last N words (N = 60, 40, or 25) appear earlier in the text. If so, truncate at the duplicate. Catches verbatim ending repetition.
 3. **N-gram similarity dedup:** Paragraph-level Jaccard similarity (> 60% overlap = duplicate paragraph removed).
 
-#### F2b: `_detect_semantic_duplicates()`
+#### F2b: `_detect_semantic_duplicates()` — Sliding Window
 
 **When:** After duplicate detection, before POV enforcement.
 **Purpose:** Catch paraphrased restarts (same content rewritten slightly differently).
 
-- Splits text at paragraph midpoint.
+- **Sliding window approach (v5):** Builds non-overlapping windows of `WINDOW_SIZE` paragraphs (max 3, min 2). Compares each window against all previous non-overlapping windows. Non-overlapping stride prevents false positives from shared paragraph content.
 - Computes embedding cosine similarity (sentence-transformers `all-MiniLM-L6-v2` if available) or falls back to bigram Jaccard overlap.
-- Threshold: > 50% similarity = keep only first half.
+- Threshold: > 50% similarity = truncate at the start of the duplicate window.
 - **Minimum text length:** 500 chars (skip short scenes).
+- **Why sliding instead of midpoint:** Midpoint split only catches "restart from beginning" pattern. Sliding window catches mid-scene restarts, partial rewrites, and late-scene paraphrasing.
 
 #### F3: `_enforce_first_person_pov()`
 
 Gender-aware POV enforcement with three protection mechanisms:
 
-1. **Dialogue quote masking:** `_mask_quoted_dialogue()` replaces all text inside quotation marks ("..." and curly quotes) with `__DIALOGUE_N__` placeholders before any pronoun replacement. Preserves sentence-boundary punctuation after placeholders so subsequent patterns still match. Restores dialogue after all replacements.
+1. **Dialogue quote masking:** `_mask_quoted_dialogue()` replaces all text inside quotation marks ("..." and curly quotes), italic thoughts (`*...*`), block quotes (`> ...`), and bracketed messages (`[...]`) with `__DIALOGUE_N__` placeholders before any pronoun replacement. Preserves sentence-boundary punctuation after placeholders so subsequent patterns still match. Restores dialogue after all replacements.
 
 2. **Clause-level possessive guard:** `_safe_poss_replace()` checks 20 chars before each possessive match. Skips replacement if preceded by relative pronouns (`who`, `that`, `which`, etc.) or `of` -- prevents "the woman who had been his friend" from becoming "my friend".
 
-3. **Core replacements:**
+3. **Name-aware pronoun guard (v5):** POV replacement operates per-paragraph. Before replacing `He/She → I` in a paragraph, scans for other capitalized character names (excluding the protagonist and common caps like "The", "This"). If the paragraph mentions another same-gender character (e.g., "Viktor"), pronoun replacements are skipped for that paragraph to prevent "Viktor lunged. He swung" → "I swung" catastrophic errors.
+
+4. **Core replacements:**
    - `[Name] verb` -> `I verb` (always safe)
    - `[Name]'s body_part` -> `my body_part` (always safe)
-   - `He/She verb` -> `I verb` (gender-matched, sentence boundaries only)
+   - `He/She verb` -> `I verb` (gender-matched, sentence boundaries only, name-aware)
    - `his/her body_part` -> `my body_part` (gender-matched, with clause guard)
 
 #### F3b: `_repair_pov_context_errors()`
@@ -252,6 +274,7 @@ Gender-aware POV enforcement with three protection mechanisms:
 | P5: `I [verb] at/to me` | "I turned to face me" | -> "She turned" |
 | P6: `I followed my back` | "I followed my back through..." | -> "her back" |
 | P7: Markdown artifacts | "I felt **terrified**" | -> strip `**` and `*` |
+| **P8: Generic clause-level POV** | "She paused, my hand trembling" | -> "her hand trembling" (detects `She/He` + `my/My` in same sentence, replaces possessive to match third-person subject) |
 
 #### F4: `_strip_emotional_summaries()`, `_limit_tic_frequency()`, `_flag_language_inconsistencies()`
 
@@ -259,7 +282,10 @@ Gender-aware POV enforcement with three protection mechanisms:
   - **Single-sentence paragraphs:** If the entire paragraph is a summary pattern, remove it entirely.
   - **Anchor-based protection:** Before removing, checks the matched sentence for concrete anchors: sensory words (smell, taste, cold, etc.), concrete objects (door, rain, phone, etc.), action verbs (grabbed, slammed, fell, etc.), or proper nouns (real character/place names, excluding common words like "This", "Something", "Tonight"). Anchored sentences are kept -- they have real detail, not empty AI filler.
 - **Tics:** 30+ patterns (hair taming, jaw clenching, heart racing, warmth spreading, comfort zone, etc.). Limits each to max occurrences per scene (typically 1-2).
-- **Language:** Fixes wrong-language phrases (e.g. Spanish in Italian setting).
+- **Language (v5):** Fixes wrong-language phrases (e.g. Spanish in Italian setting). Now with:
+  - **Foreign word whitelist:** Per-project list from `config.yaml defense.foreign_word_whitelist` — whitelisted words/phrases are never touched (e.g., "khachapuri", "amore mio").
+  - **Sentence-length guard:** Single foreign words (1 token) only replaced if surrounded by 2+ other foreign-looking words (accented characters). Multi-word patterns (2+ words like "Mi amor") always apply.
+  - Quoted text already protected upstream by dialogue masking.
 
 ---
 
@@ -300,11 +326,16 @@ Validation: 2 error(s), 1 warning(s)
 **G→Pipeline Feedback Loop** (`_validation_feedback_loop()`):
 
 During `output_validation`, scene validation runs automatically. For scenes with `META_TEXT` errors:
-1. First attempt: re-run through `_postprocess_scene()` (no LLM cost)
-2. If still dirty: request clean rewrite from LLM with format contract
-3. Accept rewrite only if it retains ≥50% of original word count (prevents empty rewrites)
-4. Max 5 scenes per feedback loop (bounds cost)
-5. Results stored in `validation_report["feedback_loop"]`
+1. **Prioritization:** Scenes sorted by error count (most errors first), then by index (early chapters first)
+2. **Systemic flag:** If >5 scenes need fixes, logs `SYSTEMIC` error indicating upstream stage failure
+3. First attempt: re-run through `_postprocess_scene()` (no LLM cost)
+4. If still dirty: request clean rewrite from LLM with format contract
+5. **Entity preservation guard:** Rewrite accepted only if:
+   - Protagonist name (or "I" for first-person) preserved
+   - >=2 shared capitalized nouns between original and rewrite (prevents character drift)
+6. Accept rewrite only if it retains ≥50% of original word count (prevents empty rewrites)
+7. Max 5 scenes per feedback loop (bounds cost)
+8. Results include `total_fixable`, `attempted`, `fixed`, `systemic_warning`
 
 ---
 
@@ -325,6 +356,8 @@ During `output_validation`, scene validation runs automatically. For scenes with
 
 Each check logs an ERROR with specifics and restores the snapshot. The stage result includes the error description.
 
+**Circuit Breaker:** If 3 consecutive stages fail (and restore snapshots), the pipeline halts entirely with a `CIRCUIT BREAKER` error log that includes the failed stage names and diagnostic guidance. Prevents runaway cost/time when the model is systematically broken. Resets on any successful stage completion.
+
 ---
 
 ### Layer I: Final DE-AI Post-Check
@@ -336,7 +369,44 @@ Each check logs an ERROR with specifics and restores the snapshot. The stage res
 | Check | Action |
 |-------|--------|
 | Word count delta > 15% for any scene | Restore original scene (the "fix" was worse) |
+| **Per-paragraph word count > 50% loss** | **Reject LLM rewrite of middle section** (paragraph shrank too aggressively). Keeps original middle paragraphs. Only applies to chapter-end scenes with head/tail protection. |
 | Homogeneous corruption (>30% share prefix) | Restore ALL scenes to pre-deai state |
+
+---
+
+### Layer J: Budget Guards (v5)
+
+**Location:** `_budget_tracker` dict on `PipelineOrchestrator`, checked in `_generate_prose()`, `_validation_feedback_loop()`, `_persist_artifact_metrics()`
+**When:** During generation (per retry), feedback loop (per rewrite), and post-run (ratio check)
+**Purpose:** Prevent runaway defense spending. Three limits:
+
+| Guard | Default | Location | What happens |
+|-------|---------|----------|--------------|
+| Max retries per stage | 3 | `_generate_prose()` | After 3 retries for one stage, accepts output with known issues + logs BUDGET GUARD warning |
+| Max rewritten scenes | 15 | `_validation_feedback_loop()` | After 15 scenes rewritten across all loops, stops rewriting + logs BUDGET GUARD warning |
+| Defense cost ratio | 30% | `_persist_artifact_metrics()` | If defense tokens / total tokens > 30%, logs BUDGET GUARD warning (advisory, not blocking) |
+
+**Tracking:** `_budget_tracker` stores `retries_per_stage` (dict), `rewritten_scenes` (int), `defense_tokens` (int), `generation_tokens` (int). Reset at start of each `run()`. Persisted in `artifact_metrics_history.jsonl` under the `budget` key.
+
+---
+
+### Layer K: Cleanup Morgue (v5)
+
+**Location:** `_cleanup_morgue` list + `_log_to_morgue()` / `_flush_morgue()` in `pipeline.py`
+**When:** During Phase 3 inline removal + output validation flush
+**Purpose:** Audit trail of every text deletion. Enables false positive review without re-running pipeline.
+
+Each entry: `{scene_id, deleted_text (first 200 chars), trigger_pattern, phase, timestamp}`. Flushed to `{project_path}/cleanup_morgue.jsonl` during output validation.
+
+---
+
+### Layer L: Model Drift Alarm (v5)
+
+**Location:** `_compute_metrics_delta()` in `pipeline.py`
+**When:** After persisting current run metrics
+**Purpose:** Detect sudden quality degradation between runs.
+
+Triggers when `scenes_with_preamble` or `scenes_with_meta_text` jumps >50% AND increases by >3 absolute. Logs `MODEL DRIFT ALARM` with run nonce, model IDs, and config hashes for debugging.
 
 ---
 
@@ -346,8 +416,8 @@ These run after polish and have their own logic:
 
 | Stage | Purpose | Defense Role |
 |-------|---------|--------------|
-| **final_deai** | Surgical AI-tell removal | **Paragraph-based protection:** First 3 paragraphs (chapter opening) and last 4 paragraphs (chapter hook) are *protected*. Only the *middle* paragraphs of chapter-end scenes are edited. Uses **SURGICAL_REPLACEMENTS loaded from `configs/surgical_replacements.yaml`** (40+ patterns across 4 categories: AI tells, hollow intensifiers, stock metaphors, emotional summarization; falls back to hardcoded defaults if YAML missing) and nonce-aware FORMAT_CONTRACT for targeted LLM rewrites. Includes Layer I post-check. |
-| **quality_audit** | Audit word count, AI tells, scene lengths, spice, hooks, **freshness** | Can set `needs_iteration` and `stages_to_rerun`. Triggers re-run of **scene_expansion** (word count low, short scenes) or **voice_human_pass** (AI tells high). Max 2 iterations. **Diminishing-returns exit:** Skips re-run if word% delta < 5% AND tells delta < 0.5. **Freshness score (step 6):** Computes bigram overlap between each scene and its 3 predecessors; flags scenes with >40% overlap as "stale" (recycled language). |
+| **final_deai** | Surgical AI-tell removal | **Paragraph-based protection:** First 3 paragraphs (chapter opening) and last 4 paragraphs (chapter hook) are *protected*. Only the *middle* paragraphs of chapter-end scenes are edited. Uses **SURGICAL_REPLACEMENTS loaded from `configs/surgical_replacements.yaml`** (40+ patterns across 4 categories: AI tells, hollow intensifiers, stock metaphors, emotional summarization; falls back to hardcoded defaults if YAML missing) and nonce-aware FORMAT_CONTRACT for targeted LLM rewrites. **Per-paragraph word count guard** rejects LLM rewrites where any paragraph lost >50% of its words (catches aggressive rewrites at paragraph level, not just scene level). Includes Layer I post-check. |
+| **quality_audit** | Audit word count, AI tells, scene lengths, spice, hooks, **freshness** | Can set `needs_iteration` and `stages_to_rerun`. Triggers re-run of **scene_expansion** (word count low, short scenes), **voice_human_pass** (AI tells high or freshness flagged). Max 2 iterations. **Diminishing-returns exit:** Skips re-run if word% delta < 5% AND tells delta < 0.5. **Freshness score (step 6):** Computes **content-word bigram** overlap (filters ~80 stopwords + character names + words <=2 chars) between each scene and its 3 predecessors; flags scenes with >40% overlap as "stale." Freshness issues now trigger `voice_human_pass` rerun in `stages_to_rerun`. |
 | **output_validation** | Final stats + quality rating + feedback loop + save | Produces `validation_report` with word counts, quality_score (LLM rates 3 sample scenes), **artifact_metrics**, **feedback loop results**, and **cross-run metrics delta**. Runs Layer G→Pipeline feedback loop (see below). Persists artifact metrics to JSONL history. Saves markdown and pipeline state. |
 
 ---
@@ -364,7 +434,7 @@ These run after polish and have their own logic:
 | Analysis/commentary appended | B (sentinel), A | D -> E (issue-specific), F1 Phase 2, G |
 | AI tells / hollow prose | F4 (limit tics), final_deai (paragraph-protected) | Layer I (post-check restores on corruption) |
 | Emotional summary filler | F4 (anchor-protected stripping) | -- |
-| Stage crash / corrupt output | H (5-check transaction safety) | -- |
+| Stage crash / corrupt output | H (6-check transaction safety) | -- |
 | Paraphrased restart (same content, different words) | F2b (semantic dedup) | -- |
 | Scene drift from outline | C (alignment check every 5 scenes) | -- |
 | Suspicious data in context | C (schema validation + prompt injection detection) | -- |
@@ -373,7 +443,18 @@ These run after polish and have their own logic:
 | Stale/recycled language across scenes | quality_audit freshness score (bigram overlap >40%) | -- |
 | Cross-run quality regression | Cross-run metrics delta analysis | -- |
 | Meta-text leaking to export | G→Pipeline feedback loop (auto postprocess + rewrite) | G pre-export validation |
-| Prompt injection in context | C (5 injection patterns in schema validation) | -- |
+| Prompt injection in context | C (two-factor: injection phrase × structural cue) | Single-phrase = warning only |
+| Aggressive LLM rewrite in final_deai | Layer I per-paragraph word count guard (>50% loss = reject) | Scene-level 15% delta check |
+| Cascading stage failures | Circuit breaker (3 consecutive failures → halt) | -- |
+| Entity drift on feedback rewrite | G entity preservation guard (protagonist + ≥2 shared nouns) | Word count threshold |
+| Runaway defense spending | Budget guards: max retries/stage (3), max rewrites (15), defense ratio (30%) | Logged in artifact_metrics_history |
+| Wrong-language foreign phrases | Language inconsistency fixer (Italian↔Spanish) with whitelist + sentence guard | Only multi-word patterns auto-fixed |
+| Prose modified silently | Prose integrity checksums (raw vs clean hash per scene) | Logged in scene_meta |
+| Over-deletion (false positive cleanup) | Cleanup morgue JSONL audit trail | Manual review + disabled_builtins |
+| Name collision in POV fix (Viktor → I) | Name-aware pronoun guard (per-paragraph, skips other-name paragraphs) | -- |
+| Model quality regression between runs | Model drift alarm (rate jump detection + config fingerprint diff) | -- |
+| Invalid YAML configs | Schema validation on load (unknown keys, broken regexes flagged) | -- |
+| Mid-scene paraphrased restart | Sliding window semantic dedup (non-overlapping windows) | Old midpoint check replaced |
 
 ---
 
@@ -391,9 +472,30 @@ These run after polish and have their own logic:
 | `scenes_with_duplicate_marker` | Alternate version marker |
 | `scenes_with_pov_drift` | Third-person refs in first-person story |
 | `scenes_retried` | Critic gate triggered retry |
-| `per_stage.{stage}` | Breakdown by stage |
+| `per_stage.{stage}` | Breakdown by stage (includes `forbidden_marker_rate`: fraction of scenes with meta-text markers after stage completion) |
 | `per_scene.{scene}.retried` | Whether specific scene was retried |
 | `per_scene.{scene}.preamble` | Preamble detected in specific scene |
+| `per_scene.{scene}.content_hash_raw` | SHA256 (12-char) of raw LLM output |
+| `per_scene.{scene}.content_hash_clean` | SHA256 (12-char) after postprocessing |
+
+**Budget tracking** (in `artifact_metrics_history.jsonl` entries):
+
+| Field | Meaning |
+|-------|---------|
+| `budget.defense_tokens` | Tokens spent on retries + feedback loop rewrites |
+| `budget.generation_tokens` | Tokens spent on primary generation |
+| `budget.defense_cost_ratio` | defense / (defense + generation), ideally < 0.30 |
+| `budget.retries_per_stage` | Map of stage_name → retry count this run |
+| `budget.rewritten_scenes` | Total scenes rewritten in feedback loops this run |
+
+**Config fingerprint** (`_build_config_fingerprint()`):
+
+Each JSONL entry now includes a `config_fingerprint` object:
+- `clients`: map of connected LLM client names to model IDs
+- `model_overrides`: stage-specific model overrides from config
+- `config_hashes`: SHA256 (12-char) of `config.yaml`, `cleanup_patterns.yaml`, `surgical_replacements.yaml`
+
+This makes metric regressions *explainable* — you can see whether a change in preamble rate correlates with a model change, config edit, or code change.
 
 **Cross-run delta analysis** (`_compute_metrics_delta()`):
 
@@ -455,13 +557,18 @@ regex_patterns:
   - name: meta_opening
     pattern: "(?is)^\\s*(certainly|sure)..."
 
-# Suppress specific built-in patterns per project
+# Suppress specific built-in patterns per project (by exact name or substring)
 disabled_builtins:
-  - "Physical beats"     # Our prose legitimately uses this phrase
-  # ... add more substrings to suppress
+  - "beat_sheet_physical"     # Exact pattern_name (preferred)
+  - "Physical beats"          # Legacy substring match (fallback)
+  # Available names: rest_unchanged, rest_unchanged_bracket, current_scene_header,
+  # visible_pct_marker, enhanced_scene_header, heres_revised, hook_instruction_bleed,
+  # writing_tips_bullets, scene_header_chapter, scene_header_pov, scene_header_count,
+  # xml_tag_scene, xml_tag_chapter, xml_tag_content, beat_sheet_physical,
+  # beat_sheet_emotional, beat_sheet_sensory
 ```
 
-**Merge rule:** Built-ins always present; YAML adds more. `disabled_builtins` suppresses specific built-in patterns by substring match.
+**Merge rule:** Built-ins always present; YAML adds more. `disabled_builtins` suppresses patterns by **exact pattern_name** (preferred) or substring match (legacy fallback).
 
 ### Surgical replacements (`configs/surgical_replacements.yaml`)
 
@@ -511,6 +618,19 @@ emotional_summarization:
 | Metrics regressed from last run | Model version or config changed | Check `metrics_delta` in validation_report for direction of change |
 | Prompt injection in scene context | Malicious content in project data | Check schema validation warnings in logs; 5 injection patterns checked |
 | Many scenes trigger forbidden-marker check | Model systematically regressed | Transaction safety check 5 (>40% scenes polluted) triggers rollback; check model/temp |
+| Circuit breaker halted pipeline | 3+ consecutive stage failures | Check model availability, API keys, config validity; review failed stage names in log |
+| Feedback loop rejects rewrites | Entity drift detected | Check protagonist name config; may need to relax shared-noun threshold for short scenes |
+| final_deai paragraph guard triggered | LLM aggressively rewrote middle | Normal safety behavior; original paragraphs kept. Consider simpler patterns in surgical_replacements.yaml |
+| Forbidden marker rate climbing over runs | Model trending toward assistant mode | Compare config_fingerprint in JSONL history; may need temperature adjustment or model change |
+| Budget guard: retry limit hit | Stage keeps failing critic gate | Check stage prompt; lower temperature; consider stronger model for that stage |
+| Budget guard: rewrite limit hit | Too many feedback loop rewrites | Upstream meta-text problem; fix the source stage rather than relying on feedback loop |
+| Budget guard: defense ratio high | >30% tokens on defense | Model may be wrong choice for these stages; check `budget` in JSONL history |
+| Legitimate foreign word replaced | Whitelist missing entry | Add word/phrase to `defense.foreign_word_whitelist` in config.yaml |
+| Cleanup morgue shows false positives | Pattern too aggressive | Review `cleanup_morgue.jsonl`; add pattern to `disabled_builtins` |
+| MODEL DRIFT ALARM in logs | Preamble/meta-text rate jumped between runs | Compare config_fingerprint; model version may have changed |
+| YAML validation warnings on load | Config file has unknown keys or broken regex | Fix the config file; check pattern syntax |
+| Prose integrity hashes differ (raw ≠ clean) | Normal — postprocessing cleaned something | Review scene_meta hashes; if hash difference unexpected, check what was cleaned |
+| Name-aware guard skipping paragraphs | Other character names detected in paragraph | Expected behavior; prevents "Viktor → I" catastrophic bug |
 
 ---
 
@@ -529,12 +649,99 @@ emotional_summarization:
 | Final DE-AI (paragraph-based protection + post-check) | `prometheus_novel/stages/pipeline.py` (_stage_final_deai) |
 | Freshness score (bigram overlap) | `prometheus_novel/stages/pipeline.py` (_stage_quality_audit) |
 | Feedback loop (G→Pipeline auto-fix) | `prometheus_novel/stages/pipeline.py` (_validation_feedback_loop) |
-| Cross-run metrics persistence + delta | `prometheus_novel/stages/pipeline.py` (_persist_artifact_metrics, _compute_metrics_delta) |
+| Cross-run metrics + config fingerprint + delta | `prometheus_novel/stages/pipeline.py` (_build_config_fingerprint, _persist_artifact_metrics, _compute_metrics_delta) |
+| Circuit breaker (consecutive failure halt) | `prometheus_novel/stages/pipeline.py` (run method) |
+| Per-stage forbidden marker rate | `prometheus_novel/stages/pipeline.py` (_run_stage) |
 | Surgical replacements YAML config | `prometheus_novel/configs/surgical_replacements.yaml` |
 | Pre-export validation (actionable reports) | `prometheus_novel/export/scene_validator.py` |
 | Export + validation mode | `prometheus_novel/export/docx_exporter.py` |
 | Cleanup patterns YAML + disabled_builtins | `prometheus_novel/configs/cleanup_patterns.yaml` |
 | LLM clients (stop mapping) | `prometheus_novel/prometheus_lib/llm/clients.py` |
 
+| Budget guards (retry cap, rewrite cap, defense cost ratio) | `prometheus_novel/stages/pipeline.py` (_generate_prose, _validation_feedback_loop, _persist_artifact_metrics) |
+| Cleanup morgue (audit trail of all deletions) | `{project_path}/cleanup_morgue.jsonl` |
+| Foreign word whitelist + sentence-length guard | `prometheus_novel/stages/pipeline.py` (_flag_language_inconsistencies) |
+| Sliding window semantic dedup | `prometheus_novel/stages/pipeline.py` (_detect_semantic_duplicates) |
+| Name-aware pronoun guard | `prometheus_novel/stages/pipeline.py` (_enforce_first_person_pov) |
+| Model drift alarm | `prometheus_novel/stages/pipeline.py` (_compute_metrics_delta) |
+| YAML config validation | `prometheus_novel/stages/pipeline.py` (_validate_yaml_config, _load_cleanup_config) |
+| Prose integrity checksums | `prometheus_novel/stages/pipeline.py` (_generate_prose) |
+
 **State file:** `{project_path}/pipeline_state.json` -- contains scenes, artifact_metrics, completed_stages, etc.
 **Metrics history:** `{project_path}/artifact_metrics_history.jsonl` -- append-only JSONL with per-run metrics for trend analysis.
+**Cleanup morgue:** `{project_path}/cleanup_morgue.jsonl` -- append-only JSONL log of every text deletion with context.
+
+---
+
+## 9. Operational Playbook
+
+### Pre-Run Checklist
+
+1. **Config validation**: The pipeline auto-validates `cleanup_patterns.yaml` and `surgical_replacements.yaml` on load. Fix any warnings before continuing.
+2. **Model availability**: Ensure all configured LLM clients are reachable. The circuit breaker halts after 3 consecutive failures.
+3. **Resume state**: If resuming a prior run, verify `pipeline_state.json` exists and `completed_stages` is correct.
+4. **Defense thresholds**: Review `config.yaml → defense.thresholds` overrides. Defaults are production-tested; only override with cause.
+
+### During-Run Monitoring
+
+| Signal | Where to find it | Action |
+|--------|-------------------|--------|
+| `CIRCUIT BREAKER` in logs | `run()` method | Pipeline halted. Check model availability, API keys. Retry. |
+| `BUDGET GUARD: retry budget exhausted` | `_generate_prose()` | Stage hit max retries. Output has known issues. Review that scene manually. |
+| `BUDGET GUARD: rewritten scene limit` | `_validation_feedback_loop()` | Too many scenes needed fixes. Indicates systemic upstream issue. |
+| `BUDGET GUARD: defense cost ratio exceeds limit` | `_persist_artifact_metrics()` | >30% of tokens spent on defense (retries/rewrites). Consider stronger base model or lower temperature. |
+| `MODEL DRIFT ALARM` | `_compute_metrics_delta()` | Preamble/meta-text rate jumped vs. prior run. Check model version change or config drift. |
+| `SYSTEMIC:` prefix in feedback loop | `_validation_feedback_loop()` | >5 scenes had META_TEXT errors. Upstream stage likely failed. |
+| `Transaction safety:` in logs | `_run_stage()` | A stage corrupted scene data. Snapshot auto-restored. Review which check fired. |
+
+### Post-Run Review
+
+1. **Artifact metrics history**: `artifact_metrics_history.jsonl` — compare `defense_cost_ratio` across runs. Ratio climbing → model quality declining.
+2. **Cleanup morgue**: `cleanup_morgue.jsonl` — audit what text was deleted and why. Look for false positives (legitimate prose incorrectly flagged).
+3. **Validation report**: Check `output_validation` stage output for remaining issues.
+4. **Metrics delta**: If `_compute_metrics_delta` shows regression, compare `config_fingerprint` to identify what changed.
+5. **Prose integrity checksums**: Compare `content_hash_raw` vs `content_hash_clean` in scene_meta to measure postprocessing impact.
+
+### Tuning Guide
+
+| Symptom | Threshold to adjust | Direction |
+|---------|---------------------|-----------|
+| Too many false positive cleanups | `disabled_builtins` in cleanup_patterns.yaml | Add pattern names to disable list |
+| Legitimate foreign words being replaced | `defense.foreign_word_whitelist` in config.yaml | Add words/phrases to whitelist |
+| Feedback loop too aggressive | `feedback_loop_wc_retention` | Raise toward 0.90 (stricter preservation) |
+| Feedback loop too permissive | `feedback_loop_wc_retention` | Lower toward 0.70 (allow more rewriting) |
+| Circuit breaker too sensitive | `circuit_breaker_threshold` | Raise from 3 to 5 |
+| Budget exhausting retries | `budget_max_retries_per_stage` | Raise from 3; but also check why retries are needed |
+| Defense cost too high | `budget_max_defense_ratio` | Lower if billing-sensitive; root-cause the retry need |
+| Duplicate detection too aggressive | `semantic_dedup_threshold` | Raise toward 0.7 (require higher similarity to dedup) |
+| Paragraph guard rejecting good rewrites | `deai_paragraph_loss_pct` | Raise toward 0.60 (allow more paragraph shortening) |
+
+### Config.yaml Defense Namespace Reference
+
+```yaml
+defense:
+  thresholds:
+    scene_count_drop_pct: 0.50
+    prefix_corruption_pct: 0.30
+    avg_word_plummet_pct: 0.40
+    forbidden_marker_pct: 0.40
+    fingerprint_collapse_pct: 0.50
+    deai_word_delta_pct: 0.15
+    deai_paragraph_loss_pct: 0.50
+    salvage_min_words: 150
+    salvage_min_paragraphs: 2
+    salvage_restore_ratio: 3.0
+    freshness_bigram_pct: 0.40
+    feedback_loop_max_scenes: 5
+    feedback_loop_wc_retention: 0.80
+    circuit_breaker_threshold: 3
+    semantic_dedup_threshold: 0.50
+    duplicate_ngram_threshold: 0.60
+    budget_max_retries_per_stage: 3
+    budget_max_rewritten_scenes: 15
+    budget_max_defense_ratio: 0.30
+  foreign_word_whitelist:
+    - "khachapuri"
+    - "amore mio"
+    # Add project-specific words/phrases here
+```

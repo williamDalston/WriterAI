@@ -22,9 +22,17 @@ regex_patterns:
     pattern: "(?is)^\\s*(certainly|sure|as requested).{0,40}(here is|below is).{0,60}(revised|updated).*$"
 
 # Suppress specific built-in patterns that cause false positives for your project.
-# List pattern substrings here; any built-in pattern containing the substring will be skipped.
+# Preferred: use exact pattern_name (see list below). Legacy substring matching also works.
+#
+# Available pattern names:
+#   rest_unchanged, rest_unchanged_bracket, current_scene_header, visible_pct_marker,
+#   enhanced_scene_header, heres_revised, hook_instruction_bleed, writing_tips_bullets,
+#   scene_header_chapter, scene_header_pov, scene_header_count,
+#   xml_tag_scene, xml_tag_chapter, xml_tag_content,
+#   beat_sheet_physical, beat_sheet_emotional, beat_sheet_sensory
+#
 # Example:
 #   disabled_builtins:
-#     - "Physical beats"     # Our prose legitimately uses this phrase
-#     - "hook can be"        # False positive in dialogue
+#     - "beat_sheet_physical"     # Our prose legitimately uses "Physical beats:"
+#     - "hook_instruction_bleed"  # False positive in dialogue
 disabled_builtins: []

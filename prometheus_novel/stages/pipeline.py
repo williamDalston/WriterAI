@@ -321,19 +321,89 @@ LLM_PREAMBLE_RE = re.compile(
 )
 
 
+def _validate_yaml_config(data: Dict[str, Any], config_name: str,
+                          expected_keys: set, regex_keys: set = None) -> Dict[str, Any]:
+    """Lightweight schema validation for YAML config files.
+
+    Checks: expected keys exist, regex patterns compile, values are correct types.
+    Returns validated data (may be modified with warnings logged).
+    """
+    if not isinstance(data, dict):
+        logger.warning(f"{config_name}: expected dict, got {type(data).__name__}. Using empty config.")
+        return {}
+    # Check for unexpected top-level keys
+    unknown = set(data.keys()) - expected_keys
+    if unknown:
+        logger.warning(f"{config_name}: unknown keys {unknown} (will be ignored)")
+    # Validate regex patterns compile
+    for key in (regex_keys or set()):
+        patterns = data.get(key, [])
+        if isinstance(patterns, list):
+            for i, item in enumerate(patterns):
+                pat = item.get("pattern") if isinstance(item, dict) else item if isinstance(item, str) else None
+                if pat:
+                    try:
+                        re.compile(pat)
+                    except re.error as e:
+                        logger.error(f"{config_name}: invalid regex in {key}[{i}]: {e}. Removing.")
+                        if isinstance(patterns, list) and i < len(patterns):
+                            patterns[i] = None
+            data[key] = [p for p in patterns if p is not None]
+    return data
+
+
 def _load_cleanup_config() -> Dict[str, Any]:
     """Load optional cleanup patterns from configs/cleanup_patterns.yaml."""
     try:
         config_path = Path(__file__).resolve().parent.parent / "configs" / "cleanup_patterns.yaml"
         if config_path.exists():
             with open(config_path, "r", encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
-    except Exception:
-        pass
+                data = yaml.safe_load(f) or {}
+            return _validate_yaml_config(
+                data, "cleanup_patterns.yaml",
+                expected_keys={"inline_truncate_markers", "inline_preamble_markers",
+                               "regex_patterns", "disabled_builtins", "inline"},
+                regex_keys={"regex_patterns"}
+            )
+    except Exception as e:
+        logger.warning(f"Failed to load cleanup_patterns.yaml: {e}")
     return {}
 
 
-def _clean_scene_content(text: str) -> str:
+# Cleanup morgue: log every "smart deletion" for auditability
+_cleanup_morgue: List[Dict[str, Any]] = []
+
+
+def _log_to_morgue(scene_id: str, deleted_text: str, trigger_pattern: str,
+                   phase: str = "", anchor_check: str = ""):
+    """Log a deletion to the cleanup morgue for post-run audit."""
+    if deleted_text and len(deleted_text.strip()) > 5:
+        _cleanup_morgue.append({
+            "scene_id": scene_id,
+            "deleted_text": deleted_text.strip()[:200],
+            "trigger_pattern": trigger_pattern,
+            "phase": phase,
+            "anchor_check": anchor_check,
+        })
+
+
+def _flush_morgue(project_path):
+    """Write morgue entries to JSONL file and clear buffer."""
+    global _cleanup_morgue
+    if not _cleanup_morgue or not project_path:
+        return
+    try:
+        morgue_path = Path(project_path) / "cleanup_morgue.jsonl"
+        with open(morgue_path, "a", encoding="utf-8") as f:
+            for entry in _cleanup_morgue:
+                f.write(json.dumps(entry) + "\n")
+        logger.info(f"Cleanup morgue: {len(_cleanup_morgue)} deletions logged to {morgue_path}")
+    except Exception as e:
+        logger.warning(f"Failed to write cleanup morgue: {e}")
+    _cleanup_morgue = []
+
+
+def _clean_scene_content(text: str, scene_id: str = "") -> str:
     """Strip meta-text, LLM preambles, editing artifacts, and analysis notes.
 
     Catches all known artifact categories:
@@ -464,66 +534,74 @@ def _clean_scene_content(text: str) -> str:
             # If the original had substantially more content, restore it
             # (the cleanup was too aggressive — better to have artifacts than nothing)
             if original_wc > word_count * 3 and original_wc >= 50:
+                # Check if original contains hard meta-markers — if so, restore
+                # but flag for regen rather than shipping garbage
+                _hard_markers = [
+                    r'(?i)certainly!?\s*here\s+is',
+                    r'(?i)the\s+rest\s+remains?\s+unchanged',
+                    r'(?i)changes\s+made:',
+                    r'(?i)here\s+is\s+the\s+revised',
+                ]
+                has_hard_meta = any(
+                    re.search(pat, _original_input) for pat in _hard_markers
+                )
                 logger.warning(
                     f"Salvage: restoring pre-cleanup input ({original_wc} words) "
                     f"instead of stripped output ({word_count} words)"
+                    f"{' [contains meta-markers, needs regen]' if has_hard_meta else ''}"
                 )
                 text = _original_input
 
     # --- PHASE 3: Inline artifact removal (patterns that appear MID-text) ---
-    # These can appear anywhere in the prose, not just at the end
-    inline_patterns = [
-        # "The rest remains unchanged" and all variants (scene/chapter/text)
-        r'(?:The )?rest (?:of (?:the |this )?(?:scene|chapter|text|content) )?'
-        r'(?:remains?|is) unchanged[^.]*[.\s]*',
-        r'\[(?:The )?rest (?:of (?:the |this )?(?:scene|chapter))? remains unchanged[^\]]*\]\s*',
-        # "CURRENT SCENE MODIFIED:" headers
-        r'CURRENT SCENE(?: MODIFIED)?:\s*',
-        # "Visible: 0% – 100%" or similar percentage markers
-        r'Visible:\s*\d+%\s*[–—-]\s*\d+%\s*',
-        # Stray prompt markers that slipped through
-        r'(?:ENHANCED|EXPANDED|POLISHED|FIXED|REVISED) SCENE:\s*',
-        # "Sure, here's the revised version:" mid-text
-        r'(?:Sure[,.]?\s*)?[Hh]ere\'?s?\s+(?:the |a )?(?:revised|enhanced|polished|expanded|edited)'
-        r'\s+(?:version|scene|text|content)[.:]\s*',
-        # Hook instruction bleed
-        r'A great chapter-(?:ending|opening) hook can be:\s*(?:\n[-•*][^\n]+)*',
-        # Bullet lists of writing tips (from prompt)
-        r'(?:\n[-•*]\s*(?:A cliffhanger|In medias res|A striking sensory|'
-        r'A provocative|Immediate conflict|Disorientation|A kiss or romantic|'
-        r'A threat delivered|A question raised|A twist revealed|'
-        r'An emotional gut-punch|A decision made)[^\n]*)+',
-        # Scene headers leaked from pipeline ("Chapter 3, Scene 2 POV: FIRST PERSON")
-        r'Chapter\s+\d+,?\s*Scene\s+\d+\s*(?:POV:[^\n]*)?',
-        r'POV:\s*FIRST PERSON[^\n]*',
-        r'Scene\s+\d+\s+of\s+\d+[^\n]*',
-        # XML/HTML tags from prompt templates (<scene>, </scene>, etc.)
-        r'</?scene[^>]*>',
-        r'</?chapter[^>]*>',
-        r'</?content[^>]*>',
-        # Beat sheet artifacts leaked into prose ("Physical beats:", "- My fingers...")
-        r'Physical beats:\s*(?:\n[-•*][^\n]+)*',
-        r'Emotional beats:\s*(?:\n[-•*][^\n]+)*',
-        r'Sensory details:\s*(?:\n[-•*][^\n]+)*',
+    # Each pattern is (name, regex). Names enable exact disabled_builtins matching.
+    _named_inline_patterns = [
+        ("rest_unchanged", r'(?:The )?rest (?:of (?:the |this )?(?:scene|chapter|text|content) )?'
+         r'(?:remains?|is) unchanged[^.]*[.\s]*'),
+        ("rest_unchanged_bracket", r'\[(?:The )?rest (?:of (?:the |this )?(?:scene|chapter))? remains unchanged[^\]]*\]\s*'),
+        ("current_scene_header", r'CURRENT SCENE(?: MODIFIED)?:\s*'),
+        ("visible_pct_marker", r'Visible:\s*\d+%\s*[–—-]\s*\d+%\s*'),
+        ("enhanced_scene_header", r'(?:ENHANCED|EXPANDED|POLISHED|FIXED|REVISED) SCENE:\s*'),
+        ("heres_revised", r'(?:Sure[,.]?\s*)?[Hh]ere\'?s?\s+(?:the |a )?(?:revised|enhanced|polished|expanded|edited)'
+         r'\s+(?:version|scene|text|content)[.:]\s*'),
+        ("hook_instruction_bleed", r'A great chapter-(?:ending|opening) hook can be:\s*(?:\n[-•*][^\n]+)*'),
+        ("writing_tips_bullets", r'(?:\n[-•*]\s*(?:A cliffhanger|In medias res|A striking sensory|'
+         r'A provocative|Immediate conflict|Disorientation|A kiss or romantic|'
+         r'A threat delivered|A question raised|A twist revealed|'
+         r'An emotional gut-punch|A decision made)[^\n]*)+'),
+        ("scene_header_chapter", r'Chapter\s+\d+,?\s*Scene\s+\d+\s*(?:POV:[^\n]*)?'),
+        ("scene_header_pov", r'POV:\s*FIRST PERSON[^\n]*'),
+        ("scene_header_count", r'Scene\s+\d+\s+of\s+\d+[^\n]*'),
+        ("xml_tag_scene", r'</?scene[^>]*>'),
+        ("xml_tag_chapter", r'</?chapter[^>]*>'),
+        ("xml_tag_content", r'</?content[^>]*>'),
+        ("beat_sheet_physical", r'Physical beats:\s*(?:\n[-•*][^\n]+)*'),
+        ("beat_sheet_emotional", r'Emotional beats:\s*(?:\n[-•*][^\n]+)*'),
+        ("beat_sheet_sensory", r'Sensory details:\s*(?:\n[-•*][^\n]+)*'),
     ]
+
     # Merge optional custom patterns from configs/cleanup_patterns.yaml
     cleanup_cfg = _load_cleanup_config()
     for item in cleanup_cfg.get("inline", []) or []:
         if isinstance(item, str):
-            inline_patterns.append(item)
+            _named_inline_patterns.append(("custom_inline", item))
     for item in cleanup_cfg.get("regex_patterns", []) or []:
         if isinstance(item, dict) and item.get("pattern"):
-            inline_patterns.append(item["pattern"])
+            _named_inline_patterns.append((item.get("name", "custom_regex"), item["pattern"]))
 
-    # Filter out disabled built-in patterns (suppress false positives per project)
+    # Filter out disabled built-in patterns by exact pattern_name.
+    # Also supports legacy substring matching as fallback.
     disabled = cleanup_cfg.get("disabled_builtins", []) or []
     if disabled:
-        inline_patterns = [
-            p for p in inline_patterns
-            if not any(d.lower() in p.lower() for d in disabled if isinstance(d, str))
+        disabled_set = set(d.strip() for d in disabled if isinstance(d, str))
+        _named_inline_patterns = [
+            (name, pat) for name, pat in _named_inline_patterns
+            if name not in disabled_set and not any(d.lower() in pat.lower() for d in disabled_set)
         ]
 
-    for pattern in inline_patterns:
+    for _name, pattern in _named_inline_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            _log_to_morgue(scene_id, match.group(0), _name, phase="3_inline")
         text = re.sub(pattern, '', text, flags=re.IGNORECASE)
 
     # --- PHASE 4: Clean up whitespace artifacts ---
@@ -563,6 +641,12 @@ def _mask_quoted_dialogue(text: str):
     # Match \u201c...\u201d and "..." style quotes
     masked = re.sub(r'[\u201c"][^\u201d"]*[\u201d"]', _replacer, text)
     masked = re.sub(r'"[^"]*"', _replacer, masked)
+    # Italic thoughts: *thought text* (single asterisks, not bold **)
+    masked = re.sub(r'(?<!\*)\*(?!\*)[^*\n]{3,80}\*(?!\*)', _replacer, masked)
+    # Block quotes: lines starting with >
+    masked = re.sub(r'^>[^\n]+', _replacer, masked, flags=re.MULTILINE)
+    # Bracketed message blocks: [Text message:] ... or [Letter:]
+    masked = re.sub(r'\[[^\]]{3,80}\]', _replacer, masked)
 
     def restore(modified_text):
         result = modified_text
@@ -662,16 +746,52 @@ def _enforce_first_person_pov(text: str, protagonist_name: str = "",
     )
 
     # === GENDER-SPECIFIC: Only fix pronouns matching protagonist's gender ===
-    if subj_pronoun:
-        # Fix "[Pronoun] [verb]" at sentence boundaries
-        for boundary in [rf'^{subj_pronoun}', rf'(?<=[.!?]\s){subj_pronoun}', rf'(?<=\n){subj_pronoun}']:
-            text = re.sub(rf'{boundary}\s+({verbs})\b', r'I \1', text)
-            text = re.sub(rf'{boundary}\s+({aux_verbs})\b', r'I \1', text)
+    # Name-aware pronoun guard: if other characters of the same gender are
+    # mentioned near a pronoun, the pronoun likely refers to them, not protagonist.
+    # We check per-paragraph: if a paragraph contains another same-gender character
+    # name, we skip pronoun→I conversion for that paragraph.
+    _other_same_gender_names: set = set()
+    # (populated lazily below when subj_pronoun is set)
 
-        # Fix "[Pronoun]'d" -> "I'd", "[Pronoun]'s" -> "I'm" contractions
-        for boundary in [rf'(?<=[.!?]\s){subj_pronoun}', rf'(?<=\n){subj_pronoun}']:
-            text = re.sub(rf"{boundary}'d\b", "I'd", text)
-            text = re.sub(rf"{boundary}'s\b", "I'm", text)
+    if subj_pronoun:
+        # Build set of other character names that share protagonist's gender
+        # by checking if the config has other_characters info
+        # We use a simple heuristic: names that appear in the text are relevant
+        import os as _os  # only for env check, not used otherwise
+        # Extract capitalized names from the text that aren't the protagonist
+        _all_caps_names = set(re.findall(r'\b[A-Z][a-z]{2,}\b', text))
+        _all_caps_names.discard(first_name)
+        # Common words that look like names but aren't
+        _common_caps = {"The", "This", "That", "When", "Where", "What", "How",
+                        "Then", "But", "And", "His", "Her", "She", "They",
+                        "Chapter", "Scene", "Part"}
+        _other_same_gender_names = _all_caps_names - _common_caps
+
+        # Per-paragraph name-aware replacement
+        paragraphs = text.split('\n\n')
+        new_paragraphs = []
+        for para in paragraphs:
+            # Check if paragraph mentions any other capitalized name
+            para_has_other_name = any(
+                re.search(rf'\b{re.escape(n)}\b', para) for n in _other_same_gender_names
+            )
+            if para_has_other_name:
+                # Skip pronoun→I for this paragraph (ambiguous who "He/She" refers to)
+                new_paragraphs.append(para)
+                continue
+
+            # Safe to convert: paragraph only has protagonist
+            for boundary in [rf'^{subj_pronoun}', rf'(?<=[.!?]\s){subj_pronoun}', rf'(?<=\n){subj_pronoun}']:
+                para = re.sub(rf'{boundary}\s+({verbs})\b', r'I \1', para)
+                para = re.sub(rf'{boundary}\s+({aux_verbs})\b', r'I \1', para)
+
+            # Fix "[Pronoun]'d" -> "I'd", "[Pronoun]'s" -> "I'm" contractions
+            for boundary in [rf'(?<=[.!?]\s){subj_pronoun}', rf'(?<=\n){subj_pronoun}']:
+                para = re.sub(rf"{boundary}'d\b", "I'd", para)
+                para = re.sub(rf"{boundary}'s\b", "I'm", para)
+
+            new_paragraphs.append(para)
+        text = '\n\n'.join(new_paragraphs)
 
     if poss_pronoun_cap:
         # Fix "[PossPronoun] [body part]" -> "My [body part]" at sentence starts
@@ -848,6 +968,32 @@ def _repair_pov_context_errors(text: str, protagonist_gender: str = "") -> str:
     # Catches: **word** and *word* in narrative text
     text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
     text = re.sub(r'(?<!\w)\*([^*]+)\*(?!\w)', r'\1', text)
+
+    # === PATTERN 8: Generic clause-level POV clash ===
+    # Any comma-delimited clause containing BOTH a third-person subject (she/he)
+    # and a first-person possessive (my/me) is a POV clash.
+    # "She turned, my hand trembling" → "She turned, her hand trembling"
+    # "He leaned forward, my breath catching" → "He leaned forward, his breath catching"
+    def _fix_clause_pov(match):
+        clause = match.group(0)
+        # Determine which third-person is present
+        has_she = bool(re.search(r'\b[Ss]he\b', clause))
+        has_he = bool(re.search(r'\b[Hh]e\b', clause)) and not has_she
+        if has_she:
+            clause = re.sub(r'\bmy\b', 'her', clause)
+            clause = re.sub(r'\bMy\b', 'Her', clause)
+        elif has_he:
+            clause = re.sub(r'\bmy\b', 'his', clause)
+            clause = re.sub(r'\bMy\b', 'His', clause)
+        return clause
+
+    # Match: [She/He ...], [my ...] within same comma-segment pair
+    # Requires third-person subject in first clause, first-person possessive in second
+    text = re.sub(
+        r'(?<=[.!?]\s)\b(?:She|He)\b[^,]{3,40},\s*(?:my|My)\b[^.!?]{3,60}[.!?]',
+        _fix_clause_pov,
+        text
+    )
 
     return text
 
@@ -1281,10 +1427,14 @@ def _semantic_similarity_check(text_a: str, text_b: str) -> float:
 
 
 def _detect_semantic_duplicates(text: str, threshold: float = 0.5) -> str:
-    """Secondary duplicate detection using semantic similarity.
+    """Secondary duplicate detection using sliding window semantic similarity.
 
-    Catches paraphrased restarts that pass n-gram checks — common when models
-    "start over" with slightly different wording.
+    Instead of a single midpoint split, uses a rolling window to compare
+    each window of N paragraphs against all previous windows. If similarity
+    exceeds threshold, truncates at the start of the duplicate window.
+
+    This catches mid-scene restarts, late-scene paraphrasing, and partial
+    rewrites that a midpoint check would miss.
     """
     if not text or len(text) < 500:
         return text
@@ -1293,23 +1443,49 @@ def _detect_semantic_duplicates(text: str, threshold: float = 0.5) -> str:
     if len(paragraphs) < 4:
         return text
 
-    # Check if the second half is a paraphrased version of the first half
-    mid = len(paragraphs) // 2
-    first_half = '\n\n'.join(paragraphs[:mid])
-    second_half = '\n\n'.join(paragraphs[mid:])
+    # Sliding window: compare non-overlapping windows of WINDOW_SIZE paragraphs.
+    # Non-overlapping prevents false positives from shared paragraphs.
+    WINDOW_SIZE = min(3, len(paragraphs) // 2)
+    if WINDOW_SIZE < 2:
+        return text
 
-    # Only check if halves are similar in length (restarts are roughly same length)
-    len_ratio = len(second_half) / len(first_half) if first_half else 0
-    if 0.5 < len_ratio < 2.0:
-        sim = _semantic_similarity_check(first_half, second_half)
-        if sim > threshold:
-            logger.info(f"Semantic dedup: halves similarity {sim:.2f} > {threshold}. Keeping first half.")
-            return first_half
+    # Build non-overlapping windows (stride = WINDOW_SIZE)
+    windows = []
+    for i in range(0, len(paragraphs) - WINDOW_SIZE + 1, WINDOW_SIZE):
+        windows.append((i, '\n\n'.join(paragraphs[i:i + WINDOW_SIZE])))
+
+    # Compare each window against all previous non-overlapping windows
+    truncate_at = None
+    for j in range(1, len(windows)):
+        window_j_start = windows[j][0]
+        window_j_text = windows[j][1]
+        for k in range(j):
+            window_k_text = windows[k][1]
+            # Only compare if windows are similar length (restarts are ~same length)
+            len_ratio = len(window_j_text) / len(window_k_text) if window_k_text else 0
+            if 0.5 < len_ratio < 2.0:
+                sim = _semantic_similarity_check(window_k_text, window_j_text)
+                if sim > threshold:
+                    truncate_at = window_j_start
+                    logger.info(
+                        f"Semantic dedup (sliding window): window at para {window_j_start} "
+                        f"duplicates window at para {windows[k][0]} "
+                        f"(sim={sim:.2f} > {threshold}). "
+                        f"Truncating at paragraph {truncate_at}."
+                    )
+                    break
+        if truncate_at is not None:
+            break
+
+    if truncate_at is not None and truncate_at > 0:
+        kept = paragraphs[:truncate_at]
+        return '\n\n'.join(kept)
 
     return text
 
 
-def _flag_language_inconsistencies(text: str, setting_language: str = "") -> str:
+def _flag_language_inconsistencies(text: str, setting_language: str = "",
+                                   foreign_whitelist: list = None) -> str:
     """Flag or fix foreign language inconsistencies in the text.
 
     Detects when a model uses the wrong foreign language (e.g., Spanish
@@ -1318,29 +1494,37 @@ def _flag_language_inconsistencies(text: str, setting_language: str = "") -> str
 
     If setting_language is specified (e.g., "Italian"), replaces common
     wrong-language phrases with the correct language equivalent.
+
+    Guards:
+    - foreign_whitelist: list of words/phrases to never touch (food terms, endearments, etc.)
+    - Quoted text is already masked upstream via _mask_quoted_dialogue
+    - Single foreign words (< 3 consecutive) are only replaced if they match
+      multi-word patterns (3+ words) — lone words are presumed intentional
     """
     if not text or not setting_language:
         return text
 
     setting_lang = setting_language.lower().strip()
+    whitelist = set((w.lower().strip() for w in (foreign_whitelist or [])))
 
     # Common phrase mappings between confused romance languages
     # Only fix OBVIOUS high-frequency phrases that are clearly wrong-language
     if setting_lang == "italian":
         # Spanish -> Italian replacements
         spanish_to_italian = {
-            r'\bVamos\b': 'Andiamo',
-            r'\bvamos\b': 'andiamo',
             r'\bVamos a ser realistas\b': 'Siamo realisti',
+            r'\bBuenas noches\b': 'Buona notte',
+            r'\bbuenas noches\b': 'buona notte',
+            r'\bBuenos días\b': 'Buongiorno',
             r'\bMi amor\b': 'Amore mio',
             r'\bmi amor\b': 'amore mio',
             r'\bPor favor\b': 'Per favore',
             r'\bpor favor\b': 'per favore',
+            r'\bFiglio mio\b': 'Figlio mio',
+            r'\bVamos\b': 'Andiamo',
+            r'\bvamos\b': 'andiamo',
             r'\bGracias\b': 'Grazie',
             r'\bgracias\b': 'grazie',
-            r'\bBuenas noches\b': 'Buona notte',
-            r'\bbuenas noches\b': 'buona notte',
-            r'\bBuenos días\b': 'Buongiorno',
             r'\bHermosa\b': 'Bella',
             r'\bhermosa\b': 'bella',
             r'\bCorazón\b': 'Tesoro',
@@ -1351,20 +1535,19 @@ def _flag_language_inconsistencies(text: str, setting_language: str = "") -> str
             r'\bSeñor\b': 'Signore',
             r'\bseñor\b': 'signore',
             r'\bSeñora\b': 'Signora',
-            r'\bseñora\b': 'signora',
+            r'\bseñora\b': 'señora',
         }
-        for pattern, replacement in spanish_to_italian.items():
-            text = re.sub(pattern, replacement, text)
+        replacements = spanish_to_italian
 
     elif setting_lang == "spanish":
         # Italian -> Spanish replacements
         italian_to_spanish = {
-            r'\bAndiamo\b': 'Vamos',
-            r'\bandiamo\b': 'vamos',
             r'\bAmore mio\b': 'Mi amor',
             r'\bamore mio\b': 'mi amor',
             r'\bPer favore\b': 'Por favor',
             r'\bper favore\b': 'por favor',
+            r'\bAndiamo\b': 'Vamos',
+            r'\bandiamo\b': 'vamos',
             r'\bGrazie\b': 'Gracias',
             r'\bgrazie\b': 'gracias',
             r'\bBella\b': 'Hermosa',
@@ -1374,15 +1557,53 @@ def _flag_language_inconsistencies(text: str, setting_language: str = "") -> str
             r'\bSignora\b': 'Señora',
             r'\bsignora\b': 'señora',
         }
-        for pattern, replacement in italian_to_spanish.items():
-            text = re.sub(pattern, replacement, text)
+        replacements = italian_to_spanish
+    else:
+        return text
+
+    for pattern, replacement in replacements.items():
+        # Extract the plain text from the regex pattern (strip \b markers)
+        plain = re.sub(r'\\b', '', pattern).strip()
+
+        # Whitelist guard: skip if this word/phrase is whitelisted
+        if plain.lower() in whitelist:
+            continue
+
+        # Sentence-length guard: single words (1-2 tokens) require the match
+        # to be in a context of 3+ consecutive non-English words OR be a
+        # multi-word pattern. Multi-word patterns (3+ words) always apply.
+        word_count = len(plain.split())
+        if word_count < 3:
+            # For short patterns, only apply if in a cluster of foreign words
+            # (relaxed: multi-word patterns like "Mi amor" are 2 words — always fix)
+            if word_count < 2:
+                # Single-word: check if it appears in a run of 3+ foreign-looking words
+                # by verifying the surrounding context has other non-English words
+                def _guarded_replace(match):
+                    start = max(0, match.start() - 40)
+                    end = min(len(text), match.end() + 40)
+                    context = text[start:end]
+                    # Count words that look foreign (contain accented chars or are
+                    # in the replacement table)
+                    foreign_words = sum(
+                        1 for w in context.split()
+                        if any(ord(c) > 127 for c in w)
+                    )
+                    if foreign_words >= 2:
+                        return replacement
+                    return match.group(0)  # Leave single foreign word alone
+                text = re.sub(pattern, _guarded_replace, text)
+                continue
+
+        text = re.sub(pattern, replacement, text)
 
     return text
 
 
 def _postprocess_scene(text: str, protagonist_name: str = "",
                        setting_language: str = "",
-                       protagonist_gender: str = "") -> str:
+                       protagonist_gender: str = "",
+                       foreign_whitelist: list = None) -> str:
     """Master post-processor: applies all code-level quality enforcement.
 
     Called after _clean_scene_content on every creative stage output.
@@ -1395,11 +1616,14 @@ def _postprocess_scene(text: str, protagonist_name: str = "",
     text = _detect_duplicate_content(text)
     text = _detect_semantic_duplicates(text)
     text = _enforce_first_person_pov(text, protagonist_name, protagonist_gender)
+    # ORDERING INVARIANT: F3b (repair) MUST run after F3 (enforce).
+    # F3 may create patterns like "She whispered, my voice" that F3b fixes.
+    # If this order is ever changed, POV corruption will be reintroduced silently.
     text = _repair_pov_context_errors(text, protagonist_gender)
     text = _strip_emotional_summaries(text)
     text = _limit_tic_frequency(text)
     if setting_language:
-        text = _flag_language_inconsistencies(text, setting_language)
+        text = _flag_language_inconsistencies(text, setting_language, foreign_whitelist)
     return text
 
 
@@ -2169,6 +2393,45 @@ class PipelineOrchestrator:
             self._prose_sentinel,
         ] + CREATIVE_STOP_SEQUENCES[1:]  # Keep backup sequences, replace primary
 
+        # Budget tracker: tracks defense-related resource usage per run
+        self._budget_tracker = {
+            "retries_per_stage": {},   # stage_name -> retry count
+            "rewritten_scenes": 0,     # total scenes rewritten in feedback loops
+            "defense_tokens": 0,       # tokens spent on retries + feedback rewrites
+            "generation_tokens": 0,    # tokens spent on primary generation
+        }
+
+    # Default defense thresholds — overridable via config.yaml defense.thresholds
+    _DEFAULT_DEFENSE_THRESHOLDS = {
+        "scene_count_drop_pct": 0.50,         # H check 1: scene count < X of original
+        "prefix_corruption_pct": 0.30,        # H check 2: >X of scenes share first 100 chars
+        "avg_word_plummet_pct": 0.40,         # H check 4: avg wc dropped > X
+        "forbidden_marker_pct": 0.40,         # H check 5: >X of scenes contain meta-markers
+        "fingerprint_collapse_pct": 0.50,     # H check 6: unique fingerprints < X of original
+        "deai_word_delta_pct": 0.15,          # Layer I: scene wc delta > X -> restore
+        "deai_paragraph_loss_pct": 0.50,      # Layer I: paragraph wc loss > X -> reject rewrite
+        "salvage_min_words": 150,             # F1 2.5: salvage warning threshold
+        "salvage_min_paragraphs": 2,          # F1 2.5: salvage warning threshold
+        "salvage_restore_ratio": 3.0,         # F1 2.5: original/stripped ratio for restore
+        "freshness_bigram_pct": 0.40,         # quality_audit: bigram overlap > X = stale
+        "feedback_loop_max_scenes": 5,        # G: max scenes per feedback loop
+        "feedback_loop_wc_retention": 0.80,   # G: min word count retention for LLM rewrite (surgical removal = high retention)
+        "circuit_breaker_threshold": 3,       # consecutive stage failures before halt
+        "semantic_dedup_threshold": 0.50,     # F2b: cosine/Jaccard > X = duplicate
+        "duplicate_ngram_threshold": 0.60,    # F2: paragraph ngram overlap > X = duplicate
+        "budget_max_retries_per_stage": 3,    # max retries per stage per run
+        "budget_max_rewritten_scenes": 15,    # max total scenes rewritten (all feedback loops)
+        "budget_max_defense_ratio": 0.30,     # max fraction of total tokens on defense
+    }
+
+    def _get_threshold(self, key: str) -> float:
+        """Get defense threshold from config or default."""
+        if self.state and self.state.config:
+            user_thresholds = self.state.config.get("defense", {}).get("thresholds", {})
+            if key in user_thresholds:
+                return float(user_thresholds[key])
+        return self._DEFAULT_DEFENSE_THRESHOLDS[key]
+
     def get_client_for_stage(self, stage_name: str):
         """Get the appropriate LLM client for a given stage.
 
@@ -2273,6 +2536,18 @@ class PipelineOrchestrator:
             for s in group_stages:
                 parallel_lookup[s] = group_stages
 
+        # Reset budget tracker for this run
+        self._budget_tracker = {
+            "retries_per_stage": {},
+            "rewritten_scenes": 0,
+            "defense_tokens": 0,
+            "generation_tokens": 0,
+        }
+
+        # Circuit breaker: halt after N consecutive stage failures + snapshot restores
+        CIRCUIT_BREAKER_THRESHOLD = int(self._get_threshold("circuit_breaker_threshold"))
+        consecutive_failures = 0
+
         i = start_index
         while i < len(stages_to_run):
             stage_name = stages_to_run[i]
@@ -2340,13 +2615,27 @@ class PipelineOrchestrator:
                 if result.status == StageStatus.COMPLETED:
                     if stage_name not in self.state.completed_stages:
                         self.state.completed_stages.append(stage_name)
+                    consecutive_failures = 0  # Reset circuit breaker on success
 
                 self.state.save()
 
                 await self._emit("on_stage_complete", stage_name, result)
 
                 if result.status == StageStatus.FAILED:
+                    consecutive_failures += 1
                     await self._emit("on_stage_error", stage_name, result.error)
+
+                    # Circuit breaker: halt pipeline after N consecutive failures
+                    if consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD:
+                        failed_stages = [
+                            r.stage_name for r in self.state.stage_results[-CIRCUIT_BREAKER_THRESHOLD:]
+                            if r.status == StageStatus.FAILED
+                        ]
+                        logger.error(
+                            f"CIRCUIT BREAKER: {consecutive_failures} consecutive stage failures "
+                            f"({', '.join(failed_stages)}). Halting pipeline. "
+                            f"Diagnostic: check model availability, config validity, and scene state."
+                        )
                     break
 
                 # Handle iteration if quality_audit indicates it's needed
@@ -2452,8 +2741,8 @@ class PipelineOrchestrator:
                 new_count = len(self.state.scenes)
                 old_count = len(scenes_snapshot)
 
-                # Check 1: Scene count didn't drop below 50%
-                if new_count < old_count * 0.5:
+                # Check 1: Scene count didn't drop below threshold
+                if new_count < old_count * self._get_threshold("scene_count_drop_pct"):
                     logger.error(
                         f"Transaction safety: {stage_name} produced {new_count} scenes "
                         f"from {old_count} input. Restoring snapshot."
@@ -2478,7 +2767,7 @@ class PipelineOrchestrator:
                     from collections import Counter
                     prefix_counts = Counter(p for p in prefixes if p)
                     for prefix, count in prefix_counts.most_common(1):
-                        if count > new_count * 0.3:
+                        if count > new_count * self._get_threshold("prefix_corruption_pct"):
                             logger.error(
                                 f"Transaction safety: {stage_name} content-hash corruption — "
                                 f"{count}/{new_count} scenes share identical first 100 chars. "
@@ -2524,7 +2813,7 @@ class PipelineOrchestrator:
 
                 old_avg = _avg_wc(scenes_snapshot)
                 new_avg = _avg_wc(self.state.scenes)
-                if old_avg > 100 and new_avg < old_avg * 0.6:
+                if old_avg > 100 and new_avg < old_avg * (1 - self._get_threshold("avg_word_plummet_pct")):
                     logger.error(
                         f"Transaction safety: {stage_name} average word count dropped "
                         f"{old_avg:.0f} -> {new_avg:.0f} ({(1 - new_avg/old_avg)*100:.0f}% loss). "
@@ -2553,7 +2842,7 @@ class PipelineOrchestrator:
                             c = s.get("content", "") or ""
                             if any(re.search(pat, c) for pat in meta_markers):
                                 polluted += 1
-                    if polluted > new_count * 0.4:
+                    if polluted > new_count * self._get_threshold("forbidden_marker_pct"):
                         logger.error(
                             f"Transaction safety: {stage_name} meta-marker explosion — "
                             f"{polluted}/{new_count} scenes contain meta-text markers. "
@@ -2576,7 +2865,7 @@ class PipelineOrchestrator:
                 new_fps = [_fp(s) for s in self.state.scenes[:len(scenes_snapshot)]]
                 old_unique = len(set(old_fps))
                 new_unique = len(set(new_fps))
-                if old_unique > 3 and new_unique < old_unique * 0.5:
+                if old_unique > 3 and new_unique < old_unique * self._get_threshold("fingerprint_collapse_pct"):
                     logger.error(
                         f"Transaction safety: {stage_name} fingerprint uniqueness collapsed "
                         f"{old_unique} -> {new_unique} distinct scenes. Restoring snapshot."
@@ -2588,6 +2877,31 @@ class PipelineOrchestrator:
                         error=f"Scene uniqueness collapsed: {old_unique}->{new_unique}",
                         duration_seconds=duration
                     )
+
+            # Per-stage forbidden marker rate: track even when under threshold
+            if self.state.scenes and len(self.state.scenes) > 0:
+                _meta_pats = [
+                    r'(?i)certainly!?\s*here\s+is',
+                    r'(?i)the\s+rest\s+(?:of\s+the\s+)?(?:scene\s+)?remains?\s+unchanged',
+                    r'(?i)changes\s+made:',
+                    r'(?i)here\s+is\s+the\s+revised',
+                ]
+                _polluted = sum(
+                    1 for s in self.state.scenes
+                    if isinstance(s, dict) and any(
+                        re.search(pat, s.get("content", "") or "") for pat in _meta_pats
+                    )
+                )
+                _rate = _polluted / len(self.state.scenes)
+                if stage_name not in self.state.artifact_metrics.get("per_stage", {}):
+                    self.state.artifact_metrics.setdefault("per_stage", {})[stage_name] = {
+                        "scenes": 0, "preamble": 0, "truncation": 0,
+                        "alternate": 0, "analysis": 0, "pov_drift": 0,
+                        "too_short": 0, "retried": 0
+                    }
+                self.state.artifact_metrics["per_stage"][stage_name]["forbidden_marker_rate"] = round(_rate, 4)
+                if _rate > 0:
+                    logger.info(f"Forbidden marker rate after {stage_name}: {_rate:.1%} ({_polluted}/{len(self.state.scenes)})")
 
             # Log artifact metrics for this stage
             self._log_artifact_summary(stage_name)
@@ -3429,6 +3743,12 @@ Return JSON with:
             return "female"
         return ""
 
+    def _get_foreign_whitelist(self) -> list:
+        """Get project-specific foreign word whitelist from config."""
+        if self.state and self.state.config:
+            return self.state.config.get("defense", {}).get("foreign_word_whitelist", [])
+        return []
+
     def _postprocess(self, text: str) -> str:
         """Apply all code-level post-processing to scene content.
         Convenience wrapper that gets protagonist info from config."""
@@ -3436,7 +3756,8 @@ Return JSON with:
             text,
             self._get_protagonist_name(),
             self._get_setting_language(),
-            self._get_protagonist_gender()
+            self._get_protagonist_gender(),
+            self._get_foreign_whitelist()
         )
 
     # ========================================================================
@@ -3605,18 +3926,79 @@ Return JSON with:
             sm["retried"] += 1
             metrics["scenes_retried"] += 1
 
+    def _build_config_fingerprint(self) -> Dict[str, Any]:
+        """Build an explainable config fingerprint for cross-run comparability.
+
+        Stores model/provider info and content hashes of config files so
+        that metric deltas can be attributed to config changes vs code changes.
+        """
+        import hashlib as _hl
+        fingerprint: Dict[str, Any] = {}
+
+        # Model routing info
+        config = self.state.config if self.state else {}
+        fingerprint["model_overrides"] = config.get("model_overrides", {})
+
+        # LLM client info (what's actually connected)
+        client_info = {}
+        for name, client in (self.llm_clients or {}).items():
+            model_id = getattr(client, "model", getattr(client, "model_name", "unknown"))
+            client_info[name] = str(model_id)
+        if self.llm_client:
+            client_info["default"] = str(
+                getattr(self.llm_client, "model", getattr(self.llm_client, "model_name", "unknown"))
+            )
+        fingerprint["clients"] = client_info
+
+        # Content hashes of config files
+        config_files = ["config.yaml", "configs/cleanup_patterns.yaml", "configs/surgical_replacements.yaml"]
+        file_hashes = {}
+        for rel_path in config_files:
+            full_path = self.state.project_path / rel_path if "configs/" not in rel_path else (
+                Path(__file__).parent.parent / rel_path
+            )
+            if full_path.exists():
+                try:
+                    content = full_path.read_text(encoding="utf-8")
+                    file_hashes[rel_path] = _hl.sha256(content.encode()).hexdigest()[:12]
+                except Exception:
+                    file_hashes[rel_path] = "read_error"
+        fingerprint["config_hashes"] = file_hashes
+
+        return fingerprint
+
     def _persist_artifact_metrics(self):
         """Save artifact metrics to cross-run history file (JSONL).
 
-        Each line is a JSON object with run_nonce, timestamp, and metrics.
-        Enables trend analysis across pipeline runs.
+        Each line is a JSON object with run_nonce, timestamp, config
+        fingerprint, and metrics. Enables trend analysis across runs.
         """
         import datetime
         history_path = self.state.project_path / "artifact_metrics_history.jsonl"
+        # Compute defense cost ratio
+        gen_tok = self._budget_tracker.get("generation_tokens", 0)
+        def_tok = self._budget_tracker.get("defense_tokens", 0)
+        total_tok = gen_tok + def_tok
+        defense_ratio = round(def_tok / total_tok, 4) if total_tok > 0 else 0.0
+        max_ratio = self._get_threshold("budget_max_defense_ratio")
+        if defense_ratio > max_ratio:
+            logger.warning(
+                f"BUDGET GUARD: defense cost ratio {defense_ratio:.1%} exceeds limit "
+                f"{max_ratio:.0%} (defense={def_tok}, generation={gen_tok})"
+            )
+
         entry = {
             "run_nonce": self._run_nonce,
             "timestamp": datetime.datetime.now().isoformat(),
+            "config_fingerprint": self._build_config_fingerprint(),
             "metrics": self.state.artifact_metrics,
+            "budget": {
+                "defense_tokens": def_tok,
+                "generation_tokens": gen_tok,
+                "defense_cost_ratio": defense_ratio,
+                "retries_per_stage": dict(self._budget_tracker.get("retries_per_stage", {})),
+                "rewritten_scenes": self._budget_tracker.get("rewritten_scenes", 0),
+            },
         }
         try:
             with open(history_path, "a", encoding="utf-8") as f:
@@ -3664,6 +4046,25 @@ Return JSON with:
 
             if delta:
                 logger.info(f"Metrics delta vs previous run: {json.dumps(delta, indent=2)}")
+
+            # Model drift alarm: if preamble or forbidden marker rate jumped significantly
+            drift_keys = ["scenes_with_preamble", "scenes_with_meta_text"]
+            for dk in drift_keys:
+                if dk in delta and delta[dk]["direction"] == "regressed":
+                    prev_v = delta[dk]["previous"]
+                    curr_v = delta[dk]["current"]
+                    # Alarm if absolute increase > 3 AND relative increase > 50%
+                    if curr_v - prev_v > 3 and prev_v > 0 and curr_v / prev_v > 1.5:
+                        fp = self._build_config_fingerprint()
+                        logger.error(
+                            f"MODEL DRIFT ALARM: {dk} jumped {prev_v}->{curr_v} "
+                            f"(+{curr_v - prev_v}). "
+                            f"Run nonce: {self._run_nonce}, "
+                            f"Models: {fp.get('clients', {})}, "
+                            f"Config hashes: {fp.get('config_hashes', {})}. "
+                            f"Consider lowering temperature or checking model version."
+                        )
+
             return delta if delta else None
         except Exception as e:
             logger.warning(f"Failed to compute metrics delta: {e}")
@@ -3686,6 +4087,7 @@ Return JSON with:
         # Generate
         response = await client.generate(prompt, **kwargs)
         total_tokens = response.input_tokens + response.output_tokens
+        self._budget_tracker["generation_tokens"] += response.input_tokens + response.output_tokens
 
         # Run critic gate on raw output
         validation = self._validate_scene_output(response.content, scene_meta)
@@ -3694,7 +4096,16 @@ Return JSON with:
         # If critic gate fails on fixable issues, retry once with issue-specific feedback
         fixable_issues = {"preamble", "truncation_marker", "alternate_version", "analysis_commentary"}
         detected = set(validation.get("issues", {}).keys())
-        if not validation["pass"] and detected & fixable_issues:
+
+        # Budget guard: check retry budget before attempting
+        stage_retries = self._budget_tracker["retries_per_stage"].get(stage_name, 0)
+        max_retries = int(self._get_threshold("budget_max_retries_per_stage"))
+        budget_allows_retry = stage_retries < max_retries
+
+        if not validation["pass"] and detected & fixable_issues and budget_allows_retry:
+            # Track retry in budget
+            self._budget_tracker["retries_per_stage"][stage_name] = stage_retries + 1
+
             # Build targeted feedback telling the model exactly what went wrong
             specific_feedback = []
             for issue in detected & fixable_issues:
@@ -3704,12 +4115,15 @@ Return JSON with:
 
             logger.warning(
                 f"Critic gate failed for {stage_name} "
-                f"({', '.join(detected)}). Retrying with issue-specific feedback."
+                f"({', '.join(detected)}). Retrying with issue-specific feedback. "
+                f"(retry {stage_retries + 1}/{max_retries})"
             )
             strict_kwargs = dict(kwargs)
             strict_kwargs['system_prompt'] = self._format_contract + "\n" + feedback_str + "\n"
             response2 = await client.generate(prompt, **strict_kwargs)
-            total_tokens += response2.input_tokens + response2.output_tokens
+            retry_tokens = response2.input_tokens + response2.output_tokens
+            total_tokens += retry_tokens
+            self._budget_tracker["defense_tokens"] += retry_tokens
 
             validation2 = self._validate_scene_output(response2.content, scene_meta)
             self._record_artifact_metrics(stage_name, scene_meta or {}, validation2, is_retry=True)
@@ -3736,9 +4150,28 @@ Return JSON with:
             score2 = _score_output(validation2, response2.content)
             if score2 > score1:
                 response = response2
+        elif not validation["pass"] and detected & fixable_issues and not budget_allows_retry:
+            logger.warning(
+                f"BUDGET GUARD: retry budget exhausted for {stage_name} "
+                f"({stage_retries}/{max_retries} retries used). "
+                f"Accepting output with issues: {', '.join(detected)}"
+            )
 
         # Postprocess (cleanup + POV + de-AI + tic limiting)
         processed = self._postprocess(response.content)
+
+        # Prose integrity checksums: hash at raw and clean stages
+        import hashlib as _hl
+        raw_hash = _hl.sha256((response.content or "").encode()).hexdigest()[:12]
+        clean_hash = _hl.sha256((processed or "").encode()).hexdigest()[:12]
+        if scene_meta:
+            scene_meta["content_hash_raw"] = raw_hash
+            scene_meta["content_hash_clean"] = clean_hash
+            if raw_hash != clean_hash:
+                logger.debug(
+                    f"Prose integrity: {stage_name} raw={raw_hash} clean={clean_hash} "
+                    f"(postprocessing changed content)"
+                )
 
         return processed, total_tokens
 
@@ -3821,12 +4254,6 @@ Return JSON with:
             (r'(?i)\b(?:import|from)\s+\w+', "import statement in context"),
             (r'\{\{.*?\}\}', "template placeholder in context"),
             (r'(?i)(?:TODO|FIXME|HACK|XXX):', "debug marker in context"),
-            # Prompt injection patterns
-            (r'(?i)ignore (?:all )?previous (?:instructions|prompts|rules)', "prompt injection attempt"),
-            (r'(?i)(?:you are|act as|pretend to be) (?:a |an )?(?:different|new|helpful)', "role injection attempt"),
-            (r'(?i)(?:system|admin|root)\s*(?:prompt|override|access)', "system override attempt"),
-            (r'(?i)disregard (?:all |any )?(?:above|prior|previous)', "context override attempt"),
-            (r'(?i)(?:forget|reset) (?:everything|all|your) (?:instructions|rules|context)', "instruction reset attempt"),
         ]
         for pattern, description in red_flags:
             if re.search(pattern, context):
@@ -3834,6 +4261,33 @@ Return JSON with:
                     f"Context schema violation at scene {scene_index}: {description}. "
                     f"Context may contain injected data."
                 )
+
+        # Two-factor prompt injection detection: requires BOTH an injection phrase
+        # AND a structural cue to avoid false-positives on villain dialogue
+        _INJECTION_PHRASES = [
+            r'(?i)ignore (?:all )?previous (?:instructions|prompts|rules)',
+            r'(?i)(?:you are|act as|pretend to be) (?:a |an )?(?:different|new|helpful)',
+            r'(?i)(?:system|admin|root)\s*(?:prompt|override|access)',
+            r'(?i)disregard (?:all |any )?(?:above|prior|previous)',
+            r'(?i)(?:forget|reset) (?:everything|all|your) (?:instructions|rules|context)',
+        ]
+        _STRUCTURAL_CUES = [
+            r'(?i)\bsystem\s*:', r'(?i)\bassistant\s*:', r'(?i)\brole\s*=',
+            r'(?i)###\s*instructions', r'(?i)</?(?:system|instructions|prompt)>',
+            r'(?i)\[INST\]', r'(?i)\bBEGIN\s+INSTRUCTION',
+        ]
+        has_phrase = any(re.search(p, context) for p in _INJECTION_PHRASES)
+        has_cue = any(re.search(c, context) for c in _STRUCTURAL_CUES)
+        if has_phrase and has_cue:
+            logger.error(
+                f"HIGH-CONFIDENCE prompt injection at scene {scene_index}: "
+                f"injection phrase + structural cue both present."
+            )
+        elif has_phrase:
+            logger.warning(
+                f"Possible prompt injection at scene {scene_index} "
+                f"(phrase match only, no structural cue — may be dialogue)."
+            )
 
     def _log_artifact_summary(self, stage_name: str):
         """Log artifact metrics summary for a completed stage."""
@@ -5569,10 +6023,23 @@ POLISHED SCENE:"""
             try:
                 with open(yaml_path, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
+                # Validate: all categories should be dicts with string keys/values
+                if not isinstance(data, dict):
+                    logger.warning("surgical_replacements.yaml: expected dict, using defaults")
+                    return dict(self._DEFAULT_SURGICAL_REPLACEMENTS)
                 merged: Dict[str, str] = {}
-                for category in data.values():
+                for cat_name, category in data.items():
                     if isinstance(category, dict):
-                        merged.update(category)
+                        for pattern, replacement in category.items():
+                            if not isinstance(pattern, str):
+                                logger.warning(f"surgical_replacements.yaml: non-string pattern in {cat_name}, skipping")
+                                continue
+                            if not isinstance(replacement, str):
+                                logger.warning(f"surgical_replacements.yaml: non-string replacement for '{pattern}', using empty")
+                                replacement = ""
+                            merged[pattern] = replacement
+                    elif category is not None:
+                        logger.warning(f"surgical_replacements.yaml: category '{cat_name}' is not a dict, skipping")
                 if merged:
                     logger.info(f"Loaded {len(merged)} surgical replacements from YAML")
                     return merged
@@ -5677,9 +6144,30 @@ OUTPUT the text with only problematic sentences fixed:"""
                         prompt, max_tokens=3000,
                         system_prompt=self._format_contract,
                         stop=self._stop_sequences)
-                    middle = self._postprocess(response.content)
+                    rewritten_middle = self._postprocess(response.content)
                     total_tokens += response.input_tokens + response.output_tokens
-                    scene_fixes += remaining_tells["total_tells"]
+
+                    # Per-paragraph word count guard: reject if any paragraph
+                    # lost >50% of its words (LLM rewrote too aggressively)
+                    orig_paras = [p for p in middle.split('\n\n') if p.strip()]
+                    new_paras = [p for p in rewritten_middle.split('\n\n') if p.strip()]
+                    para_ok = True
+                    if len(orig_paras) == len(new_paras):
+                        for op, np in zip(orig_paras, new_paras):
+                            owc = len(op.split())
+                            nwc = len(np.split())
+                            if owc > 20 and nwc < owc * (1 - self._get_threshold("deai_paragraph_loss_pct")):
+                                logger.warning(
+                                    f"final_deai: paragraph shrank {owc}->{nwc} words "
+                                    f"(>{50}% loss), rejecting LLM rewrite for scene {idx}"
+                                )
+                                para_ok = False
+                                break
+                    if para_ok:
+                        middle = rewritten_middle
+                        scene_fixes += remaining_tells["total_tells"]
+                    else:
+                        logger.info(f"final_deai: kept original middle for scene {idx} (paragraph shrinkage)")
 
                 # Recombine: protected head + cleaned middle + protected tail
                 content = head + "\n\n" + middle + "\n\n" + tail
@@ -5742,8 +6230,8 @@ OUTPUT the text with only problematic sentences fixed:"""
             new_wc = count_words_accurate(cleaned.get("content", ""))
             if orig_wc > 0:
                 delta_pct = (orig_wc - new_wc) / orig_wc * 100
-                # Flag if word count dropped more than 15% (LLM hallucinated/truncated)
-                if delta_pct > 15:
+                # Flag if word count dropped more than threshold (LLM hallucinated/truncated)
+                if delta_pct > self._get_threshold("deai_word_delta_pct") * 100:
                     deai_issues.append(
                         f"Scene {idx} lost {delta_pct:.0f}% words ({orig_wc}->{new_wc})"
                     )
@@ -5912,26 +6400,50 @@ OUTPUT the text with only problematic sentences fixed:"""
                 })
 
         # 6. Freshness Score — detect language recycling across scenes
-        # Compare unique bigram ratio of each scene vs the prior 3 scenes.
-        # If a scene shares too many bigrams with recent scenes, it's "stale."
+        # Compare content-word bigram overlap of each scene vs prior 3 scenes.
+        # Filters stopwords and character names to avoid false positives.
+        _FRESHNESS_STOPWORDS = {
+            "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+            "of", "with", "by", "from", "is", "was", "were", "are", "be", "been",
+            "being", "have", "has", "had", "do", "does", "did", "will", "would",
+            "could", "should", "may", "might", "shall", "can", "not", "no", "so",
+            "if", "then", "than", "that", "this", "it", "its", "my", "your", "his",
+            "her", "our", "their", "i", "me", "we", "he", "she", "they", "you",
+            "him", "them", "us", "what", "which", "who", "whom", "how", "when",
+            "where", "why", "all", "each", "every", "both", "few", "more", "most",
+            "some", "any", "as", "up", "out", "into", "over", "just", "like",
+            "about", "back", "down", "still", "even", "also", "too", "very",
+        }
+        # Build name filter from config (protagonist + other character first names)
+        _name_filter = set()
+        protag_name = self._get_protagonist_name()
+        if protag_name:
+            _name_filter.add(protag_name.split()[0].lower())
+        for ch in (self.state.config or {}).get("characters", {}).get("others", []):
+            if isinstance(ch, str) and ch.strip():
+                _name_filter.add(ch.strip().split()[0].lower())
+
+        def _content_bigrams(text):
+            words = [w for w in text.lower().split()
+                     if w not in _FRESHNESS_STOPWORDS and w not in _name_filter and len(w) > 2]
+            return set(zip(words, words[1:])) if len(words) > 1 else set()
+
         stale_scenes = []
         for i, scene in enumerate(scenes_list):
             content = scene.get("content", "")
             if not content or i < 1:
                 continue
-            words = content.lower().split()
-            if len(words) < 50:
+            if len(content.split()) < 50:
                 continue
-            scene_bigrams = set(zip(words, words[1:]))
+            scene_bigrams = _content_bigrams(content)
             # Collect bigrams from prior 3 scenes
             prior_bigrams = set()
             for j in range(max(0, i - 3), i):
-                prior_c = scenes_list[j].get("content", "").lower().split()
-                prior_bigrams.update(zip(prior_c, prior_c[1:]))
+                prior_bigrams.update(_content_bigrams(scenes_list[j].get("content", "")))
             if not prior_bigrams or not scene_bigrams:
                 continue
             overlap = len(scene_bigrams & prior_bigrams) / len(scene_bigrams)
-            if overlap > 0.40:  # >40% bigram reuse = stale
+            if overlap > 0.40:  # >40% content-word bigram reuse = stale
                 stale_scenes.append({
                     "scene_index": i,
                     "chapter": scene.get("chapter", "?"),
@@ -5947,6 +6459,8 @@ OUTPUT the text with only problematic sentences fixed:"""
                     "severity": "medium",
                     "message": f"{len(stale_scenes)} scenes have >40% bigram overlap with recent scenes (language recycling)"
                 })
+                # Stale language flagged — will trigger voice_human_pass
+                # in the stages_to_rerun logic below
             logger.info(f"Freshness: {len(stale_scenes)} stale scenes detected")
 
         # Log audit results
@@ -5979,6 +6493,12 @@ OUTPUT the text with only problematic sentences fixed:"""
                     # Short scenes - re-run scene_expansion
                     if "scene_expansion" not in audit_results["stages_to_rerun"]:
                         audit_results["stages_to_rerun"].append("scene_expansion")
+                        audit_results["needs_iteration"] = True
+
+                elif issue["type"] == "freshness":
+                    # Stale/recycled language - re-run voice_human_pass
+                    if "voice_human_pass" not in audit_results["stages_to_rerun"]:
+                        audit_results["stages_to_rerun"].append("voice_human_pass")
                         audit_results["needs_iteration"] = True
 
             # Track iteration count and detect diminishing returns
@@ -6044,21 +6564,51 @@ OUTPUT the text with only problematic sentences fixed:"""
             return None
 
         # Collect scene indices with META_TEXT errors (fixable via re-generation)
-        fixable_indices = set()
+        # Track error count per scene for prioritization
+        scene_error_counts: Dict[int, int] = {}
         for issue in report.get("issues", []):
             if issue.get("code") == "META_TEXT" and issue.get("scene_index", -1) >= 0:
-                fixable_indices.add(issue["scene_index"])
+                idx = issue["scene_index"]
+                scene_error_counts[idx] = scene_error_counts.get(idx, 0) + 1
 
-        if not fixable_indices:
+        if not scene_error_counts:
             logger.info("Validation errors found but none are auto-fixable META_TEXT")
             return {"errors_found": len(report["issues"]), "auto_fixed": 0, "skipped": "no fixable errors"}
 
+        # Prioritize: errors first by count (severity), then by position (early chapters
+        # matter more for reader first impressions)
+        prioritized = sorted(
+            scene_error_counts.keys(),
+            key=lambda i: (-scene_error_counts[i], i)  # Most errors first, then lowest index
+        )
+
         # Limit to 5 scenes per feedback loop to bound cost
-        MAX_REGEN = 5
-        fixable_indices = sorted(fixable_indices)[:MAX_REGEN]
+        MAX_REGEN = int(self._get_threshold("feedback_loop_max_scenes"))
+        total_fixable = len(prioritized)
+        fixable_indices = prioritized[:MAX_REGEN]
+
+        # If >MAX_REGEN scenes need fixes, flag systemic upstream failure
+        systemic_flag = None
+        if total_fixable > MAX_REGEN:
+            systemic_flag = (
+                f"SYSTEMIC: {total_fixable} scenes have META_TEXT errors "
+                f"(only fixing top {MAX_REGEN}). Upstream stage likely failed."
+            )
+            logger.error(systemic_flag)
+
         fixed = 0
+        max_rewritten = int(self._get_threshold("budget_max_rewritten_scenes"))
 
         for idx in fixable_indices:
+            # Budget guard: check total rewritten scenes across all feedback loops
+            if self._budget_tracker["rewritten_scenes"] >= max_rewritten:
+                logger.warning(
+                    f"BUDGET GUARD: rewritten scene limit reached "
+                    f"({self._budget_tracker['rewritten_scenes']}/{max_rewritten}). "
+                    f"Skipping remaining {len(fixable_indices) - fixable_indices.index(idx)} scenes."
+                )
+                break
+
             scene = scenes_list[idx]
             if not isinstance(scene, dict):
                 continue
@@ -6081,6 +6631,7 @@ OUTPUT the text with only problematic sentences fixed:"""
             if not meta_errors:
                 scenes_list[idx]["content"] = cleaned
                 fixed += 1
+                self._budget_tracker["rewritten_scenes"] += 1
                 logger.info(f"Feedback loop: fixed scene {idx} via postprocessor")
             else:
                 # Last resort: request a clean rewrite from LLM
@@ -6096,21 +6647,47 @@ OUTPUT the text with only problematic sentences fixed:"""
                         system_prompt=self._format_contract,
                         stop=self._stop_sequences
                     )
+                    # Track defense tokens for LLM rewrite
+                    self._budget_tracker["defense_tokens"] += (
+                        response.input_tokens + response.output_tokens
+                    )
                     rewritten = _postprocess_scene(response.content, protagonist, language, gender)
-                    if len(rewritten.split()) >= len(content.split()) * 0.5:
-                        scenes_list[idx]["content"] = rewritten
-                        fixed += 1
-                        logger.info(f"Feedback loop: rewrote scene {idx}")
+                    # Accept rewrite only if it preserves length AND key entities
+                    _retention = self._get_threshold("feedback_loop_wc_retention")
+                    if len(rewritten.split()) >= len(content.split()) * _retention:
+                        # Entity preservation: protagonist + at least 2 nouns from original
+                        orig_nouns = set(re.findall(r'\b[A-Z][a-z]{2,}\b', content))
+                        new_nouns = set(re.findall(r'\b[A-Z][a-z]{2,}\b', rewritten))
+                        protag_first = (protagonist or "").split()[0] if protagonist else ""
+                        protag_preserved = (
+                            not protag_first or
+                            protag_first in rewritten or
+                            "I " in rewritten  # First-person POV counts
+                        )
+                        shared_nouns = len(orig_nouns & new_nouns)
+                        if protag_preserved and (shared_nouns >= 2 or len(orig_nouns) < 3):
+                            scenes_list[idx]["content"] = rewritten
+                            fixed += 1
+                            self._budget_tracker["rewritten_scenes"] += 1
+                            logger.info(f"Feedback loop: rewrote scene {idx}")
+                        else:
+                            logger.warning(
+                                f"Feedback loop: rejected rewrite for scene {idx} "
+                                f"(entity drift: protag={protag_preserved}, shared={shared_nouns}/{len(orig_nouns)})"
+                            )
                 except Exception as e:
                     logger.warning(f"Feedback loop rewrite failed for scene {idx}: {e}")
 
         self.state.scenes = scenes_list
         result = {
             "errors_found": len(report["issues"]),
-            "fixable_scenes": len(fixable_indices),
+            "total_fixable": total_fixable,
+            "attempted": len(fixable_indices),
             "auto_fixed": fixed,
             "summary": report.get("summary", ""),
         }
+        if systemic_flag:
+            result["systemic_warning"] = systemic_flag
         logger.info(f"Feedback loop complete: {fixed}/{len(fixable_indices)} scenes fixed")
         return result
 
@@ -6218,6 +6795,9 @@ Respond with JSON:
             validation_report["total_words"] = total_words
             word_percentage = (total_words / target_words * 100) if target_words > 0 else 0
             validation_report["word_percentage"] = round(word_percentage, 1)
+
+        # Flush cleanup morgue to JSONL for auditability
+        _flush_morgue(self.state.project_path)
 
         # Persist artifact metrics for cross-run trend analysis
         self._persist_artifact_metrics()
