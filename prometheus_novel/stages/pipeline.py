@@ -296,6 +296,19 @@ PLANNING_STOP_SEQUENCES = [
     "\nNote:", "\n---\n",
 ]
 
+# Stop sequences for structure gate scoring (JSON analysis, not prose)
+STRUCTURE_GATE_STOP_SEQUENCES = [
+    "\nCertainly", "\nHere is", "\nSure",
+    "\nNotes:", "\nExplanation:", "\nAnalysis:",
+    "\nI hope", "\nLet me know", "\n---\n",
+]
+
+STRUCTURE_GATE_SYSTEM_PROMPT = """You are a story structure analyst. You output ONLY valid JSON.
+No markdown. No commentary. No explanation. Just the JSON object."""
+
+# Categories for structure gate scoring (0-5 each, 25 total)
+STRUCTURE_CATEGORIES = ["structure", "tension", "emotional_beat", "dialogue_realism", "scene_turn"]
+
 HIGH_CONCEPT_SYSTEM_PROMPT = """You are a senior acquisitions editor at a major publishing house.
 Your job: distill a novel's premise into a single compelling paragraph that would make an agent
 request the full manuscript.
@@ -359,8 +372,17 @@ def validate_high_concept(text: str, config: Dict) -> Dict[str, Any]:
     if protagonist:
         # Extract first name from protagonist field
         proto_first = protagonist.split(",")[0].split("(")[0].strip().split()[0]
-        if proto_first and len(proto_first) > 2 and proto_first.lower() not in text_lower:
-            issues["missing_protagonist_name"] = proto_first
+        # Common non-name starters that indicate an unnamed protagonist
+        _NON_NAME_STARTERS = {
+            "a", "an", "the", "my", "our", "one", "some", "this", "that",
+            "young", "old", "determined", "brave", "strong", "mysterious",
+        }
+        if proto_first and len(proto_first) > 2 and proto_first.lower() not in _NON_NAME_STARTERS:
+            if proto_first.lower() not in text_lower:
+                issues["missing_protagonist_name"] = proto_first
+        else:
+            # Config protagonist has no real name — concept can't prove specificity
+            issues["unnamed_protagonist_config"] = protagonist[:60]
 
     # 7. Synopsis restatement guard (bigram overlap)
     synopsis = config.get("synopsis", "")
@@ -375,6 +397,18 @@ def validate_high_concept(text: str, config: Dict) -> Dict[str, Any]:
                 if overlap > 0.5:
                     issues["synopsis_restatement"] = round(overlap, 2)
 
+    # 8. Semantic similarity guard (catches paraphrase-based restatement)
+    if synopsis and text and "synopsis_restatement" not in issues:
+        sim = _semantic_similarity_check(synopsis, text)
+        if sim > 0.85:
+            issues["semantic_restatement"] = round(sim, 3)
+
+    # 9. Input quality gate penalty — if the synopsis itself was generic,
+    #    the concept is tainted even if it only echoes a few phrases.
+    input_generic_count = config.get("_input_generic_count", 0)
+    if input_generic_count >= 3:
+        issues["input_quality_warning"] = input_generic_count
+
     # Score: start at 100, deduct for issues
     score = 100
     if "too_short" in issues:
@@ -387,10 +421,18 @@ def validate_high_concept(text: str, config: Dict) -> Dict[str, Any]:
         score -= 8 * len(issues["generic_phrases"])
     if "missing_protagonist_name" in issues:
         score -= 15
+    if "unnamed_protagonist_config" in issues:
+        score -= 12
     if "synopsis_restatement" in issues:
         score -= 30
+    if "semantic_restatement" in issues:
+        score -= 25
     if "preamble_stripped" in issues:
         score -= 5
+    if "input_quality_warning" in issues:
+        # Scale: 3 generics in input = -15, 5+ = -25, 10+ = -40
+        count = issues["input_quality_warning"]
+        score -= min(5 * count, 40)
 
     return {
         "text": text,
@@ -2340,16 +2382,16 @@ ISSUE_SPECIFIC_FEEDBACK = {
 
 # Stages that generate prose (not JSON/analysis) — get format contract + stop sequences
 PROSE_STAGES = {
-    "scene_drafting", "scene_expansion", "self_refinement",
-    "continuity_fix", "voice_human_pass", "continuity_fix_2",
+    "scene_drafting", "scene_expansion", "structure_gate", "self_refinement",
+    "continuity_fix", "continuity_recheck", "voice_human_pass", "continuity_fix_2",
     "dialogue_polish", "prose_polish", "chapter_hooks", "final_deai"
 }
 
 # Stages where full critic gate runs (retry on failure)
 # Excludes final_deai (special word-window logic)
 CRITIC_GATE_STAGES = {
-    "scene_drafting", "scene_expansion", "self_refinement",
-    "continuity_fix", "voice_human_pass", "continuity_fix_2",
+    "scene_drafting", "scene_expansion", "structure_gate", "self_refinement",
+    "continuity_fix", "continuity_recheck", "voice_human_pass", "continuity_fix_2",
     "dialogue_polish", "prose_polish", "chapter_hooks"
 }
 
@@ -2419,6 +2461,7 @@ class PipelineState:
         length_map = {
             "micro (5k)": 5000,
             "novelette (15k)": 15000,
+            "novella (30k)": 30000,
             "short (30k)": 30000,
             "standard (60k)": 60000,
             "long (90k)": 90000,
@@ -2576,8 +2619,10 @@ class PipelineOrchestrator:
         # === DRAFTING PHASE ===
         "scene_drafting",
         "scene_expansion",
+        "structure_gate",       # Gate A: structure/tension scorecard before continuity
         "continuity_audit",
         "continuity_fix",
+        "continuity_recheck",   # Tight loop: re-audit only fixed scenes, max 2 iterations
         "self_refinement",
 
         # === REFINEMENT PHASE (Destructive - before polish) ===
@@ -2615,8 +2660,10 @@ class PipelineOrchestrator:
         "trope_integration": "claude",       # Genre-aware trope placement
         "scene_drafting": "gpt",
         "scene_expansion": "claude",         # Expand short scenes
+        "structure_gate": "gemini",          # Structure scoring (JSON analysis)
         "continuity_audit": "gemini",
         "continuity_fix": "claude",
+        "continuity_recheck": "gemini",      # Re-audit fixed scenes (analysis)
         "self_refinement": "claude",
         "voice_human_pass": "claude",        # Consolidated de-AI + voice
         "continuity_audit_2": "gemini",      # Lightweight post-refinement check
@@ -2645,6 +2692,8 @@ class PipelineOrchestrator:
         # Creative stages - need variety (0.7-0.9)
         "scene_drafting": 0.85,
         "scene_expansion": 0.8,
+        "structure_gate": 0.15,              # Low temp for objective scoring
+        "continuity_recheck": 0.2,           # Low temp for factual re-audit
         "voice_human_pass": 0.7,
         "dialogue_polish": 0.75,
         "chapter_hooks": 0.75,
@@ -3186,8 +3235,10 @@ class PipelineOrchestrator:
             "trope_integration": self._stage_trope_integration,
             "scene_drafting": self._stage_scene_drafting,
             "scene_expansion": self._stage_scene_expansion,
+            "structure_gate": self._stage_structure_gate,
             "continuity_audit": self._stage_continuity_audit,
             "continuity_fix": self._stage_continuity_fix,
+            "continuity_recheck": self._stage_continuity_recheck,
             "self_refinement": self._stage_self_refinement,
             "voice_human_pass": self._stage_voice_human_pass,
             "continuity_audit_2": self._stage_continuity_audit_2,
@@ -3554,6 +3605,24 @@ class PipelineOrchestrator:
         """
         config = self.state.config
         genre = config.get("genre", "literary fiction")
+
+        # ── Input quality gate ─────────────────────────────────────────
+        # Warn early if the synopsis is packed with generic phrases —
+        # this predicts the LLM will echo them back.
+        synopsis_raw = config.get("synopsis", "")
+        if synopsis_raw:
+            syn_lower = synopsis_raw.lower()
+            input_generics = [p for p in CONCEPT_GENERIC_PHRASES if p in syn_lower]
+            if len(input_generics) >= 3:
+                logger.warning(
+                    f"INPUT QUALITY GATE: Synopsis contains {len(input_generics)} "
+                    f"generic phrases {input_generics}. High concept candidates "
+                    f"will likely inherit these — consider rewriting the synopsis."
+                )
+                # Tighten pass threshold for this run: lower the bar the LLM
+                # needs to clear means we're lenient; we want the opposite.
+                # We store the count so validate_high_concept can access it.
+                config["_input_generic_count"] = len(input_generics)
 
         # Lighter context for this stage: synopsis + genre + protagonist + conflict + themes
         context_parts = [
@@ -3934,7 +4003,7 @@ Respond as JSON with emotional_beats, peaks, troughs, rhythm_check, and transfor
                 emotional_map = {}
 
             # Store for use in later stages
-            self.state.config["emotional_architecture"] = emotional_map
+            self.state.emotional_arc = emotional_map
             return emotional_map, response.input_tokens + response.output_tokens
 
         # Mock response
@@ -3968,17 +4037,17 @@ World Bible: {json.dumps(self.state.world_bible, indent=2) if self.state.world_b
 {"DIALOGUE PATTERNS/PHRASES TO USE:\n" + dialogue_bank if dialogue_bank else ""}
 {"CULTURAL AUTHENTICITY NOTES:\n" + cultural_notes if cultural_notes else ""}
 
-For each character include:
-1. Name
-2. Role/Archetype
-3. Physical Description (detailed, vivid)
-4. Personality Traits (strengths, flaws, quirks)
-5. Backstory (formative events)
-6. Goals and Motivations (external and internal)
-7. Character Arc (start state -> end state)
-8. Voice/Speech Patterns (unique phrases, vocabulary, rhythm)
-9. Signature Behaviors (habits, tells)
-10. Relationships to Other Characters
+For each character, respond with these EXACT JSON keys:
+- "name": character name
+- "role": role/archetype
+- "physical_description": detailed, vivid appearance
+- "personality": strengths, flaws, quirks
+- "backstory": formative events
+- "goals": external and internal motivations
+- "arc": start state -> end state transformation
+- "voice": unique phrases, vocabulary, speech rhythm
+- "signature_behaviors": habits, tells
+- "relationships": connections to other characters
 
 Respond as a JSON array of character objects."""
 
@@ -4027,7 +4096,7 @@ Respond as a JSON array of character objects."""
 
         all_chapters = []
         total_tokens = 0
-        BATCH_SIZE = 5
+        BATCH_SIZE = 3
 
         # Build characters brief outside f-string to avoid brace escaping issues
         chars_brief = json.dumps(
@@ -5785,6 +5854,262 @@ Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
             "total_scenes": len(expanded_scenes)
         }, total_tokens
 
+    def _get_outline_for_scene(self, chapter: int, scene_number: int) -> dict:
+        """Map a (chapter, scene_number) pair to its outline scene dict.
+
+        Returns empty dict if not found (graceful degradation).
+        """
+        for ch in (self.state.master_outline or []):
+            if ch.get("chapter") == chapter:
+                for sc in ch.get("scenes", []):
+                    sc_num = sc.get("scene", sc.get("scene_number"))
+                    if sc_num == scene_number:
+                        return sc
+        return {}
+
+    async def _stage_structure_gate(self) -> tuple:
+        """Gate A Lite: structure/tension scorecard after scene_expansion.
+
+        For each scene, scores 5 categories (0-5 each, 25 total):
+          structure, tension, emotional_beat, dialogue_realism, scene_turn
+
+        PASS if total >= 16 AND no category < 3.
+        FAIL: repair via _generate_prose, then rescore. Max 2 iterations.
+        """
+        if not self.state.scenes:
+            logger.info("structure_gate: no scenes, skipping")
+            return {"skipped": True}, 0
+
+        scoring_client = self.get_client_for_stage("structure_gate")
+        repair_client = self.get_client_for_stage("continuity_fix")  # Claude for prose repair
+        if not scoring_client:
+            logger.warning("structure_gate: no scoring client available, skipping")
+            return {"skipped": True, "reason": "no_client"}, 0
+
+        total_tokens = 0
+        target_words = self.state.words_per_scene or 750
+        max_iterations = 2
+
+        # Track results for logging/debugging
+        gate_results = {"iterations": [], "scenes_failed_final": [], "scenes_repaired": 0}
+
+        # Build index of all scenes to check (skip very short/empty)
+        candidates = []
+        for idx, scene in enumerate(self.state.scenes):
+            if not isinstance(scene, dict):
+                continue
+            content = scene.get("content", "")
+            if len(content.split()) < 100:  # Skip scenes under 100 words
+                continue
+            candidates.append(idx)
+
+        # Track which scenes are currently failing
+        failing_indices = set(candidates)
+
+        for iteration in range(1, max_iterations + 1):
+            iter_report = {"iteration": iteration, "scored": 0, "failed": 0, "repaired": 0}
+
+            # --- SCORING PASS ---
+            still_failing = []
+            for idx in sorted(failing_indices):
+                scene = self.state.scenes[idx]
+                chapter = scene.get("chapter", 0)
+                scene_num = scene.get("scene_number", 0)
+                content = scene.get("content", "")
+                outline = self._get_outline_for_scene(chapter, scene_num)
+
+                # Build compact outline meta for scoring prompt
+                meta = {
+                    "scene_name": outline.get("scene_name", ""),
+                    "pov": outline.get("pov", scene.get("pov", "")),
+                    "purpose": outline.get("purpose", ""),
+                    "character_scene_goal": outline.get("character_scene_goal", ""),
+                    "central_conflict": outline.get("central_conflict", ""),
+                    "emotional_arc": outline.get("emotional_arc", ""),
+                    "outcome": outline.get("outcome", ""),
+                    "tension_level": outline.get("tension_level", ""),
+                }
+
+                # Truncate scene for scoring: first 120 words (opening) + last 300 words (climax/turn)
+                # Catches both bad openings and weak endings while keeping prompt small
+                words = content.split()
+                if len(words) > 500:
+                    opening = " ".join(words[:120])
+                    ending = " ".join(words[-300:])
+                    scene_excerpt = f"{opening}\n\n[...middle omitted for brevity...]\n\n{ending}"
+                else:
+                    scene_excerpt = content
+
+                scoring_prompt = f"""Evaluate this scene's narrative structure.
+
+OUTPUT ONLY JSON with this exact schema:
+{{"scores": {{"structure": 0, "tension": 0, "emotional_beat": 0, "dialogue_realism": 0, "scene_turn": 0}}, "reasons": ["max 4 short bullets"], "fixes": ["max 4 concrete fix directives"]}}
+
+Rubric (0-5 each, 5 is best):
+- structure: clear goal, obstacle, progression, coherent beginning/middle/end
+- tension: active conflict or pressure, uncertainty, consequences, escalation
+- emotional_beat: matches intended emotional arc and outcome from outline
+- dialogue_realism: subtext present, distinct voices, not exposition dumps
+- scene_turn: ending meaningfully changes stakes, knowledge, or relationships
+
+Target length: ~{target_words} words.
+
+SCENE META:
+{json.dumps(meta, ensure_ascii=False)}
+
+SCENE TEXT:
+{scene_excerpt}
+
+JSON:"""
+
+                try:
+                    response = await scoring_client.generate(
+                        scoring_prompt,
+                        system_prompt=STRUCTURE_GATE_SYSTEM_PROMPT,
+                        temperature=self.get_temperature_for_stage("structure_gate"),
+                        max_tokens=400,
+                        stop=STRUCTURE_GATE_STOP_SEQUENCES,
+                        json_mode=True,
+                    )
+                    total_tokens += response.input_tokens + response.output_tokens
+                    iter_report["scored"] += 1
+
+                    # Parse scorecard
+                    payload = extract_json_robust(response.content, expect_array=False)
+                    scores_raw = payload.get("scores", {}) if isinstance(payload, dict) else {}
+                    reasons = payload.get("reasons", []) if isinstance(payload, dict) else []
+                    fixes = payload.get("fixes", []) if isinstance(payload, dict) else []
+
+                    # Normalize scores: ensure all categories present and in 0-5
+                    scores = {}
+                    for cat in STRUCTURE_CATEGORIES:
+                        v = scores_raw.get(cat)
+                        if isinstance(v, (int, float)) and 0 <= v <= 5:
+                            scores[cat] = int(v)
+                        else:
+                            scores[cat] = 0  # Missing = treat as failing
+
+                    score_total = sum(scores.values())
+                    score_min = min(scores.values())
+                    passed = score_total >= 16 and score_min >= 3
+
+                    if passed:
+                        logger.info(
+                            f"  structure_gate: Ch{chapter}-S{scene_num} PASS "
+                            f"({score_total}/25, min={score_min})"
+                        )
+                    else:
+                        logger.warning(
+                            f"  structure_gate: Ch{chapter}-S{scene_num} FAIL "
+                            f"({score_total}/25, min={score_min}) — {scores}"
+                        )
+                        still_failing.append((idx, scores, fixes))
+                        iter_report["failed"] += 1
+
+                except Exception as e:
+                    logger.warning(f"  structure_gate: scoring failed for Ch{chapter}-S{scene_num}: {e}")
+                    # On parse failure, skip this scene (don't block pipeline)
+                    continue
+
+            # --- REPAIR PASS (only on failing scenes) ---
+            if not still_failing or not repair_client:
+                failing_indices = set()
+                gate_results["iterations"].append(iter_report)
+                break
+
+            for idx, scores, fixes in still_failing:
+                scene = self.state.scenes[idx]
+                chapter = scene.get("chapter", 0)
+                scene_num = scene.get("scene_number", 0)
+                content = scene.get("content", "")
+                outline = self._get_outline_for_scene(chapter, scene_num)
+
+                # Build targeted fix directives from scorecard
+                weak_cats = [cat for cat in STRUCTURE_CATEGORIES if scores.get(cat, 0) < 3]
+                fix_lines = "\n".join(f"- {f}" for f in fixes[:4]) if fixes else ""
+                weak_summary = ", ".join(weak_cats)
+
+                meta = {
+                    "scene_name": outline.get("scene_name", ""),
+                    "pov": outline.get("pov", scene.get("pov", "")),
+                    "character_scene_goal": outline.get("character_scene_goal", ""),
+                    "central_conflict": outline.get("central_conflict", ""),
+                    "emotional_arc": outline.get("emotional_arc", ""),
+                    "outcome": outline.get("outcome", ""),
+                    "location": outline.get("location", scene.get("location", "")),
+                }
+
+                repair_prompt = f"""Rewrite this scene to fix structural weaknesses.
+
+HARD CONSTRAINTS:
+- Preserve POV, characters present, and location.
+- Do not add new named characters.
+- End with a clear scene turn consistent with the intended outcome.
+- Target length: ~{target_words} words (±15%).
+- Output ONLY the rewritten scene prose. No headings, no commentary.
+
+SCENE META:
+{json.dumps(meta, ensure_ascii=False)}
+
+WEAK AREAS (fix these): {weak_summary}
+
+SPECIFIC FIX DIRECTIVES:
+{fix_lines}
+
+ORIGINAL SCENE:
+{content}
+
+REWRITTEN SCENE:"""
+
+                try:
+                    repaired_content, tokens = await self._generate_prose(
+                        repair_client, repair_prompt, "structure_gate",
+                        scene_meta={"chapter": chapter, "scene": scene_num},
+                        max_tokens=int(target_words * 2.2),
+                        temperature=0.45,
+                    )
+                    total_tokens += tokens
+
+                    # Verify repair didn't produce garbage (basic length check)
+                    repaired_words = len(repaired_content.split()) if repaired_content else 0
+                    original_words = len(content.split())
+                    if repaired_content and repaired_words >= original_words * 0.5:
+                        self.state.scenes[idx] = {
+                            **scene,
+                            "content": repaired_content,
+                            "structure_repaired": True,
+                            "structure_scores_before": scores,
+                        }
+                        iter_report["repaired"] += 1
+                        gate_results["scenes_repaired"] += 1
+                        logger.info(
+                            f"    structure_gate: repaired Ch{chapter}-S{scene_num} "
+                            f"({original_words}→{repaired_words} words)"
+                        )
+                    else:
+                        logger.warning(
+                            f"    structure_gate: repair too short for Ch{chapter}-S{scene_num} "
+                            f"({repaired_words} words), keeping original"
+                        )
+                except Exception as e:
+                    logger.warning(f"    structure_gate: repair failed for Ch{chapter}-S{scene_num}: {e}")
+
+            # Update failing set for next iteration (rescore the repaired scenes)
+            failing_indices = {idx for idx, _, _ in still_failing}
+            gate_results["iterations"].append(iter_report)
+
+        # Final summary
+        gate_results["scenes_failed_final"] = sorted(failing_indices)
+        if failing_indices:
+            logger.warning(
+                f"structure_gate: {len(failing_indices)} scenes still failing after "
+                f"{max_iterations} iterations: {sorted(failing_indices)}"
+            )
+        else:
+            logger.info("structure_gate: all scenes passed")
+
+        return gate_results, total_tokens
+
     async def _stage_self_refinement(self) -> tuple:
         """Self-refine scenes for quality with full config awareness."""
         refined_scenes = []
@@ -5953,11 +6278,13 @@ Respond in JSON format with "issues" array and "passed" boolean."""
         # Check if there are issues to fix
         if not self.state.continuity_issues or len(self.state.continuity_issues) == 0:
             logger.info("No continuity issues to fix - skipping stage")
+            self.state._continuity_fixed_indices = []
             return {"fixes_applied": 0, "skipped": True}, 0
 
         fixed_scenes = list(self.state.scenes or [])
         total_tokens = 0
         fixes_applied = 0
+        fixed_indices = set()  # Track which scene indices were modified
 
         for issue in self.state.continuity_issues:
             if not isinstance(issue, dict):
@@ -6007,11 +6334,173 @@ FIXED SCENE:"""
                         }
                         total_tokens += tokens
                         fixes_applied += 1
+                        fixed_indices.add(i)
                         logger.info(f"Fixed continuity issue in {scene_loc}: {issue_type}")
                     break
 
         self.state.scenes = fixed_scenes
+        # Store fixed indices for continuity_recheck to target
+        self.state._continuity_fixed_indices = sorted(fixed_indices)
+        logger.info(f"Continuity fix modified {len(fixed_indices)} scenes: {sorted(fixed_indices)}")
         return {"fixes_applied": fixes_applied, "issues_found": len(self.state.continuity_issues)}, total_tokens
+
+    async def _stage_continuity_recheck(self) -> tuple:
+        """Tight re-audit loop on scenes modified by continuity_fix.
+
+        Only re-audits the specific scenes that were just fixed.
+        If issues remain, re-fixes and re-audits. Max 2 loops.
+        Prevents continuity fixes from introducing new issues.
+        """
+        fixed_indices = getattr(self.state, '_continuity_fixed_indices', []) or []
+        if not fixed_indices:
+            logger.info("continuity_recheck: no fixed scenes to verify, skipping")
+            return {"skipped": True, "reason": "no_fixed_scenes"}, 0
+
+        audit_client = self.get_client_for_stage("continuity_recheck")
+        fix_client = self.get_client_for_stage("continuity_fix")
+        if not audit_client:
+            logger.warning("continuity_recheck: no audit client available, skipping")
+            return {"skipped": True, "reason": "no_client"}, 0
+
+        total_tokens = 0
+        max_loops = 2
+        recheck_report = {"loops": [], "total_fixes": 0}
+        remaining_indices = list(fixed_indices)
+
+        for loop_num in range(1, max_loops + 1):
+            if not remaining_indices:
+                break
+
+            # --- RE-AUDIT: Build targeted manuscript excerpt for only the fixed scenes ---
+            targeted_content = "\n\n---\n\n".join([
+                f"Chapter {self.state.scenes[i].get('chapter')}, "
+                f"Scene {self.state.scenes[i].get('scene_number')}:\n"
+                f"{self.state.scenes[i].get('content', '')}"
+                for i in remaining_indices
+                if i < len(self.state.scenes) and isinstance(self.state.scenes[i], dict)
+            ])
+
+            if not targeted_content.strip():
+                break
+
+            audit_prompt = f"""You are a continuity editor. Check ONLY these scenes for issues introduced by recent edits.
+
+WORLD RULES:
+{json.dumps(self.state.world_bible, indent=2) if self.state.world_bible else 'Not available'}
+
+CHARACTERS:
+{json.dumps(self.state.characters, indent=2) if self.state.characters else 'Not available'}
+
+EXPECTED POV: First person ("I") throughout.
+
+SCENES TO VERIFY (these were recently rewritten):
+{targeted_content}
+
+Check for:
+1. POV breaks introduced by the rewrite
+2. Character inconsistencies (names, traits changed)
+3. Timeline errors introduced
+4. Factual contradictions with established details
+5. Hallucinated characters not in the character list
+
+For each issue, provide location, type, description, suggested_fix.
+If all scenes are clean, return {{"issues": [], "passed": true}}.
+
+Respond in JSON with "issues" array and "passed" boolean."""
+
+            try:
+                response = await audit_client.generate(
+                    audit_prompt, max_tokens=2000,
+                    temperature=self.get_temperature_for_stage("continuity_recheck"),
+                    json_mode=True,
+                )
+                total_tokens += response.input_tokens + response.output_tokens
+                audit_result = extract_json_robust(response.content, expect_array=False)
+            except Exception as e:
+                logger.warning(f"continuity_recheck: audit parse failed on loop {loop_num}: {e}")
+                audit_result = {"issues": [], "passed": True}
+
+            issues = audit_result.get("issues", []) if isinstance(audit_result, dict) else []
+            loop_report = {"loop": loop_num, "indices_checked": remaining_indices[:], "issues_found": len(issues)}
+
+            if not issues:
+                logger.info(f"continuity_recheck: loop {loop_num} — all {len(remaining_indices)} scenes verified clean")
+                recheck_report["loops"].append(loop_report)
+                remaining_indices = []
+                break
+
+            logger.warning(f"continuity_recheck: loop {loop_num} — {len(issues)} issues in fixed scenes")
+
+            # --- RE-FIX: Apply targeted fixes to scenes with remaining issues ---
+            if not fix_client:
+                logger.warning("continuity_recheck: no fix client, cannot re-fix")
+                recheck_report["loops"].append(loop_report)
+                break
+
+            scenes_fixed_this_loop = set()
+            for issue in issues:
+                if not isinstance(issue, dict):
+                    continue
+                issue_location = issue.get("location", "")
+                issue_type = issue.get("type", "")
+                issue_desc = issue.get("description", "")
+                suggested_fix = issue.get("suggested_fix", "")
+
+                # Find matching scene in our remaining indices
+                for idx in remaining_indices:
+                    if idx >= len(self.state.scenes):
+                        continue
+                    scene = self.state.scenes[idx]
+                    if not isinstance(scene, dict):
+                        continue
+                    scene_loc = f"Chapter {scene.get('chapter')}, Scene {scene.get('scene_number')}"
+                    if issue_location.lower() in scene_loc.lower() or scene_loc.lower() in issue_location.lower():
+                        fix_prompt = f"""Fix a continuity issue in this scene.
+
+ISSUE TYPE: {issue_type}
+ISSUE DESCRIPTION: {issue_desc}
+SUGGESTED FIX: {suggested_fix}
+
+ORIGINAL SCENE:
+{scene.get('content', '')}
+
+Rewrite the scene with ONLY this issue fixed. Maintain tone, length, and style.
+Minimal change only — do not restructure.
+
+FIXED SCENE:"""
+
+                        try:
+                            content, tokens = await self._generate_prose(
+                                fix_client, fix_prompt, "continuity_recheck",
+                                scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                                max_tokens=2500, temperature=0.5,
+                            )
+                            total_tokens += tokens
+                            self.state.scenes[idx] = {
+                                **scene,
+                                "content": content,
+                                "continuity_rechecked": True,
+                            }
+                            scenes_fixed_this_loop.add(idx)
+                            recheck_report["total_fixes"] += 1
+                            logger.info(f"  continuity_recheck: re-fixed {scene_loc}: {issue_type}")
+                        except Exception as e:
+                            logger.warning(f"  continuity_recheck: re-fix failed for {scene_loc}: {e}")
+                        break
+
+            loop_report["scenes_re_fixed"] = len(scenes_fixed_this_loop)
+            recheck_report["loops"].append(loop_report)
+
+            # Next loop only rechecks scenes we just re-fixed
+            remaining_indices = sorted(scenes_fixed_this_loop)
+
+        if remaining_indices:
+            logger.warning(
+                f"continuity_recheck: {len(remaining_indices)} scenes may still have issues "
+                f"after {max_loops} loops"
+            )
+
+        return recheck_report, total_tokens
 
     async def _stage_voice_human_pass(self) -> tuple:
         """Consolidated destructive refinement: de-AI + voice + emotional texture.

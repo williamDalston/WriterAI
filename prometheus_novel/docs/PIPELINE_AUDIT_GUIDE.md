@@ -368,7 +368,7 @@ Returns empty string if all values are empty.
 | Attribute | Value |
 |-----------|-------|
 | **Location** | `pipeline.py` ~4844 |
-| **Used by** | scene_drafting, scene_expansion, self_refinement, continuity_fix, continuity_fix_2, voice_human_pass, dialogue_polish, chapter_hooks, prose_polish |
+| **Used by** | scene_drafting, scene_expansion, self_refinement, continuity_fix, continuity_fix_2, voice_human_pass, dialogue_polish, chapter_hooks, prose_polish, **structure_gate** (repair path) |
 
 **Flow:**
 1. Inject FORMAT_CONTRACT as system prompt
@@ -432,7 +432,41 @@ Returns empty string if all values are empty.
 
 ---
 
-### 3.4 _get_used_details_tracker()
+### 3.4 structure_gate (Gate A Lite)
+
+| Attribute | Value |
+|-----------|-------|
+| **Location** | `pipeline.py` ~5869 |
+| **Position** | After scene_expansion, before continuity_audit |
+| **Purpose** | Fix scene structure before continuity — early quality gate per 1-year audit |
+| **Model (scoring)** | gemini, temp 0.15, JSON mode |
+| **Model (repair)** | claude, temp 0.45, via `_generate_prose` (full artifact prevention) |
+| **Categories** | structure, tension, emotional_beat, dialogue_realism, scene_turn (0–5 each) |
+| **Pass condition** | Total ≥ 16/25 AND no category < 3 |
+| **Context** | Outline via `_get_outline_for_scene()`; scene truncated to last 900 words for scoring |
+| **Stop rule** | Max 2 iterations per scene; still-failing → WARNING, pipeline continues |
+| **Repair prompt** | Includes specific fix directives from the scorecard |
+
+**Audit focus:** Pass threshold calibration (16/25 vs 20/25), scoring model stability, repair prompt effectiveness.
+
+---
+
+### 3.5 continuity_recheck
+
+| Attribute | Value |
+|-----------|-------|
+| **Location** | `pipeline.py` ~6340 |
+| **Position** | After continuity_fix, before self_refinement |
+| **Purpose** | Re-validate continuity-fixed scenes; loop until pass or max iterations |
+| **Scope** | Only scenes in `self.state._continuity_fixed_indices` (tracked by continuity_fix) |
+| **Loop** | New issues found → re-fix → re-audit. Max 2 loops, then WARNING and continue |
+| **Re-fix** | continuity_fix client (Claude), temp 0.5; each loop narrows to only re-fixed scenes |
+
+**Audit focus:** Token efficiency of targeted audit, loop convergence, `_continuity_fixed_indices` tracking correctness.
+
+---
+
+### 3.6 _get_used_details_tracker()
 
 | Attribute | Value |
 |-----------|-------|
@@ -1451,17 +1485,18 @@ Small grid over temperature/top_p for high_concept and beat_sheet:
 | 3 | master_outline (§1.6) | Maps beats to scenes; scene differentiation critical; has drift check |
 | 4 | _build_scene_context / story_state (§2.3, §2.4) | What each scene receives; prevents loops and drift |
 | 5 | Scene drafting prompt (§3.2) | Longest prompt; context bypass gap; redundancy |
-| 6 | Artifact prevention (§6.1–§6.6) | System-level defense across all prose stages |
-| 7 | Planning output validators (§11) | Definition of Done for JSON artifacts; silent degradation prevention |
-| 8 | Token economics (§8) | Context pressure, cost monitoring, budget guards |
-| 9 | Config/seed validation (§4.1, §4.2) | Ensure solid inputs before pipeline runs |
-| 10 | character_profiles (§1.5) | Voice and arc feed dialogue and prose |
-| 11 | State persistence (§9) | Atomic writes, resume logic, crash recovery |
-| 12 | Drift remediation (§12) | Detection without response is expensive logging |
-| 13 | Validation feedback loop (§7.1) | Last line of defense for meta-text |
-| 14 | Defense configs (§5.1–§5.3) | Tunable without code changes |
-| 15 | Forensic instrumentation (§13) | Prompt snapshots, run report, graveyard |
-| 16 | Async reliability (§17) | Prevents corrupted partial runs |
+| 6 | structure_gate + continuity_recheck (§3.4, §3.5) | Early structure gate; continuity loop until pass; fix bones before polish |
+| 7 | Artifact prevention (§6.1–§6.6) | System-level defense across all prose stages |
+| 8 | Planning output validators (§11) | Definition of Done for JSON artifacts; silent degradation prevention |
+| 9 | Token economics (§8) | Context pressure, cost monitoring, budget guards |
+| 10 | Config/seed validation (§4.1, §4.2) | Ensure solid inputs before pipeline runs |
+| 11 | character_profiles (§1.5) | Voice and arc feed dialogue and prose |
+| 12 | State persistence (§9) | Atomic writes, resume logic, crash recovery |
+| 13 | Drift remediation (§12) | Detection without response is expensive logging |
+| 14 | Validation feedback loop (§7.1) | Last line of defense for meta-text |
+| 15 | Defense configs (§5.1–§5.3) | Tunable without code changes |
+| 16 | Forensic instrumentation (§13) | Prompt snapshots, run report, graveyard |
+| 17 | Async reliability (§17) | Prevents corrupted partial runs |
 
 ---
 
@@ -1481,7 +1516,7 @@ Issues identified during audit that should be resolved:
 | No prompt text persistence | §13.1 | Medium | Cannot replay a generation with the identical prompt; metadata only |
 | Drift detected but not remediated | §12.1 | Medium | `check_concept_drift()` logs WARNING but takes no corrective action |
 | No mid-stage resume | §9.2 | Medium | Scene drafting crash at scene 5/20 restarts entire stage |
-| Used details tracker window | §3.4 | Low | 10-scene window insufficient for long novels; needs tiered/global hot list |
+| Used details tracker window | §3.6 | Low | 10-scene window insufficient for long novels; needs tiered/global hot list |
 | User beat merge semantics | §1.3 | Low | Unclear if user beats merge with or replace Save the Cat structure |
 | Pipeline.py monolith | — | Low (maintainability) | ~7000+ lines housing all layers; impedes isolated testing |
 
@@ -1512,6 +1547,8 @@ Issues identified during audit that should be resolved:
 | **Prose Generation** | |
 | _generate_prose | pipeline.py ~4844 |
 | _stage_scene_drafting | pipeline.py ~5384 |
+| _stage_structure_gate | pipeline.py ~5869 |
+| _stage_continuity_recheck | pipeline.py ~6340 |
 | **Artifact Prevention** | |
 | FORMAT_CONTRACT | pipeline.py ~2260 |
 | CREATIVE_STOP_SEQUENCES | pipeline.py ~2290 |

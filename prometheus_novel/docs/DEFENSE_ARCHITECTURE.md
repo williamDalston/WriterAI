@@ -59,7 +59,7 @@
 
 ---
 
-## 2. Pipeline Flow (21 stages, 7 phases)
+## 2. Pipeline Flow (24 stages, 7 phases)
 
 ```
 PLANNING -> DRAFTING -> CONTINUITY -> REFINEMENT -> POLISH -> DE-AI -> VALIDATION
@@ -68,15 +68,15 @@ PLANNING -> DRAFTING -> CONTINUITY -> REFINEMENT -> POLISH -> DE-AI -> VALIDATIO
 | Phase | Stages |
 |-------|--------|
 | **Planning** (8) | high_concept, world_building, beat_sheet, emotional_architecture, character_profiles, motif_embedding, master_outline, trope_integration |
-| **Drafting** (3) | scene_drafting, scene_expansion, self_refinement |
-| **Continuity** (2) | continuity_audit, continuity_fix |
+| **Drafting** (3) | scene_drafting, scene_expansion, structure_gate |
+| **Continuity** (4) | continuity_audit, continuity_fix, continuity_recheck, self_refinement |
 | **Refinement** (3) | voice_human_pass, continuity_audit_2, continuity_fix_2 |
 | **Polish** (3) | dialogue_polish, prose_polish, chapter_hooks |
 | **DE-AI** (1) | final_deai |
 | **Validation** (2) | quality_audit, output_validation (includes G→Pipeline feedback loop as sub-step) |
 
 **Prose stages** (get FORMAT_CONTRACT + stop sequences):
-scene_drafting, scene_expansion, self_refinement, continuity_fix, voice_human_pass, continuity_fix_2, dialogue_polish, prose_polish, chapter_hooks, final_deai
+scene_drafting, scene_expansion, self_refinement, continuity_fix, continuity_fix_2, voice_human_pass, dialogue_polish, prose_polish, chapter_hooks, final_deai. **structure_gate** repair path (when FAIL triggers) also uses `_generate_prose`.
 
 **Critic gate stages** (retry on failure): All prose stages except `final_deai` (uses direct API with paragraph-based hook protection, not `_generate_prose`).
 
@@ -467,6 +467,34 @@ Triggers when `scenes_with_preamble` or `scenes_with_meta_text` jumps >50% AND i
 
 ---
 
+### Quality Gate Stages (structure_gate, continuity_recheck)
+
+**structure_gate** (Gate A Lite) — `pipeline.py` ~5869
+
+| Attribute | Value |
+|-----------|-------|
+| **Position** | After scene_expansion, before continuity_audit |
+| **Purpose** | Fix scene structure before continuity — avoid "decorating a house while the foundation is wet" |
+| **Scoring** | Gemini, temp 0.15, JSON mode. 5 categories (0–5 each): structure, tension, emotional_beat, dialogue_realism, scene_turn |
+| **Pass condition** | Total ≥ 16/25 AND no category < 3 |
+| **Repair** | FAIL triggers targeted rewrite via `_generate_prose` (Claude, temp 0.45) — gets full artifact prevention |
+| **Context** | Outline via `_get_outline_for_scene()`; scene text truncated to last 900 words for scoring efficiency |
+| **Stop rule** | Max 2 iterations per scene; still-failing scenes get WARNING log, pipeline continues |
+| **Repair prompt** | Includes specific fix directives from the scorecard |
+
+**continuity_recheck** — `pipeline.py` ~6340
+
+| Attribute | Value |
+|-----------|-------|
+| **Position** | After continuity_fix, before self_refinement |
+| **Purpose** | Re-validate fixed scenes — continuity_fix does not blindly pass |
+| **Scope** | Audits only scenes in `self.state._continuity_fixed_indices` (tracked by continuity_fix) |
+| **Loop** | If new issues found → re-fix → re-audit. Max 2 loops, then WARNING and move on |
+| **Token efficiency** | Targeted audit (only modified scenes), not full manuscript |
+| **Re-fix** | Uses continuity_fix client (Claude), temp 0.5; each loop narrows to only re-fixed scenes |
+
+---
+
 ### Validation-Phase Stages (final_deai, quality_audit, output_validation)
 
 These run after polish and have their own logic:
@@ -525,6 +553,8 @@ These run after polish and have their own logic:
 | Morgue file grows unbounded | Morgue rotation (5MB limit, .jsonl.old archive) | -- |
 | Context injection via scene content | C containment boundary (`<user_content_boundary>` fences) | Two-factor injection detection |
 | Salvage restore event not auditable | Salvage logged to morgue with phase=2.5_salvage | -- |
+| Weak scene structure (flat tension, unclear goal, missing stakes) | structure_gate (Gate A Lite) — scorecard + targeted repair, max 2 iter | -- |
+| Continuity fix introduces new issues or misses some | continuity_recheck — re-audit fixed scenes only, loop until pass or max 2 | -- |
 
 ---
 
@@ -718,6 +748,8 @@ emotional_summarization:
 | Transaction safety (6-check integrity + forbidden-marker explosion) | `prometheus_novel/stages/pipeline.py` (_run_stage) |
 | Final DE-AI (paragraph-based protection + post-check) | `prometheus_novel/stages/pipeline.py` (_stage_final_deai) |
 | Freshness score (bigram overlap) | `prometheus_novel/stages/pipeline.py` (_stage_quality_audit) |
+| Structure gate (Gate A Lite) | `prometheus_novel/stages/pipeline.py` (_stage_structure_gate, ~5869) |
+| Continuity recheck | `prometheus_novel/stages/pipeline.py` (_stage_continuity_recheck, ~6340) |
 | Feedback loop (G→Pipeline auto-fix) | `prometheus_novel/stages/pipeline.py` (_validation_feedback_loop) |
 | Cross-run metrics + config fingerprint + delta | `prometheus_novel/stages/pipeline.py` (_build_config_fingerprint, _persist_artifact_metrics, _compute_metrics_delta) |
 | Circuit breaker (consecutive failure halt) | `prometheus_novel/stages/pipeline.py` (run method) |
