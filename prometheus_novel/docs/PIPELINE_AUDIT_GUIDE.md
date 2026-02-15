@@ -432,22 +432,81 @@ Returns empty string if all values are empty.
 
 ---
 
-### 3.4 structure_gate (Gate A Lite)
+### 3.4 structure_gate (Quality Escalation Gate)
 
 | Attribute | Value |
 |-----------|-------|
-| **Location** | `pipeline.py` ~5869 |
+| **Location** | `pipeline.py` ~6104 |
 | **Position** | After scene_expansion, before continuity_audit |
-| **Purpose** | Fix scene structure before continuity — early quality gate per 1-year audit |
+| **Purpose** | Quality escalation: score, diagnose, repair, rescore until target or diminishing returns |
 | **Model (scoring)** | gemini, temp 0.15, JSON mode |
 | **Model (repair)** | claude, temp 0.45, via `_generate_prose` (full artifact prevention) |
-| **Categories** | structure, tension, emotional_beat, dialogue_realism, scene_turn (0–5 each) |
-| **Pass condition** | Total ≥ 16/25 AND no category < 3 |
-| **Context** | Outline via `_get_outline_for_scene()`; scene truncated to last 900 words for scoring |
-| **Stop rule** | Max 2 iterations per scene; still-failing → WARNING, pipeline continues |
-| **Repair prompt** | Includes specific fix directives from the scorecard |
+| **System prompt** | `STRUCTURE_REPAIR_SYSTEM_PROMPT` ("ruthless story surgeon" persona) |
+| **Categories** | structure, tension, emotional_beat, dialogue_realism, scene_turn (0-5 each) |
+| **Pass condition** | Total >= `structure_gate_pass_total` (16) AND min >= `structure_gate_pass_min` (3) |
+| **Context** | Outline via `_get_outline_for_scene()`; scene truncated to first 120 + last 300 words |
+| **Max iterations** | `structure_gate_max_iterations` (default 3, was 2) |
+| **Stop conditions** | Target achieved, OR improvement < `structure_gate_diminishing_threshold` (1), OR max iterations |
+| **Constants** | `CATEGORY_FILL_INS`, `STRUCTURE_REPAIR_SYSTEM_PROMPT` |
 
-**Audit focus:** Pass threshold calibration (16/25 vs 20/25), scoring model stability, repair prompt effectiveness.
+**Enhanced Scoring Output (JSON schema):**
+```json
+{
+  "scores": {"structure": 0, "tension": 0, "emotional_beat": 0, "dialogue_realism": 0, "scene_turn": 0},
+  "fail_reasons": {"structure": ["Goal is vague"], "tension": ["No ticking consequence"]},
+  "repair_directives": ["Make goal explicit in first 120 words", "Add concrete obstacle"],
+  "patch_targets": ["opening paragraphs", "final beat"],
+  "reasons": ["max 4 bullets"],
+  "fixes": ["max 4 directives"]
+}
+```
+
+**Quality Escalation Loop:**
+1. Score all scenes; identify failures (total < pass_total or min < pass_min)
+2. For each failing scene:
+   - Merge LLM `fail_reasons` with `CATEGORY_FILL_INS` templates via `_build_repair_directives()`
+   - Generate repair prompt with explicit success criteria via `_build_structure_repair_prompt()`
+   - Repair via `_generate_prose()` with `STRUCTURE_REPAIR_SYSTEM_PROMPT`
+3. Re-score repaired scenes
+4. **Diminishing returns**: if score improved < `structure_gate_diminishing_threshold`, stop repairing that scene
+5. Repeat until all pass or max iterations
+
+**CATEGORY_FILL_INS (per-category diagnostic templates):**
+
+Each category has: `common_deficits`, `directives` (repair imperatives), `success_criteria` (machine-checkable), and inferred `patch_targets`.
+
+| Category | Key directives | Success criteria |
+|----------|---------------|------------------|
+| structure | State goal by para 2, add concrete obstacle, add 'why now' pressure | Goal in clear sentence, obstacle is external, pressure makes delay costly |
+| tension | State consequence explicitly, add ticking element, escalate | Consequence stated, ticking element present, 2nd half more tense |
+| emotional_beat | Different posture start/end, show via behavior, add want-vs-fear | State differs 1st/last quarter, behavior change visible, decision produced |
+| dialogue_realism | One evasive line, one interruption/deflection, subtext | Evasion present, interruption present, said != meant at least once |
+| scene_turn | End with new info/choice/loss, change the plan, cut summary ending | Last para has new info/choice/loss, plan changed, final sentence is action/dialogue/sensory |
+
+**Repair Prompt Structure:**
+- NON-NEGOTIABLES: preserve POV, 80%+ wording, +/-15% length, target specific spans
+- SCENE META: outline truth to satisfy
+- SCORECARD: per-category scores with WEAK flags
+- REPAIR DIRECTIVES: numbered imperatives (merged LLM + template)
+- SUCCESS CRITERIA: must-be-detectable conditions for re-score
+
+**Per-scene metadata after repair:**
+- `structure_repaired`: bool
+- `structure_repair_iteration`: which iteration fixed it
+- `structure_scores_before`: scores at time of last repair
+- `structure_scores_history`: list of all score snapshots
+- `structure_repair_directives`: directives used for last repair
+
+**Configurable Thresholds (defense.thresholds):**
+
+| Key | Default | Bounds | Purpose |
+|-----|---------|--------|---------|
+| structure_gate_max_iterations | 3 | 1-5 | Max score-repair-rescore cycles |
+| structure_gate_pass_total | 16 | 10-25 | Minimum total score to pass |
+| structure_gate_pass_min | 3 | 1-5 | Minimum per-category score to pass |
+| structure_gate_diminishing_threshold | 1 | 0-5 | Stop repairs if improvement < this |
+
+**Audit focus:** Pass threshold calibration, diminishing returns threshold, category fill-in coverage for genre-specific needs, repair prompt effectiveness (track scores_history), scoring model stability across iterations.
 
 ---
 
@@ -1547,7 +1606,11 @@ Issues identified during audit that should be resolved:
 | **Prose Generation** | |
 | _generate_prose | pipeline.py ~4844 |
 | _stage_scene_drafting | pipeline.py ~5384 |
-| _stage_structure_gate | pipeline.py ~5869 |
+| _stage_structure_gate | pipeline.py ~6104 |
+| _build_repair_directives | pipeline.py ~6003 |
+| _build_structure_repair_prompt | pipeline.py ~6057 |
+| CATEGORY_FILL_INS | pipeline.py ~312 |
+| STRUCTURE_REPAIR_SYSTEM_PROMPT | pipeline.py ~396 |
 | _stage_continuity_recheck | pipeline.py ~6340 |
 | **Artifact Prevention** | |
 | FORMAT_CONTRACT | pipeline.py ~2260 |

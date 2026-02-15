@@ -309,6 +309,108 @@ No markdown. No commentary. No explanation. Just the JSON object."""
 # Categories for structure gate scoring (0-5 each, 25 total)
 STRUCTURE_CATEGORIES = ["structure", "tension", "emotional_beat", "dialogue_realism", "scene_turn"]
 
+# ── Category fill-in templates ──────────────────────────────────────────────
+# Per-category diagnostic: what 4-5 looks like, common deficits, fill-in
+# directives, and machine-checkable success criteria.
+CATEGORY_FILL_INS: Dict[str, Dict[str, Any]] = {
+    "structure": {
+        "description": "clear goal, obstacle, tactic, pressure (why now)",
+        "common_deficits": [
+            "Goal is vague or implicit",
+            "Obstacle is emotional mood, not concrete blocker",
+            "No 'why now' constraint creating urgency",
+        ],
+        "directives": [
+            "State the POV character's immediate goal explicitly within the first 120 words.",
+            "Introduce a concrete obstacle that blocks progress — a person, rule, deadline, or physical barrier.",
+            "Add a 'why now' constraint that creates urgency (time limit, threat of discovery, scarcity).",
+        ],
+        "success_criteria": [
+            "By paragraph 2, the goal is stated in a single clear sentence.",
+            "The obstacle is an external blocker, not just emotion or mood.",
+            "A pressure element is present that makes delay costly.",
+        ],
+    },
+    "tension": {
+        "description": "active conflict, uncertainty, explicit consequences, escalation",
+        "common_deficits": [
+            "Stakes feel implied, never stated",
+            "No ticking consequence if goal fails",
+            "Tension is flat — same level start to finish",
+        ],
+        "directives": [
+            "State the consequence of failure in one concrete sentence (time, reputation, safety, relationship).",
+            "Add a ticking element: deadline, surveillance, scarcity, or risk of exposure.",
+            "Ensure tension escalates: at least one moment where the situation gets worse before resolution.",
+        ],
+        "success_criteria": [
+            "A specific consequence is stated explicitly, not just implied.",
+            "A ticking element or countdown creates time pressure.",
+            "Tension in the second half is demonstrably higher than the first half.",
+        ],
+    },
+    "emotional_beat": {
+        "description": "clear internal shift from one posture to another, shown through behavior",
+        "common_deficits": [
+            "Character starts and ends in same emotional state",
+            "Emotion told ('she felt sad') rather than shown through behavior",
+            "No internal contradiction (want vs fear) that resolves into choice",
+        ],
+        "directives": [
+            "Start with one emotional posture, end with a distinctly different one.",
+            "Show the shift through behavior change — what the character does differently after the turning point.",
+            "Add an internal contradiction (want vs fear) that resolves into a concrete choice or action.",
+        ],
+        "success_criteria": [
+            "The emotional state in the first quarter differs from the last quarter.",
+            "At least one behavior change is visible (not just internal narration).",
+            "An internal conflict produces a concrete decision or action.",
+        ],
+    },
+    "dialogue_realism": {
+        "description": "subtext, evasion, distinct voices, not exposition dumps",
+        "common_deficits": [
+            "Characters answer questions directly and perfectly",
+            "Dialogue is exposition — characters explain things they both know",
+            "All characters sound the same",
+        ],
+        "directives": [
+            "Make at least one line evasive — character answers a different question than the one asked.",
+            "Add one interruption, deflection, or trailing off mid-sentence.",
+            "Let a character say something 'safe' while meaning something dangerous (subtext).",
+        ],
+        "success_criteria": [
+            "At least one dialogue line contains evasion or misdirection.",
+            "At least one exchange has an interruption, pause, or deflection.",
+            "Subtext is present: what's said and what's meant diverge at least once.",
+        ],
+    },
+    "scene_turn": {
+        "description": "ending changes stakes, knowledge, or relationships; next action is forced",
+        "common_deficits": [
+            "Scene ends emotionally similar to how it started",
+            "No new information changes the next course of action",
+            "Ending is a summary or reflection, not a pivot",
+        ],
+        "directives": [
+            "End with new info that forces a new next step, an irreversible choice, or a loss that raises stakes.",
+            "Ensure the character's plan at scene end is different from their plan at scene start.",
+            "Cut any final-paragraph emotional summary — end on action, dialogue, or a charged image.",
+        ],
+        "success_criteria": [
+            "The last paragraph contains: (a) new info forcing a new step, (b) an irreversible choice, or (c) a loss.",
+            "The character's situation or plan has objectively changed from the scene's opening.",
+            "The final sentence is action, dialogue, or sensory — not reflection or summary.",
+        ],
+    },
+}
+
+# System prompt for the structure gate repair pass
+STRUCTURE_REPAIR_SYSTEM_PROMPT = (
+    "You are a ruthless story surgeon. Fix only what is necessary to satisfy the scorecard. "
+    "Preserve voice, POV, and continuity. Output only the revised scene."
+)
+
 HIGH_CONCEPT_SYSTEM_PROMPT = """You are a senior acquisitions editor at a major publishing house.
 Your job: distill a novel's premise into a single compelling paragraph that would make an agent
 request the full manuscript.
@@ -2782,6 +2884,10 @@ class PipelineOrchestrator:
         "budget_max_defense_ratio": 0.30,     # max fraction of total tokens on defense
         "entity_guard_short_scene_words": 200,  # scenes below this word count use relaxed noun threshold
         "entity_guard_short_scene_nouns": 1,    # min shared nouns required for short scenes
+        "structure_gate_max_iterations": 3,     # max score→repair→rescore cycles (was hardcoded 2)
+        "structure_gate_pass_total": 16,        # total score (out of 25) to pass
+        "structure_gate_pass_min": 3,           # minimum per-category score to pass
+        "structure_gate_diminishing_threshold": 1,  # stop if improvement < this many points
     }
 
     # Defense modes: observe (log only), protect (default — log + intervene), aggressive (stricter thresholds)
@@ -2811,6 +2917,10 @@ class PipelineOrchestrator:
         "budget_max_defense_ratio": (0.05, 0.90),
         "entity_guard_short_scene_words": (50, 500),
         "entity_guard_short_scene_nouns": (0, 5),
+        "structure_gate_max_iterations": (1, 5),
+        "structure_gate_pass_total": (10, 25),
+        "structure_gate_pass_min": (1, 5),
+        "structure_gate_diminishing_threshold": (0, 5),
     }
 
     # Aggressive mode multipliers: tighten percentage thresholds by this factor
@@ -4344,19 +4454,41 @@ Respond with a JSON object containing a "chapters" array of {batch_end - batch_s
 
         # Get applicable tropes based on genre
         applicable_tropes = {}
-        if "romance" in genre or "mafia" in genre:
+        if "romance" in genre or "romantic" in genre or "mafia" in genre:
             applicable_tropes = ROMANCE_TROPES
 
-        # Get tropes from config market positioning
+        # Get tropes from config market positioning AND strategic_guidance.tropes
         guidance = config.get("strategic_guidance", {})
         market_pos = guidance.get("market_positioning", "").lower()
+        user_tropes_raw = guidance.get("tropes", "")
+        config_str_lower = str(config).lower()
 
-        # Check which tropes are promised
+        # Check which predefined tropes are promised
         tropes_to_check = []
         for trope_key, trope_data in applicable_tropes.items():
             trope_name = trope_key.replace("_", " ")
-            if trope_name in market_pos or trope_name in str(config).lower():
+            if trope_name in market_pos or trope_name in config_str_lower:
                 tropes_to_check.append((trope_key, trope_data))
+
+        # Also parse user-defined tropes from strategic_guidance.tropes
+        if user_tropes_raw:
+            for line in user_tropes_raw.split("\n"):
+                line = line.strip().lstrip("-").strip()
+                if not line:
+                    continue
+                # Skip if already covered by a predefined trope
+                line_lower = line.lower()
+                already_covered = any(
+                    tk.replace("_", " ") in line_lower
+                    for tk, _ in tropes_to_check
+                )
+                if not already_covered:
+                    trope_key = line_lower.replace(" ", "_").replace("-", "_")[:40]
+                    tropes_to_check.append((trope_key, {
+                        "description": line,
+                        "required_elements": [f"Execute '{line}' trope naturally in scene"],
+                        "placement": "per_outline",
+                    }))
 
         if not tropes_to_check:
             logger.info("No specific tropes to integrate")
@@ -5867,14 +5999,133 @@ Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
                         return sc
         return {}
 
+    # ── Quality escalation helpers ──────────────────────────────────────────
+
+    def _build_repair_directives(
+        self, scores: Dict[str, int], llm_fixes: List[str],
+        llm_fail_reasons: Dict[str, list] = None,
+    ) -> Dict[str, Any]:
+        """Merge LLM-provided fixes with CATEGORY_FILL_INS templates.
+
+        Returns dict with:
+          directives:  list[str]   — ordered repair imperatives
+          success_criteria: list[str] — machine-checkable criteria for re-score
+          patch_targets: list[str] — which parts of the scene to touch
+        """
+        directives: list[str] = []
+        criteria: list[str] = []
+        patch_targets: list[str] = []
+
+        weak_cats = [c for c in STRUCTURE_CATEGORIES if scores.get(c, 0) < 3]
+
+        for cat in weak_cats:
+            fill = CATEGORY_FILL_INS.get(cat, {})
+            # Prefer LLM-specific fail_reasons when available, else use template
+            cat_reasons = (llm_fail_reasons or {}).get(cat, fill.get("common_deficits", []))
+
+            # Add template directives for this category
+            for d in fill.get("directives", []):
+                if d not in directives:
+                    directives.append(d)
+
+            # Add template success criteria
+            for c in fill.get("success_criteria", []):
+                if c not in criteria:
+                    criteria.append(c)
+
+            # Infer patch targets from category
+            if cat == "structure":
+                patch_targets.append("opening paragraphs (goal statement)")
+                patch_targets.append("middle section (obstacle + tactic)")
+            elif cat == "tension":
+                patch_targets.append("consequence/stakes passages")
+            elif cat == "emotional_beat":
+                patch_targets.append("emotional arc transitions")
+            elif cat == "dialogue_realism":
+                patch_targets.append("dialogue exchanges")
+            elif cat == "scene_turn":
+                patch_targets.append("final beat / closing paragraphs")
+
+        # Append LLM-generated fixes that aren't already covered
+        for f in (llm_fixes or [])[:4]:
+            if f and f not in directives:
+                directives.append(f)
+
+        return {
+            "directives": directives,
+            "success_criteria": criteria,
+            "patch_targets": patch_targets,
+        }
+
+    def _build_structure_repair_prompt(
+        self, content: str, meta: dict, scores: Dict[str, int],
+        repair_info: Dict[str, Any], target_words: int,
+    ) -> str:
+        """Build a targeted repair prompt with explicit success criteria.
+
+        Uses the user's design: preserve 80%+ wording, fix only what the
+        scorecard demands, prove compliance via success criteria.
+        """
+        weak_cats = [c for c in STRUCTURE_CATEGORIES if scores.get(c, 0) < 3]
+        score_lines = "\n".join(
+            f"  * {cat}: {scores.get(cat, 0)}/5{' **WEAK**' if cat in weak_cats else ''}"
+            for cat in STRUCTURE_CATEGORIES
+        )
+        directive_lines = "\n".join(
+            f"{i+1}. {d}" for i, d in enumerate(repair_info["directives"])
+        )
+        criteria_lines = "\n".join(
+            f"  * {c}" for c in repair_info["success_criteria"]
+        )
+        patch_lines = ", ".join(repair_info["patch_targets"]) if repair_info["patch_targets"] else "any"
+
+        return f"""Rewrite this scene to fix structural weaknesses.
+
+NON-NEGOTIABLES:
+- Output ONLY the revised scene. No preamble, no headings, no notes.
+- Preserve first-person POV and the existing character names and facts.
+- Keep at least 80% of the original wording unless a change is required to meet the success criteria.
+- Keep scene length within ±15% of the original (~{target_words} words).
+- Only modify these spans: {patch_lines}. Keep everything else verbatim where possible.
+
+SCENE META (truth you must satisfy):
+{json.dumps(meta, ensure_ascii=False)}
+
+ORIGINAL SCENE:
+{content}
+
+SCORECARD:
+{score_lines}
+
+REPAIR DIRECTIVES:
+{directive_lines}
+
+SUCCESS CRITERIA (must be detectable on re-read):
+{criteria_lines}
+
+Now output the revised scene."""
+
     async def _stage_structure_gate(self) -> tuple:
-        """Gate A Lite: structure/tension scorecard after scene_expansion.
+        """Quality escalation gate: score → diagnose → repair → rescore.
 
         For each scene, scores 5 categories (0-5 each, 25 total):
           structure, tension, emotional_beat, dialogue_realism, scene_turn
 
-        PASS if total >= 16 AND no category < 3.
-        FAIL: repair via _generate_prose, then rescore. Max 2 iterations.
+        Enhanced scoring outputs per-category fail_reasons, repair_directives,
+        and patch_targets for targeted repairs with explicit success criteria.
+
+        Quality escalation loop:
+          1. Score scene (JSON with fail_reasons + repair_directives)
+          2. Build repair prompt with category fill-ins + success criteria
+          3. Repair scene via _generate_prose
+          4. Re-score repaired scene
+          5. Stop when: target achieved, improvement < threshold, or max iterations
+
+        Configurable via defense.thresholds:
+          structure_gate_max_iterations (default 3)
+          structure_gate_pass_total (default 16)
+          structure_gate_pass_min (default 3)
+          structure_gate_diminishing_threshold (default 1)
         """
         if not self.state.scenes:
             logger.info("structure_gate: no scenes, skipping")
@@ -5888,10 +6139,20 @@ Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
 
         total_tokens = 0
         target_words = self.state.words_per_scene or 750
-        max_iterations = 2
+
+        # Pull configurable thresholds
+        max_iterations = int(self._get_threshold("structure_gate_max_iterations"))
+        pass_total = int(self._get_threshold("structure_gate_pass_total"))
+        pass_min = int(self._get_threshold("structure_gate_pass_min"))
+        diminishing_threshold = int(self._get_threshold("structure_gate_diminishing_threshold"))
 
         # Track results for logging/debugging
-        gate_results = {"iterations": [], "scenes_failed_final": [], "scenes_repaired": 0}
+        gate_results = {
+            "iterations": [],
+            "scenes_failed_final": [],
+            "scenes_repaired": 0,
+            "pass_criteria": {"total": pass_total, "min": pass_min},
+        }
 
         # Build index of all scenes to check (skip very short/empty)
         candidates = []
@@ -5903,11 +6164,15 @@ Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
                 continue
             candidates.append(idx)
 
-        # Track which scenes are currently failing
+        # Track which scenes are currently failing + their last scores for diminishing returns
         failing_indices = set(candidates)
+        prev_scores_by_idx: Dict[int, int] = {}  # idx -> previous total score
 
         for iteration in range(1, max_iterations + 1):
-            iter_report = {"iteration": iteration, "scored": 0, "failed": 0, "repaired": 0}
+            iter_report = {
+                "iteration": iteration, "scored": 0, "failed": 0,
+                "repaired": 0, "diminishing_returns_stopped": 0,
+            }
 
             # --- SCORING PASS ---
             still_failing = []
@@ -5931,7 +6196,6 @@ Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
                 }
 
                 # Truncate scene for scoring: first 120 words (opening) + last 300 words (climax/turn)
-                # Catches both bad openings and weak endings while keeping prompt small
                 words = content.split()
                 if len(words) > 500:
                     opening = " ".join(words[:120])
@@ -5940,17 +6204,20 @@ Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
                 else:
                     scene_excerpt = content
 
+                # Enhanced scoring prompt: requests fail_reasons, repair_directives, patch_targets
                 scoring_prompt = f"""Evaluate this scene's narrative structure.
 
 OUTPUT ONLY JSON with this exact schema:
-{{"scores": {{"structure": 0, "tension": 0, "emotional_beat": 0, "dialogue_realism": 0, "scene_turn": 0}}, "reasons": ["max 4 short bullets"], "fixes": ["max 4 concrete fix directives"]}}
+{{"scores": {{"structure": 0, "tension": 0, "emotional_beat": 0, "dialogue_realism": 0, "scene_turn": 0}}, "fail_reasons": {{"structure": ["..."], "tension": ["..."]}}, "repair_directives": ["max 4 imperatives"], "patch_targets": ["opening paragraphs", "final beat"], "reasons": ["max 4 short bullets"], "fixes": ["max 4 concrete fix directives"]}}
+
+Only include fail_reasons for categories scoring below 3. Each fail_reason should be 1 sentence explaining WHAT is missing.
 
 Rubric (0-5 each, 5 is best):
-- structure: clear goal, obstacle, progression, coherent beginning/middle/end
-- tension: active conflict or pressure, uncertainty, consequences, escalation
-- emotional_beat: matches intended emotional arc and outcome from outline
-- dialogue_realism: subtext present, distinct voices, not exposition dumps
-- scene_turn: ending meaningfully changes stakes, knowledge, or relationships
+- structure: clear goal stated early, concrete obstacle, tactic progression, coherent beginning/middle/end
+- tension: active conflict or pressure, explicit stakes/consequences, uncertainty, escalation over scene
+- emotional_beat: clear internal shift from one posture to another, shown through behavior change, matches intended arc
+- dialogue_realism: subtext present, evasion/deflection, distinct voices, not exposition dumps
+- scene_turn: ending changes stakes/knowledge/relationships, next action is forced, no summary endings
 
 Target length: ~{target_words} words.
 
@@ -5967,7 +6234,7 @@ JSON:"""
                         scoring_prompt,
                         system_prompt=STRUCTURE_GATE_SYSTEM_PROMPT,
                         temperature=self.get_temperature_for_stage("structure_gate"),
-                        max_tokens=400,
+                        max_tokens=600,  # Larger to accommodate fail_reasons
                         stop=STRUCTURE_GATE_STOP_SEQUENCES,
                         json_mode=True,
                     )
@@ -5976,9 +6243,14 @@ JSON:"""
 
                     # Parse scorecard
                     payload = extract_json_robust(response.content, expect_array=False)
-                    scores_raw = payload.get("scores", {}) if isinstance(payload, dict) else {}
-                    reasons = payload.get("reasons", []) if isinstance(payload, dict) else []
-                    fixes = payload.get("fixes", []) if isinstance(payload, dict) else []
+                    if not isinstance(payload, dict):
+                        payload = {}
+                    scores_raw = payload.get("scores", {})
+                    reasons = payload.get("reasons", [])
+                    fixes = payload.get("fixes", [])
+                    fail_reasons = payload.get("fail_reasons", {})
+                    llm_directives = payload.get("repair_directives", [])
+                    llm_patch_targets = payload.get("patch_targets", [])
 
                     # Normalize scores: ensure all categories present and in 0-5
                     scores = {}
@@ -5991,7 +6263,7 @@ JSON:"""
 
                     score_total = sum(scores.values())
                     score_min = min(scores.values())
-                    passed = score_total >= 16 and score_min >= 3
+                    passed = score_total >= pass_total and score_min >= pass_min
 
                     if passed:
                         logger.info(
@@ -5999,16 +6271,31 @@ JSON:"""
                             f"({score_total}/25, min={score_min})"
                         )
                     else:
+                        # Diminishing returns check: if we repaired this scene and
+                        # the score didn't improve by at least the threshold, stop trying
+                        prev_total = prev_scores_by_idx.get(idx)
+                        if prev_total is not None and iteration > 1:
+                            improvement = score_total - prev_total
+                            if improvement < diminishing_threshold:
+                                logger.info(
+                                    f"  structure_gate: Ch{chapter}-S{scene_num} diminishing returns "
+                                    f"({prev_total}→{score_total}, Δ{improvement}), stopping repairs"
+                                )
+                                iter_report["diminishing_returns_stopped"] += 1
+                                # Don't add to still_failing — accept current version
+                                prev_scores_by_idx[idx] = score_total
+                                continue
+
                         logger.warning(
                             f"  structure_gate: Ch{chapter}-S{scene_num} FAIL "
                             f"({score_total}/25, min={score_min}) — {scores}"
                         )
-                        still_failing.append((idx, scores, fixes))
+                        still_failing.append((idx, scores, fixes, fail_reasons, llm_directives))
                         iter_report["failed"] += 1
+                        prev_scores_by_idx[idx] = score_total
 
                 except Exception as e:
                     logger.warning(f"  structure_gate: scoring failed for Ch{chapter}-S{scene_num}: {e}")
-                    # On parse failure, skip this scene (don't block pipeline)
                     continue
 
             # --- REPAIR PASS (only on failing scenes) ---
@@ -6017,54 +6304,40 @@ JSON:"""
                 gate_results["iterations"].append(iter_report)
                 break
 
-            for idx, scores, fixes in still_failing:
+            for idx, scores, fixes, fail_reasons, llm_directives in still_failing:
                 scene = self.state.scenes[idx]
                 chapter = scene.get("chapter", 0)
                 scene_num = scene.get("scene_number", 0)
                 content = scene.get("content", "")
                 outline = self._get_outline_for_scene(chapter, scene_num)
 
-                # Build targeted fix directives from scorecard
-                weak_cats = [cat for cat in STRUCTURE_CATEGORIES if scores.get(cat, 0) < 3]
-                fix_lines = "\n".join(f"- {f}" for f in fixes[:4]) if fixes else ""
-                weak_summary = ", ".join(weak_cats)
-
                 meta = {
                     "scene_name": outline.get("scene_name", ""),
                     "pov": outline.get("pov", scene.get("pov", "")),
+                    "purpose": outline.get("purpose", ""),
                     "character_scene_goal": outline.get("character_scene_goal", ""),
                     "central_conflict": outline.get("central_conflict", ""),
                     "emotional_arc": outline.get("emotional_arc", ""),
                     "outcome": outline.get("outcome", ""),
+                    "tension_level": outline.get("tension_level", ""),
                     "location": outline.get("location", scene.get("location", "")),
                 }
 
-                repair_prompt = f"""Rewrite this scene to fix structural weaknesses.
+                # Build repair directives by merging LLM diagnostics with template fill-ins
+                repair_info = self._build_repair_directives(
+                    scores, fixes + llm_directives, fail_reasons,
+                )
 
-HARD CONSTRAINTS:
-- Preserve POV, characters present, and location.
-- Do not add new named characters.
-- End with a clear scene turn consistent with the intended outcome.
-- Target length: ~{target_words} words (±15%).
-- Output ONLY the rewritten scene prose. No headings, no commentary.
-
-SCENE META:
-{json.dumps(meta, ensure_ascii=False)}
-
-WEAK AREAS (fix these): {weak_summary}
-
-SPECIFIC FIX DIRECTIVES:
-{fix_lines}
-
-ORIGINAL SCENE:
-{content}
-
-REWRITTEN SCENE:"""
+                # Build targeted repair prompt with explicit success criteria
+                repair_prompt = self._build_structure_repair_prompt(
+                    content, meta, scores, repair_info, target_words,
+                )
 
                 try:
                     repaired_content, tokens = await self._generate_prose(
                         repair_client, repair_prompt, "structure_gate",
                         scene_meta={"chapter": chapter, "scene": scene_num},
+                        system_prompt=STRUCTURE_REPAIR_SYSTEM_PROMPT,
                         max_tokens=int(target_words * 2.2),
                         temperature=0.45,
                     )
@@ -6074,17 +6347,24 @@ REWRITTEN SCENE:"""
                     repaired_words = len(repaired_content.split()) if repaired_content else 0
                     original_words = len(content.split())
                     if repaired_content and repaired_words >= original_words * 0.5:
+                        # Preserve score history for debugging
+                        score_history = scene.get("structure_scores_history", [])
+                        score_history.append(scores)
+
                         self.state.scenes[idx] = {
                             **scene,
                             "content": repaired_content,
                             "structure_repaired": True,
+                            "structure_repair_iteration": iteration,
                             "structure_scores_before": scores,
+                            "structure_scores_history": score_history,
+                            "structure_repair_directives": repair_info["directives"],
                         }
                         iter_report["repaired"] += 1
                         gate_results["scenes_repaired"] += 1
                         logger.info(
                             f"    structure_gate: repaired Ch{chapter}-S{scene_num} "
-                            f"({original_words}→{repaired_words} words)"
+                            f"iter={iteration} ({original_words}→{repaired_words} words)"
                         )
                     else:
                         logger.warning(
@@ -6095,7 +6375,7 @@ REWRITTEN SCENE:"""
                     logger.warning(f"    structure_gate: repair failed for Ch{chapter}-S{scene_num}: {e}")
 
             # Update failing set for next iteration (rescore the repaired scenes)
-            failing_indices = {idx for idx, _, _ in still_failing}
+            failing_indices = {idx for idx, _, _, _, _ in still_failing}
             gate_results["iterations"].append(iter_report)
 
         # Final summary
