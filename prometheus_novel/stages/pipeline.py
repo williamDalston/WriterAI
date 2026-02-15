@@ -385,6 +385,18 @@ def _clean_scene_content(text: str) -> str:
         r'A provocative|Immediate conflict|Disorientation|A kiss or romantic|'
         r'A threat delivered|A question raised|A twist revealed|'
         r'An emotional gut-punch|A decision made)[^\n]*)+',
+        # Scene headers leaked from pipeline ("Chapter 3, Scene 2 POV: FIRST PERSON")
+        r'Chapter\s+\d+,?\s*Scene\s+\d+\s*(?:POV:[^\n]*)?',
+        r'POV:\s*FIRST PERSON[^\n]*',
+        r'Scene\s+\d+\s+of\s+\d+[^\n]*',
+        # XML/HTML tags from prompt templates (<scene>, </scene>, etc.)
+        r'</?scene[^>]*>',
+        r'</?chapter[^>]*>',
+        r'</?content[^>]*>',
+        # Beat sheet artifacts leaked into prose ("Physical beats:", "- My fingers...")
+        r'Physical beats:\s*(?:\n[-•*][^\n]+)*',
+        r'Emotional beats:\s*(?:\n[-•*][^\n]+)*',
+        r'Sensory details:\s*(?:\n[-•*][^\n]+)*',
     ]
 
     for pattern in inline_patterns:
@@ -399,28 +411,44 @@ def _clean_scene_content(text: str) -> str:
     return text.strip()
 
 
-def _enforce_first_person_pov(text: str, protagonist_name: str = "") -> str:
-    """Code-level enforcement of first-person POV.
+def _enforce_first_person_pov(text: str, protagonist_name: str = "",
+                              protagonist_gender: str = "") -> str:
+    """Code-level enforcement of first-person POV with GENDER AWARENESS.
 
-    Detects and fixes common third-person slips where the model switches
-    from 'I' to 'she/he [character name] [verb]'.
+    CRITICAL: Only convert pronouns that match the PROTAGONIST's gender.
+    - Male protagonist (Ethan): convert He/His/Him → I/My/Me. LEAVE She/Her alone.
+    - Female protagonist (Lena): convert She/Her → I/My. LEAVE He/His alone.
+    - Unknown gender: only convert [Name] references, skip pronoun fixes.
 
-    This is a SAFETY NET — runs after every creative stage.
+    This prevents the catastrophic bug where "her hair" (referring to the
+    love interest) gets converted to "my hair" for a male narrator.
     """
     if not text or not protagonist_name:
         return text
 
-    # Build protagonist name variants (e.g., "Lena", "Lena Castillo")
     names = [n.strip() for n in protagonist_name.split() if len(n.strip()) > 1]
     first_name = names[0] if names else ""
     if not first_name:
         return text
 
-    # Common third-person patterns to fix
-    # "Lena felt" -> "I felt", "She noticed" -> "I noticed"
-    fixes = []
+    gender = protagonist_gender.lower().strip()
 
-    # Pattern: "[Name] [past-tense verb]" at sentence start
+    # Determine which pronouns belong to the protagonist
+    if gender == "male":
+        subj_pronoun = "He"     # "He walked" -> "I walked"
+        poss_pronoun_cap = "His"  # "His jaw" -> "My jaw"
+        poss_pronoun = "his"    # "his jaw" -> "my jaw"
+    elif gender == "female":
+        subj_pronoun = "She"
+        poss_pronoun_cap = "Her"
+        poss_pronoun = "her"
+    else:
+        # Unknown gender: only fix [Name] references, skip all pronoun fixes
+        subj_pronoun = None
+        poss_pronoun_cap = None
+        poss_pronoun = None
+
+    # Common past-tense verbs for "[Name/Pronoun] [verb]" patterns
     verbs = (r"felt|thought|noticed|realized|knew|watched|saw|heard|"
              r"walked|turned|looked|moved|pulled|pushed|grabbed|reached|"
              r"smiled|laughed|sighed|whispered|murmured|said|asked|"
@@ -429,32 +457,8 @@ def _enforce_first_person_pov(text: str, protagonist_name: str = "") -> str:
              r"leaned|stepped|glanced|stared|paused|stopped|started|"
              r"shook|nodded|blinked|swallowed|inhaled|exhaled|breathed")
 
-    # Fix "[FirstName] verb" -> "I verb"
-    text = re.sub(
-        rf'\b{re.escape(first_name)}\s+({verbs})\b',
-        r'I \1',
-        text
-    )
+    aux_verbs = r"was|had|would|could|didn't|couldn't|wouldn't|wasn't|hadn't"
 
-    # Fix "She/He verb" at sentence boundaries (text start, after . or newline)
-    for pronoun in ["She", "He"]:
-        text = re.sub(
-            rf'^{pronoun}\s+({verbs})\b',
-            r'I \1',
-            text
-        )
-        text = re.sub(
-            rf'(?<=[.!?]\s){pronoun}\s+({verbs})\b',
-            r'I \1',
-            text
-        )
-        text = re.sub(
-            rf'(?<=\n){pronoun}\s+({verbs})\b',
-            r'I \1',
-            text
-        )
-
-    # Body parts whitelist for possessive fixes
     body_parts = (r'hand|heart|jaw|throat|stomach|chest|fingers|eyes|voice|'
                   r'mind|head|breath|hair|shoulder|back|arm|leg|pulse|skin|'
                   r'lip|lips|cheek|face|gaze|palms|wrist|temple|forehead|'
@@ -462,14 +466,17 @@ def _enforce_first_person_pov(text: str, protagonist_name: str = "") -> str:
                   r'brow|eyebrow|eyelid|nostril|ear|elbow|fingertips|'
                   r'lungs|ribs|belly|navel|waist')
 
-    # Fix "[Name]'s [body part]" -> "my [body part]"
-    # Use a function to handle capitalization at sentence starts
+    # === ALWAYS SAFE: Fix "[FirstName] verb" -> "I verb" ===
+    text = re.sub(
+        rf'\b{re.escape(first_name)}\s+({verbs})\b',
+        r'I \1',
+        text
+    )
+
+    # === ALWAYS SAFE: Fix "[FirstName]'s [body part]" -> "my [body part]" ===
     def _possessive_replacement(match):
-        """Replace possessive with 'my'/'My' depending on sentence position."""
-        full = match.group(0)
         body = match.group(1)
         start = match.start()
-        # Check if at sentence start (beginning of text or after . ! ? \n)
         if start == 0:
             return f'My {body}'
         preceding = text[max(0, start-2):start]
@@ -483,61 +490,31 @@ def _enforce_first_person_pov(text: str, protagonist_name: str = "") -> str:
         text
     )
 
-    # Fix "Her/His [body part]" -> "My [body part]" at sentence starts and text start
-    for pronoun in ["Her", "His"]:
-        # At text start
-        text = re.sub(
-            rf'^{pronoun}\s+({body_parts})\b',
-            r'My \1',
-            text
-        )
-        # After sentence-ending punctuation
-        text = re.sub(
-            rf'(?<=[.!?]\s){pronoun}\s+({body_parts})\b',
-            r'My \1',
-            text
-        )
-        # After newline
-        text = re.sub(
-            rf'(?<=\n){pronoun}\s+({body_parts})\b',
-            r'My \1',
-            text
-        )
+    # === GENDER-SPECIFIC: Only fix pronouns matching protagonist's gender ===
+    if subj_pronoun:
+        # Fix "[Pronoun] [verb]" at sentence boundaries
+        for boundary in [rf'^{subj_pronoun}', rf'(?<=[.!?]\s){subj_pronoun}', rf'(?<=\n){subj_pronoun}']:
+            text = re.sub(rf'{boundary}\s+({verbs})\b', r'I \1', text)
+            text = re.sub(rf'{boundary}\s+({aux_verbs})\b', r'I \1', text)
 
-    # Fix mid-sentence "her/his [body part]" -> "my [body part]"
-    # Uses body-part whitelist to avoid false positives like "I saw her"
-    for pronoun in ["her", "his"]:
+        # Fix "[Pronoun]'d" -> "I'd", "[Pronoun]'s" -> "I'm" contractions
+        for boundary in [rf'(?<=[.!?]\s){subj_pronoun}', rf'(?<=\n){subj_pronoun}']:
+            text = re.sub(rf"{boundary}'d\b", "I'd", text)
+            text = re.sub(rf"{boundary}'s\b", "I'm", text)
+
+    if poss_pronoun_cap:
+        # Fix "[PossPronoun] [body part]" -> "My [body part]" at sentence starts
+        for boundary in [rf'^{poss_pronoun_cap}', rf'(?<=[.!?]\s){poss_pronoun_cap}', rf'(?<=\n){poss_pronoun_cap}']:
+            text = re.sub(rf'{boundary}\s+({body_parts})\b', r'My \1', text)
+
+    if poss_pronoun:
+        # Fix mid-sentence "[poss_pronoun] [body part]" -> "my [body part]"
+        # ONLY for the protagonist's pronoun, not the opposite gender
         text = re.sub(
-            rf'\b{pronoun}\s+({body_parts})\b',
+            rf'\b{poss_pronoun}\s+({body_parts})\b',
             r'my \1',
             text
         )
-
-    # Fix remaining "She/He" with auxiliary verbs at sentence boundaries
-    aux_verbs = r"was|had|would|could|didn't|couldn't|wouldn't|wasn't|hadn't"
-    for pronoun in ["She", "He"]:
-        text = re.sub(
-            rf'^{pronoun}\s+({aux_verbs})\b',
-            r'I \1',
-            text
-        )
-        text = re.sub(
-            rf'(?<=[.!?]\s){pronoun}\s+({aux_verbs})\b',
-            r'I \1',
-            text
-        )
-        text = re.sub(
-            rf'(?<=\n){pronoun}\s+({aux_verbs})\b',
-            r'I \1',
-            text
-        )
-
-    # Fix contractions: "She'd/He'd" -> "I'd", "She's/He's" -> "I'm"
-    for pronoun in ["She", "He"]:
-        text = re.sub(rf"(?<=[.!?]\s){pronoun}'d\b", "I'd", text)
-        text = re.sub(rf"(?<=\n){pronoun}'d\b", "I'd", text)
-        text = re.sub(rf"(?<=[.!?]\s){pronoun}'s\b", "I'm", text)
-        text = re.sub(rf"(?<=\n){pronoun}'s\b", "I'm", text)
 
     return text
 
@@ -881,7 +858,8 @@ def _flag_language_inconsistencies(text: str, setting_language: str = "") -> str
 
 
 def _postprocess_scene(text: str, protagonist_name: str = "",
-                       setting_language: str = "") -> str:
+                       setting_language: str = "",
+                       protagonist_gender: str = "") -> str:
     """Master post-processor: applies all code-level quality enforcement.
 
     Called after _clean_scene_content on every creative stage output.
@@ -889,7 +867,7 @@ def _postprocess_scene(text: str, protagonist_name: str = "",
     """
     text = _clean_scene_content(text)
     text = _detect_duplicate_content(text)
-    text = _enforce_first_person_pov(text, protagonist_name)
+    text = _enforce_first_person_pov(text, protagonist_name, protagonist_gender)
     text = _strip_emotional_summaries(text)
     text = _limit_tic_frequency(text)
     if setting_language:
@@ -2298,6 +2276,27 @@ The AI tends to collapse similar scenes into the same output. To prevent this, E
 - If two scenes share a location (e.g., balcony), they must differ in: time of day, weather, object present, emotional state, or what is at stake
 - Never write two scenes with the same purpose, outcome, or emotional beat. Advance the story.
 
+=== STRUCTURAL CAPS (hard limits) ===
+1. DIGITAL INTERACTION SCENES: Max 2 per act (roughly every {self.state.target_chapters // 3} chapters).
+   "Digital interaction" = character reads/sends a text, checks phone, video calls,
+   scrolls social media, or stares at a screen as the main action. If a scene's
+   PRIMARY action is phone/laptop, it counts. Background phone use does not.
+   After the cap, force characters into physical-world scenes.
+
+2. SUSPENSE THREADS: If you introduce a threat, mystery, shadow, secret, or
+   unanswered question, you MUST mark it with a "thread" field in the scene:
+   {{"thread": "shadow_figure", "thread_action": "introduce"}}
+   Later scenes that advance or resolve that thread must also mark it:
+   {{"thread": "shadow_figure", "thread_action": "escalate"|"resolve"}}
+   Every introduced thread MUST have at least one "escalate" and one "resolve"
+   within the outline. No dangling suspense.
+
+3. OPENING HOOK VARIETY: Across the full outline, chapter openings must vary:
+   - At least 2 must open mid-dialogue
+   - At least 2 must open with physical action (not thinking/observing)
+   - At least 1 must open with a time jump or location change
+   - No more than 2 consecutive chapters may open with internal monologue
+
 Respond with a JSON object containing a "chapters" array of {batch_end - batch_start + 1} chapter objects. Each chapter MUST have "chapter", "chapter_title", and "scenes" keys."""
 
             response = await client.generate(prompt, max_tokens=4096, json_mode=True)
@@ -2549,17 +2548,70 @@ Return JSON with:
             return "french"
         return ""
 
+    def _get_protagonist_gender(self) -> str:
+        """Detect protagonist gender from config for POV pronoun safety.
+
+        Returns 'male', 'female', or '' (unknown).
+        Uses writing_style POV hints and name heuristics.
+        """
+        if not self.state or not self.state.config:
+            return ""
+        config = self.state.config
+        writing_style = config.get("writing_style", "").lower()
+        protagonist = config.get("protagonist", "").lower()
+
+        # Check explicit POV hints in writing_style
+        # "Mia's POV" / "her POV" -> female
+        # "Ethan's POV" / "his POV" -> male
+        if "his pov" in writing_style or "he/" in writing_style:
+            return "male"
+        if "her pov" in writing_style or "she/" in writing_style:
+            return "female"
+
+        # Check protagonist description for gender signals
+        male_signals = ["he ", "his ", "him ", " man", " boy", " male",
+                        " husband", " father", " son", " brother", " guy"]
+        female_signals = ["she ", "her ", " woman", " girl", " female",
+                          " wife", " mother", " daughter", " sister"]
+
+        male_score = sum(1 for s in male_signals if s in protagonist)
+        female_score = sum(1 for s in female_signals if s in protagonist)
+
+        # Check writing_style for pronoun references
+        if "mia's" in writing_style or "lena's" in writing_style:
+            female_score += 2
+        if "ethan's" in writing_style or "eli's" in writing_style:
+            male_score += 2
+
+        # Check for common gendered terms in protagonist field
+        combined = protagonist + " " + writing_style
+        if any(t in combined for t in [" her ", "she's", "she is"]):
+            female_score += 1
+        if any(t in combined for t in [" his ", "he's", "he is"]):
+            male_score += 1
+
+        if male_score > female_score:
+            return "male"
+        if female_score > male_score:
+            return "female"
+        return ""
+
     def _postprocess(self, text: str) -> str:
         """Apply all code-level post-processing to scene content.
-        Convenience wrapper that gets protagonist name and setting from config."""
+        Convenience wrapper that gets protagonist info from config."""
         return _postprocess_scene(
             text,
             self._get_protagonist_name(),
-            self._get_setting_language()
+            self._get_setting_language(),
+            self._get_protagonist_gender()
         )
 
-    def _get_previous_scenes_context(self, scenes: List[Dict], count: int = 3) -> str:
-        """Get summary of previous scenes for continuity."""
+    def _get_previous_scenes_context(self, scenes: List[Dict], count: int = 2) -> str:
+        """Get the ending of the most recent scenes for seamless transitions.
+
+        Instead of dumping 500 raw chars, gives the LAST 2 paragraphs of recent
+        scenes — which is what the AI needs to write a seamless continuation.
+        """
         if not scenes or len(scenes) == 0:
             return "This is the opening scene."
 
@@ -2570,10 +2622,153 @@ Return JSON with:
                 continue
             ch = s.get("chapter", "?")
             sc = s.get("scene_number", "?")
-            content = s.get("content", "")[:500]  # First 500 chars as summary
-            summaries.append(f"[Ch{ch} Sc{sc}]: {content}...")
+            loc = s.get("location", "unknown")
+            content = s.get("content", "")
+            # Get last 2 paragraphs (the transition point)
+            paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
+            ending = "\n\n".join(paragraphs[-2:]) if len(paragraphs) >= 2 else content[-400:]
+            # Truncate if still too long
+            if len(ending) > 500:
+                ending = ending[-500:]
+            summaries.append(f"[Ch{ch} Sc{sc}, Location: {loc}] ENDING:\n{ending}")
 
-        return "PREVIOUS SCENES (for continuity):\n" + "\n\n".join(summaries)
+        return "PREVIOUS SCENE ENDINGS (continue seamlessly from here):\n" + "\n\n".join(summaries)
+
+    def _build_story_state(self, scenes: List[Dict], current_chapter: int, current_scene: int) -> str:
+        """Build structured story state for continuity injection.
+
+        This is the #1 fix for the 'first meeting loop' and 'hallucinated locations'
+        problems. By injecting a compact state of what has ALREADY happened, the AI
+        cannot re-do earlier beats or invent contradictory facts.
+
+        Uses OUTLINE data (not generated text) for reliability.
+        """
+        outline = self.state.master_outline or []
+        config = self.state.config
+        lines = []
+
+        # 1. Story progress — where we are in the overall structure
+        total_chapters = len([ch for ch in outline if isinstance(ch, dict)])
+        total_scenes = sum(
+            len(ch.get("scenes", []))
+            for ch in outline if isinstance(ch, dict)
+        )
+        scenes_written = len(scenes)
+        lines.append(f"STORY PROGRESS: Writing scene {scenes_written + 1} of ~{total_scenes}. "
+                      f"Chapter {current_chapter} of {total_chapters}.")
+
+        # 2. Completed chapters — one-liner from outline (NOT from generated text)
+        completed = []
+        for ch in outline:
+            if not isinstance(ch, dict):
+                continue
+            ch_num = ch.get("chapter", 0)
+            if ch_num < current_chapter:
+                ch_title = ch.get("chapter_title", f"Chapter {ch_num}")
+                scene_purposes = [
+                    s.get("purpose", "")
+                    for s in ch.get("scenes", [])
+                    if isinstance(s, dict) and s.get("purpose")
+                ]
+                summary = "; ".join(scene_purposes[:3])
+                if len(summary) > 200:
+                    summary = summary[:200] + "..."
+                completed.append(f"  Ch{ch_num} \"{ch_title}\": {summary}")
+
+        if completed:
+            lines.append("")
+            lines.append("COMPLETED CHAPTERS (these events ALREADY HAPPENED — do NOT redo them):")
+            # Show all completed chapters, but compress if too many
+            if len(completed) > 10:
+                lines.extend(completed[:5])
+                lines.append(f"  ... ({len(completed) - 10} chapters omitted) ...")
+                lines.extend(completed[-5:])
+            else:
+                lines.extend(completed)
+
+        # 3. Current chapter — what's done vs upcoming
+        current_ch = next(
+            (ch for ch in outline if isinstance(ch, dict) and ch.get("chapter") == current_chapter),
+            None
+        )
+        if current_ch:
+            ch_title = current_ch.get("chapter_title", "")
+            ch_scenes = current_ch.get("scenes", [])
+            lines.append(f"")
+            lines.append(f"CURRENT CHAPTER {current_chapter} \"{ch_title}\":")
+            for s in ch_scenes:
+                if not isinstance(s, dict):
+                    continue
+                s_num = s.get("scene", s.get("scene_number", 0))
+                purpose = s.get("purpose", f"Scene {s_num}")
+                loc = s.get("location", "")
+                if s_num < current_scene:
+                    lines.append(f"  Scene {s_num}: {purpose} @ {loc} [DONE]")
+                elif s_num == current_scene:
+                    lines.append(f"  Scene {s_num}: {purpose} @ {loc} [WRITING NOW <<<]")
+                else:
+                    lines.append(f"  Scene {s_num}: {purpose} @ {loc} [upcoming]")
+
+        # 4. Location tracking — prevent coffee shop singularity
+        loc_counts: Dict[str, int] = {}
+        for s in scenes:
+            if isinstance(s, dict):
+                loc = s.get("location", "")
+                if loc:
+                    loc_counts[loc] = loc_counts.get(loc, 0) + 1
+
+        recent_locs = []
+        for s in scenes[-5:]:
+            if isinstance(s, dict) and s.get("location"):
+                recent_locs.append(s["location"])
+
+        if recent_locs:
+            lines.append(f"")
+            lines.append(f"RECENT LOCATIONS (last {len(recent_locs)} scenes): {', '.join(recent_locs)}")
+            overused = [f'"{loc}" ({c}x)' for loc, c in loc_counts.items() if c >= 3]
+            if overused:
+                lines.append(f"OVERUSED — pick a DIFFERENT location: {', '.join(overused)}")
+
+        # 5. Relationship / story-arc state based on progress percentage
+        if total_scenes > 0:
+            progress_pct = scenes_written / total_scenes * 100
+            genre = config.get("genre", "").lower()
+            if "romance" in genre:
+                if progress_pct < 15:
+                    rel_state = "FIRST MEETING phase. Characters are strangers discovering each other."
+                elif progress_pct < 30:
+                    rel_state = "EARLY CONNECTION. Characters have met and are building rapport. Past first introductions."
+                elif progress_pct < 50:
+                    rel_state = "DEEPENING BOND. Characters know each other well. Relationship is established and growing."
+                elif progress_pct < 70:
+                    rel_state = "COMPLICATIONS/STRAIN. Relationship being tested. Real challenges emerging."
+                elif progress_pct < 85:
+                    rel_state = "CRISIS/DARK MOMENT. Major obstacle or separation threatening the relationship."
+                else:
+                    rel_state = "RESOLUTION. Characters confronting their fears. Moving toward commitment or acceptance."
+            else:
+                if progress_pct < 25:
+                    rel_state = "ACT 1 — Setup and inciting incident."
+                elif progress_pct < 50:
+                    rel_state = "ACT 2A — Rising action, complications building."
+                elif progress_pct < 75:
+                    rel_state = "ACT 2B — Midpoint crossed, stakes escalating."
+                else:
+                    rel_state = "ACT 3 — Climax and resolution."
+            lines.append(f"")
+            lines.append(f"NARRATIVE ARC: {rel_state}")
+
+        # 6. Critical continuity warnings based on common AI failures
+        if scenes_written > 0:
+            lines.append(f"")
+            lines.append("CRITICAL CONTINUITY RULES:")
+            lines.append("- Characters have ALREADY MET. Do NOT write a first meeting.")
+            lines.append("- Do NOT re-introduce characters the narrator already knows.")
+            lines.append("- The narrator's location/situation must match the outline above.")
+            if scenes_written > 5:
+                lines.append("- Do NOT default to a coffee shop/café unless the outline specifies one.")
+
+        return "\n".join(lines)
 
     def _get_used_details_tracker(self, scenes: List[Dict]) -> str:
         """Extract repeated sensory details, physical tics, and catchphrases
@@ -2847,7 +3042,10 @@ TENSION LEVEL: {tension_level}/10
 
 {f"=== CULTURAL AUTHENTICITY ==={chr(10)}{cultural_notes}" if cultural_notes else ""}
 
-=== CONTINUITY ===
+=== STORY STATE (what has happened so far — READ THIS CAREFULLY) ===
+{self._build_story_state(scenes, chapter_num, scene_num)}
+
+=== CONTINUITY (previous scene endings — continue from here) ===
 {previous_context}
 
 {self._get_used_details_tracker(scenes)}
@@ -3114,11 +3312,21 @@ Find and report:
 6. Factual inconsistencies (names, places, objects that change)
 7. HALLUCINATED CHARACTERS: Any character name that does not appear in the
    character list above — this is a generation error.
+8. DANGLING SUSPENSE: Any threat, mystery, shadow, secret, or unanswered
+   question that is introduced but never resolved or addressed again.
+   Examples: a mysterious figure appears but is never explained, a phone
+   call creates tension but is never followed up, a character mentions a
+   secret that's never revealed. For each dangling thread, note where it
+   was introduced and suggest where it should be resolved or cut.
+9. REPETITIVE SCENE STRUCTURES: Scenes that follow the same pattern
+   (e.g., "character checks phone → reads message → feels emotion → stares
+   out window" appearing multiple times). Flag any scene pattern that
+   repeats 3+ times.
 
 For each issue found, provide:
 - Location (chapter/scene)
 - Type of issue (one of: pov_break, duplicate_scene, character, timeline,
-  world_rule, factual, hallucination)
+  world_rule, factual, hallucination, dangling_suspense, repetitive_structure)
 - Description
 - Suggested fix
 
@@ -3237,6 +3445,62 @@ FIXED SCENE:"""
         # Build AI tell patterns list for the prompt
         ai_tells_sample = AI_TELL_PATTERNS[:20]
 
+        # === CROSS-SCENE REPETITION DETECTOR ===
+        # Scan all scenes for repeated phrases (3+ word n-grams appearing 3+ times)
+        # and repeated physical beats, then inject as per-scene blacklist
+        from collections import Counter
+        all_scene_texts = [
+            s.get("content", "") for s in (self.state.scenes or []) if isinstance(s, dict)
+        ]
+
+        # Find repeated phrases (4-8 word n-grams across scenes)
+        phrase_counts = Counter()
+        for text in all_scene_texts:
+            words = text.lower().split()
+            seen_in_scene = set()  # Only count each phrase once per scene
+            for n in range(4, 9):
+                for i in range(len(words) - n + 1):
+                    phrase = " ".join(words[i:i+n])
+                    if phrase not in seen_in_scene:
+                        seen_in_scene.add(phrase)
+                        phrase_counts[phrase] += 1
+
+        # Repeated physical/emotional beats (common AI tics)
+        beat_patterns = [
+            "fingers hovered", "heart pounded", "heart raced", "pulse quickened",
+            "breath caught", "stomach flipped", "hands trembled", "jaw clenched",
+            "fists clenched", "eyes widened", "brow furrowed", "lips parted",
+            "chest tightened", "throat tightened", "shoulders tensed",
+            "screen flickered", "phone buzzed", "room felt heavy",
+            "hair behind her ear", "tucked a strand", "bit her lip",
+            "ran a hand through", "let out a breath", "released a breath",
+        ]
+        repeated_beats = [b for b in beat_patterns
+                          if sum(1 for t in all_scene_texts if b.lower() in t.lower()) >= 2]
+
+        # Collect phrases that appear in 3+ different scenes (likely AI repetition)
+        repeated_phrases = [phrase for phrase, count in phrase_counts.most_common(30)
+                           if count >= 3 and len(phrase) > 15]  # Skip short common phrases
+
+        # Build the repetition blacklist for injection into prompts
+        repetition_blacklist = ""
+        if repeated_beats or repeated_phrases:
+            blacklist_items = []
+            for beat in repeated_beats[:15]:
+                blacklist_items.append(f'- "{beat}"')
+            for phrase in repeated_phrases[:10]:
+                blacklist_items.append(f'- "{phrase}"')
+            repetition_blacklist = (
+                "\n=== CROSS-SCENE REPETITION BLACKLIST ===\n"
+                "These phrases/beats appear too many times across the manuscript.\n"
+                "Use each ONE MORE TIME AT MOST across the entire novel. If it appears\n"
+                "in this scene, REPLACE it with a different physical action or phrasing:\n"
+                + "\n".join(blacklist_items)
+            )
+
+        logger.info(f"Repetition detector: {len(repeated_beats)} repeated beats, "
+                     f"{len(repeated_phrases)} repeated phrases found")
+
         for scene in (self.state.scenes or []):
             if not isinstance(scene, dict):
                 enhanced_scenes.append(scene)
@@ -3313,6 +3577,7 @@ JOB 6: SURFACE CLEANUP
 Stay in their head. Their vocabulary. Their biases. Their blind spots.
 Body reactions must be SPECIFIC to this character — not generic.
 Character tics: MAX ONCE per scene. If already used, pick a different one.
+{repetition_blacklist}
 
 === SCENE TO TRANSFORM ===
 {scene.get('content', '')}
@@ -3532,6 +3797,20 @@ Output the scene with ONLY the factual fix applied:"""
    - Minimize adverbs on dialogue tags
    - "Said" is usually enough
 
+8. KILL BAD DIALOGUE TAGS (hard blacklist):
+   - NEVER: "said with a smile", "said with a grin", "said with a laugh"
+     → Replace with action beat: She smiled. "Line of dialogue."
+   - NEVER: "my voice carried", "her voice was soft", "his voice was firm"
+     → The words themselves should convey tone. Cut the voice description.
+   - NEVER: "my eyes sparkled", "her eyes danced", "his eyes darkened"
+     → Eyes don't speak. Use a physical beat instead.
+   - NEVER: "I breathed", "she exhaled", "he whispered" (when not actually whispering)
+     → Replace with "said" or cut the tag entirely.
+   - NEVER: "I admitted", "she confessed", "he revealed"
+     → These tell the reader the line is important. Let the line do that work.
+   - PREFERRED: "said", no tag (beat instead), or action tag
+     Example: He set down his cup. "That's not what I meant."
+
 === SCENE TO POLISH ===
 {scene.get('content', '')}
 
@@ -3665,6 +3944,28 @@ Respond in JSON format:
         if "hook" in commercial_notes.lower():
             hook_guidance = f"COMMERCIAL GUIDANCE: {commercial_notes}"
 
+        # Genre-aware hook types — prevent thriller cliffhangers in romance etc.
+        genre = config.get("genre", "").lower()
+        if genre in ("romance", "contemporary romance", "rom-com"):
+            hook_types = ("emotional revelation, unanswered question, romantic tension peak, "
+                         "vulnerability moment, a choice that changes everything, "
+                         "an almost-kiss or interrupted moment, a confession left hanging")
+            hook_warning = ("DO NOT add thriller/suspense elements (no shadowy figures, "
+                          "mysterious notes, glowing eyes, threats, or danger). "
+                          "This is a ROMANCE — hooks come from EMOTIONAL stakes, not physical danger.")
+        elif genre in ("thriller", "suspense", "mystery", "crime"):
+            hook_types = ("cliffhanger, threat delivered, revelation, pursuit, "
+                         "betrayal discovered, danger escalation, ticking clock")
+            hook_warning = ""
+        elif genre in ("fantasy", "sci-fi", "science fiction"):
+            hook_types = ("world-altering revelation, power shift, quest complication, "
+                         "betrayal, impossible choice, new threat revealed")
+            hook_warning = ""
+        else:
+            hook_types = ("emotional gut-punch, unanswered question, tension peak, "
+                         "twist revealed, a decision with consequences")
+            hook_warning = ""
+
         for chapter_num in sorted(chapters.keys()):
             chapter_scenes = chapters[chapter_num]
 
@@ -3685,7 +3986,8 @@ RULES:
 - Do NOT change facts (names, locations, objects, timeline)
 - No AI tells, no emotional summaries at the end
 - FIRST PERSON POV ("I") throughout — never third person
-- Hook types: cliffhanger, tension peak, threat, question, twist, gut-punch, or consequence
+- Hook types for this genre: {hook_types}
+{hook_warning}
 {hook_guidance}
 
 <scene>

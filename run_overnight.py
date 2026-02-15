@@ -1,4 +1,4 @@
-"""Overnight runner: starts web server, triggers Burning Vows generation, logs everything."""
+"""Overnight runner: runs full novel generation pipeline for a given project."""
 import asyncio
 import sys
 import os
@@ -7,8 +7,11 @@ import time
 from pathlib import Path
 from datetime import datetime
 
+# Get project name from args
+project_name = sys.argv[1] if len(sys.argv) > 1 else "seat-27b"
+
 # Setup logging to file
-log_file = Path(__file__).parent / "overnight_run.log"
+log_file = Path(__file__).parent / f"{project_name}_run.log"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -30,7 +33,6 @@ async def run_novel():
     from prometheus_novel.stages.pipeline import PipelineOrchestrator
     from prometheus_novel.prometheus_lib.llm.clients import get_client
 
-    project_name = "burning-vows"
     project_path = project_root / "prometheus_novel" / "data" / "projects" / project_name
 
     # Load config
