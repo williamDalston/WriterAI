@@ -24,6 +24,7 @@ from typing import Dict, Any, Optional, List, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 import json
+import secrets
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -344,8 +345,12 @@ def _clean_scene_content(text: str) -> str:
     6. Instruction echoes ("Output ONLY the revised scene")
 
     Optional: configs/cleanup_patterns.yaml can add extra inline patterns.
+
+    Salvage guardrail: If cleanup strips content to <50 words, restores the
+    pre-cleanup input rather than passing corrupt/empty content downstream.
     """
     import re
+    _original_input = text  # Keep for salvage restore
 
     if not text:
         return text
@@ -444,18 +449,26 @@ def _clean_scene_content(text: str) -> str:
                 text = candidate
 
     # --- PHASE 2.5: Post-truncation salvage guardrail ---
-    # After truncation, if remaining content is too small, mark as salvage-failed
-    # to prevent "clean but empty" outputs from passing downstream
+    # After truncation, if remaining content is too small, RESTORE pre-cleanup input
+    # rather than passing corrupt/empty content downstream
     stripped = text.strip()
     word_count = len(stripped.split())
     paragraph_count = len([p for p in stripped.split('\n\n') if p.strip()])
     if word_count < 150 or paragraph_count < 2:
         if word_count < 50:
+            original_wc = len((_original_input or "").split())
             logger.warning(
                 f"Cleanup salvage failed: only {word_count} words, {paragraph_count} paragraphs "
                 f"after truncation. Content may be corrupt."
             )
-            # Return what we have — caller (critic gate) will catch "too_short"
+            # If the original had substantially more content, restore it
+            # (the cleanup was too aggressive — better to have artifacts than nothing)
+            if original_wc > word_count * 3 and original_wc >= 50:
+                logger.warning(
+                    f"Salvage: restoring pre-cleanup input ({original_wc} words) "
+                    f"instead of stripped output ({word_count} words)"
+                )
+                text = _original_input
 
     # --- PHASE 3: Inline artifact removal (patterns that appear MID-text) ---
     # These can appear anywhere in the prose, not just at the end
@@ -1375,8 +1388,9 @@ def _postprocess_scene(text: str, protagonist_name: str = "",
     Called after _clean_scene_content on every creative stage output.
     Order matters: strip sentinel → clean meta-text → enforce quality.
     """
-    # Strip sentinel token if present (model was told to end with <END_PROSE>)
-    text = re.sub(r'\s*<END_PROSE>\s*$', '', text or '', flags=re.IGNORECASE).strip()
+    # Strip sentinel token if present (matches both static <END_PROSE> and
+    # per-run nonce variants like <END_PROSE_a3f1b2c9>)
+    text = re.sub(r'\s*<END_PROSE(?:_[a-f0-9]+)?>\s*$', '', text or '', flags=re.IGNORECASE).strip()
     text = _clean_scene_content(text)
     text = _detect_duplicate_content(text)
     text = _detect_semantic_duplicates(text)
@@ -2143,6 +2157,18 @@ class PipelineOrchestrator:
             "on_pipeline_complete": []
         }
 
+        # Per-run nonce sentinel: prevents cross-run prose collision and
+        # makes the stop token unpredictable (can't appear in training data).
+        self._run_nonce = secrets.token_hex(4)  # 8 hex chars, e.g. "a3f1b2c9"
+        nonce_sentinel = f"<END_PROSE_{self._run_nonce}>"
+        self._prose_sentinel = f"\n{nonce_sentinel}"
+        self._format_contract = FORMAT_CONTRACT.replace(
+            "<END_PROSE>", nonce_sentinel
+        )
+        self._stop_sequences = [
+            self._prose_sentinel,
+        ] + CREATIVE_STOP_SEQUENCES[1:]  # Keep backup sequences, replace primary
+
     def get_client_for_stage(self, stage_name: str):
         """Get the appropriate LLM client for a given stage.
 
@@ -2512,7 +2538,36 @@ class PipelineOrchestrator:
                         duration_seconds=duration
                     )
 
-                # Check 5: Previously-distinct scenes didn't become identical
+                # Check 5: Forbidden-marker explosion — if >40% of scenes contain
+                # meta-text markers after the stage, the stage polluted everything
+                if new_count > 3:
+                    meta_markers = [
+                        r'(?i)certainly!?\s*here\s+is',
+                        r'(?i)the\s+rest\s+(?:of\s+the\s+)?(?:scene\s+)?remains?\s+unchanged',
+                        r'(?i)changes\s+made:',
+                        r'(?i)here\s+is\s+the\s+revised',
+                    ]
+                    polluted = 0
+                    for s in self.state.scenes:
+                        if isinstance(s, dict):
+                            c = s.get("content", "") or ""
+                            if any(re.search(pat, c) for pat in meta_markers):
+                                polluted += 1
+                    if polluted > new_count * 0.4:
+                        logger.error(
+                            f"Transaction safety: {stage_name} meta-marker explosion — "
+                            f"{polluted}/{new_count} scenes contain meta-text markers. "
+                            f"Restoring snapshot."
+                        )
+                        self.state.scenes = scenes_snapshot
+                        return StageResult(
+                            stage_name=stage_name,
+                            status=StageStatus.FAILED,
+                            error=f"Meta-marker pollution: {polluted}/{new_count} scenes",
+                            duration_seconds=duration
+                        )
+
+                # Check 6: Previously-distinct scenes didn't become identical
                 import hashlib as _hl
                 def _fp(s):
                     c = s.get("content", "") if isinstance(s, dict) else ""
@@ -3443,10 +3498,19 @@ Return JSON with:
                 break
 
         # Fuzzy preamble detection: catch novel variants via n-gram similarity
+        # GUARD: Only run fuzzy detection if the first line has an "assistant-y anchor"
+        # word. This prevents false positives on prose starting with '"Sure," I said...'
+        _ASSISTANT_ANCHORS = {
+            "revised", "rewritten", "enhanced", "polished", "updated", "improved",
+            "expanded", "below", "here is", "here's", "as requested", "following",
+            "changes made", "version", "i've", "i have", "let me",
+        }
         if "preamble" not in issues:
-            first_line = text.split('\n', 1)[0][:100]
-            # Only check short first lines (long first lines are likely prose)
-            if len(first_line) < 80:
+            first_line = text.split('\n', 1)[0][:120]
+            first_lower = first_line.lower()
+            # Only check if the line has an assistant-y anchor word
+            has_anchor = any(anchor in first_lower for anchor in _ASSISTANT_ANCHORS)
+            if has_anchor and len(first_line) < 100:
                 max_sim = max(
                     (self._ngram_similarity(first_line, ex) for ex in self._PREAMBLE_EXEMPLARS),
                     default=0.0
@@ -3541,6 +3605,70 @@ Return JSON with:
             sm["retried"] += 1
             metrics["scenes_retried"] += 1
 
+    def _persist_artifact_metrics(self):
+        """Save artifact metrics to cross-run history file (JSONL).
+
+        Each line is a JSON object with run_nonce, timestamp, and metrics.
+        Enables trend analysis across pipeline runs.
+        """
+        import datetime
+        history_path = self.state.project_path / "artifact_metrics_history.jsonl"
+        entry = {
+            "run_nonce": self._run_nonce,
+            "timestamp": datetime.datetime.now().isoformat(),
+            "metrics": self.state.artifact_metrics,
+        }
+        try:
+            with open(history_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+            logger.info(f"Artifact metrics persisted to {history_path}")
+        except Exception as e:
+            logger.warning(f"Failed to persist artifact metrics: {e}")
+
+    def _compute_metrics_delta(self) -> Optional[Dict[str, Any]]:
+        """Compare current run metrics against the previous run.
+
+        Returns a delta dict showing improvement/regression per metric,
+        or None if no prior run exists.
+        """
+        history_path = self.state.project_path / "artifact_metrics_history.jsonl"
+        if not history_path.exists():
+            return None
+
+        try:
+            lines = history_path.read_text(encoding="utf-8").strip().split("\n")
+            # Need at least 2 entries (previous + current)
+            if len(lines) < 2:
+                return None
+
+            prev = json.loads(lines[-2])["metrics"]
+            curr = self.state.artifact_metrics
+
+            delta = {}
+            for key in ["total_scenes_generated", "scenes_with_meta_text",
+                         "scenes_with_preamble", "scenes_with_duplicate_marker",
+                         "scenes_with_pov_drift", "scenes_retried"]:
+                prev_val = prev.get(key, 0)
+                curr_val = curr.get(key, 0)
+                if prev_val != curr_val:
+                    direction = "improved" if curr_val < prev_val else "regressed"
+                    # For total_scenes_generated, more is neutral not regression
+                    if key == "total_scenes_generated":
+                        direction = "changed"
+                    delta[key] = {
+                        "previous": prev_val,
+                        "current": curr_val,
+                        "change": curr_val - prev_val,
+                        "direction": direction,
+                    }
+
+            if delta:
+                logger.info(f"Metrics delta vs previous run: {json.dumps(delta, indent=2)}")
+            return delta if delta else None
+        except Exception as e:
+            logger.warning(f"Failed to compute metrics delta: {e}")
+            return None
+
     async def _generate_prose(self, client, prompt: str, stage_name: str,
                                scene_meta: dict = None, **kwargs) -> tuple:
         """Generate prose with format contract, stop sequences, critic gate, and metrics.
@@ -3549,10 +3677,11 @@ Return JSON with:
         Returns (processed_content: str, tokens_used: int).
         """
         # Inject format contract as system prompt (stage can override)
-        kwargs.setdefault('system_prompt', FORMAT_CONTRACT)
+        # Uses per-run nonce sentinel to avoid cross-run collisions
+        kwargs.setdefault('system_prompt', self._format_contract)
 
-        # Add stop sequences for creative stages
-        kwargs.setdefault('stop', CREATIVE_STOP_SEQUENCES)
+        # Add stop sequences for creative stages (nonce sentinel + backups)
+        kwargs.setdefault('stop', self._stop_sequences)
 
         # Generate
         response = await client.generate(prompt, **kwargs)
@@ -3578,7 +3707,7 @@ Return JSON with:
                 f"({', '.join(detected)}). Retrying with issue-specific feedback."
             )
             strict_kwargs = dict(kwargs)
-            strict_kwargs['system_prompt'] = FORMAT_CONTRACT + "\n" + feedback_str + "\n"
+            strict_kwargs['system_prompt'] = self._format_contract + "\n" + feedback_str + "\n"
             response2 = await client.generate(prompt, **strict_kwargs)
             total_tokens += response2.input_tokens + response2.output_tokens
 
@@ -3692,6 +3821,12 @@ Return JSON with:
             (r'(?i)\b(?:import|from)\s+\w+', "import statement in context"),
             (r'\{\{.*?\}\}', "template placeholder in context"),
             (r'(?i)(?:TODO|FIXME|HACK|XXX):', "debug marker in context"),
+            # Prompt injection patterns
+            (r'(?i)ignore (?:all )?previous (?:instructions|prompts|rules)', "prompt injection attempt"),
+            (r'(?i)(?:you are|act as|pretend to be) (?:a |an )?(?:different|new|helpful)', "role injection attempt"),
+            (r'(?i)(?:system|admin|root)\s*(?:prompt|override|access)', "system override attempt"),
+            (r'(?i)disregard (?:all |any )?(?:above|prior|previous)', "context override attempt"),
+            (r'(?i)(?:forget|reset) (?:everything|all|your) (?:instructions|rules|context)', "instruction reset attempt"),
         ]
         for pattern, description in red_flags:
             if re.search(pattern, context):
@@ -5385,12 +5520,72 @@ POLISHED SCENE:"""
         self.state.scenes = polished_scenes
         return {"scenes_polished": len(polished_scenes)}, total_tokens
 
+    # Default surgical replacements (fallback if YAML not found)
+    _DEFAULT_SURGICAL_REPLACEMENTS = {
+        "I couldn't help but notice": "",
+        "I found myself": "I",
+        "I noticed that": "",
+        "I realized that": "",
+        "I felt a sense of": "I felt",
+        "Something about it made me": "It made me",
+        "seemed to": "",
+        "appeared to": "",
+        "managed to": "",
+        "proceeded to": "",
+        "began to": "",
+        "started to": "",
+        " incredibly ": " ",
+        " absolutely ": " ",
+        " utterly ": " ",
+        " completely ": " ",
+        " totally ": " ",
+        " truly ": " ",
+        " genuinely ": " ",
+        "a whirlwind of emotions": "confusion",
+        "time seemed to stop": "everything stilled",
+        "electricity coursed through": "heat rushed through",
+        "my heart skipped a beat": "my breath caught",
+        "butterflies in my stomach": "nerves",
+        "flooded with": "felt",
+        "overwhelmed by": "hit by",
+        "like a knife": "",
+        "like a knife slicing through butter": "",
+        "This wasn't just about": "",
+        "Something about this moment": "",
+        "A fragile connection": "",
+        "It was more than": "",
+        "a quiet promise that": "",
+        "a sense of something new": "",
+        "Tonight wasn't just about": "",
+        "a reminder that": "",
+        "connection in unexpected places": "",
+        "something significant had passed between": "",
+    }
+
+    def _load_surgical_replacements(self) -> Dict[str, str]:
+        """Load surgical replacements from YAML config, falling back to defaults."""
+        yaml_path = Path(__file__).parent.parent / "configs" / "surgical_replacements.yaml"
+        if yaml_path.exists():
+            try:
+                with open(yaml_path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+                merged: Dict[str, str] = {}
+                for category in data.values():
+                    if isinstance(category, dict):
+                        merged.update(category)
+                if merged:
+                    logger.info(f"Loaded {len(merged)} surgical replacements from YAML")
+                    return merged
+            except Exception as e:
+                logger.warning(f"Failed to load surgical_replacements.yaml: {e}")
+        return dict(self._DEFAULT_SURGICAL_REPLACEMENTS)
+
     async def _stage_final_deai(self) -> tuple:
         """Final surgical pass to remove any AI tells that slipped through.
 
-        Runs AFTER chapter_hooks. Uses word-window slicing to PROTECT hook text:
-        - First 300 words: protected (chapter opening)
-        - Last 400 words: protected (chapter hook)
+        Runs AFTER chapter_hooks. Uses paragraph-based slicing to PROTECT hook text:
+        - First 3 paragraphs: protected (chapter opening)
+        - Last 4 paragraphs: protected (chapter hook)
         - Middle: editable (regex + targeted LLM rewrites)
         """
         client = self.get_client_for_stage("final_deai")
@@ -5398,50 +5593,8 @@ POLISHED SCENE:"""
         total_tokens = 0
         fixes_made = 0
 
-        SURGICAL_REPLACEMENTS = {
-            # AI tell phrases
-            "I couldn't help but notice": "",
-            "I found myself": "I",
-            "I noticed that": "",
-            "I realized that": "",
-            "I felt a sense of": "I felt",
-            "Something about it made me": "It made me",
-            "seemed to": "",
-            "appeared to": "",
-            "managed to": "",
-            "proceeded to": "",
-            "began to": "",
-            "started to": "",
-            # Hollow intensifiers
-            " incredibly ": " ",
-            " absolutely ": " ",
-            " utterly ": " ",
-            " completely ": " ",
-            " totally ": " ",
-            " truly ": " ",
-            " genuinely ": " ",
-            # Stock romance metaphors
-            "a whirlwind of emotions": "confusion",
-            "time seemed to stop": "everything stilled",
-            "electricity coursed through": "heat rushed through",
-            "my heart skipped a beat": "my breath caught",
-            "butterflies in my stomach": "nerves",
-            "flooded with": "felt",
-            "overwhelmed by": "hit by",
-            "like a knife": "",
-            "like a knife slicing through butter": "",
-            # Emotional summarization patterns
-            "This wasn't just about": "",
-            "Something about this moment": "",
-            "A fragile connection": "",
-            "It was more than": "",
-            "a quiet promise that": "",
-            "a sense of something new": "",
-            "Tonight wasn't just about": "",
-            "a reminder that": "",
-            "connection in unexpected places": "",
-            "something significant had passed between": "",
-        }
+        # Load surgical replacements from YAML config (hot-reloadable per run)
+        SURGICAL_REPLACEMENTS = self._load_surgical_replacements()
 
         # Guard: if no scenes exist, return early
         scenes_list = self.state.scenes or []
@@ -5522,8 +5675,8 @@ OUTPUT the text with only problematic sentences fixed:"""
 
                     response = await client.generate(
                         prompt, max_tokens=3000,
-                        system_prompt=FORMAT_CONTRACT,
-                        stop=CREATIVE_STOP_SEQUENCES)
+                        system_prompt=self._format_contract,
+                        stop=self._stop_sequences)
                     middle = self._postprocess(response.content)
                     total_tokens += response.input_tokens + response.output_tokens
                     scene_fixes += remaining_tells["total_tells"]
@@ -5564,8 +5717,8 @@ OUTPUT the text with only problematic sentences fixed:"""
 
                     response = await client.generate(
                         prompt, max_tokens=3000,
-                        system_prompt=FORMAT_CONTRACT,
-                        stop=CREATIVE_STOP_SEQUENCES)
+                        system_prompt=self._format_contract,
+                        stop=self._stop_sequences)
                     content = self._postprocess(response.content)
                     total_tokens += response.input_tokens + response.output_tokens
                     scene_fixes += remaining_tells["total_tells"]
@@ -5758,6 +5911,44 @@ OUTPUT the text with only problematic sentences fixed:"""
                     "message": f"Chapters {weak_hooks} may have weak ending hooks"
                 })
 
+        # 6. Freshness Score — detect language recycling across scenes
+        # Compare unique bigram ratio of each scene vs the prior 3 scenes.
+        # If a scene shares too many bigrams with recent scenes, it's "stale."
+        stale_scenes = []
+        for i, scene in enumerate(scenes_list):
+            content = scene.get("content", "")
+            if not content or i < 1:
+                continue
+            words = content.lower().split()
+            if len(words) < 50:
+                continue
+            scene_bigrams = set(zip(words, words[1:]))
+            # Collect bigrams from prior 3 scenes
+            prior_bigrams = set()
+            for j in range(max(0, i - 3), i):
+                prior_c = scenes_list[j].get("content", "").lower().split()
+                prior_bigrams.update(zip(prior_c, prior_c[1:]))
+            if not prior_bigrams or not scene_bigrams:
+                continue
+            overlap = len(scene_bigrams & prior_bigrams) / len(scene_bigrams)
+            if overlap > 0.40:  # >40% bigram reuse = stale
+                stale_scenes.append({
+                    "scene_index": i,
+                    "chapter": scene.get("chapter", "?"),
+                    "scene_number": scene.get("scene_number", "?"),
+                    "overlap_pct": round(overlap * 100, 1)
+                })
+
+        if stale_scenes:
+            audit_results["freshness"] = {"stale_scenes": stale_scenes}
+            if len(stale_scenes) > len(scenes_list) * 0.2:
+                audit_results["issues"].append({
+                    "type": "freshness",
+                    "severity": "medium",
+                    "message": f"{len(stale_scenes)} scenes have >40% bigram overlap with recent scenes (language recycling)"
+                })
+            logger.info(f"Freshness: {len(stale_scenes)} stale scenes detected")
+
         # Log audit results
         logger.info(f"Quality Audit: {len(audit_results['issues'])} issues found")
         for issue in audit_results["issues"]:
@@ -5828,6 +6019,100 @@ OUTPUT the text with only problematic sentences fixed:"""
             }
 
         return audit_results, total_tokens
+
+    async def _validation_feedback_loop(self, client) -> Optional[Dict[str, Any]]:
+        """Layer G → Pipeline feedback: validate scenes and auto-fix errors.
+
+        Runs scene_validator on all scenes. For META_TEXT errors, attempts targeted
+        re-generation of affected scenes (max 1 retry per scene, max 5 scenes per run).
+        Returns a report dict or None if no issues found.
+        """
+        try:
+            from prometheus_novel.export.scene_validator import validate_project_scenes
+        except ImportError:
+            try:
+                from export.scene_validator import validate_project_scenes
+            except ImportError:
+                logger.debug("scene_validator not available, skipping feedback loop")
+                return None
+
+        scenes_list = self.state.scenes or []
+        config = self.state.config or {}
+        report = validate_project_scenes(scenes_list, config)
+
+        if not report.get("has_errors"):
+            return None
+
+        # Collect scene indices with META_TEXT errors (fixable via re-generation)
+        fixable_indices = set()
+        for issue in report.get("issues", []):
+            if issue.get("code") == "META_TEXT" and issue.get("scene_index", -1) >= 0:
+                fixable_indices.add(issue["scene_index"])
+
+        if not fixable_indices:
+            logger.info("Validation errors found but none are auto-fixable META_TEXT")
+            return {"errors_found": len(report["issues"]), "auto_fixed": 0, "skipped": "no fixable errors"}
+
+        # Limit to 5 scenes per feedback loop to bound cost
+        MAX_REGEN = 5
+        fixable_indices = sorted(fixable_indices)[:MAX_REGEN]
+        fixed = 0
+
+        for idx in fixable_indices:
+            scene = scenes_list[idx]
+            if not isinstance(scene, dict):
+                continue
+
+            content = scene.get("content", "")
+            if not content or not client:
+                continue
+
+            # Re-run through postprocessor (which strips meta-text)
+            protagonist = self._get_protagonist_name()
+            language = self._get_setting_language()
+            gender = self._get_protagonist_gender()
+            cleaned = _postprocess_scene(content, protagonist, language, gender)
+
+            # If postprocessor fixed it, accept
+            from prometheus_novel.export.scene_validator import validate_scene
+            recheck = validate_scene(cleaned, config, f"Ch{scene.get('chapter', idx+1)}Sc{scene.get('scene_number', 1)}", idx)
+            meta_errors = [i for i in recheck if i.get("code") == "META_TEXT"]
+
+            if not meta_errors:
+                scenes_list[idx]["content"] = cleaned
+                fixed += 1
+                logger.info(f"Feedback loop: fixed scene {idx} via postprocessor")
+            else:
+                # Last resort: request a clean rewrite from LLM
+                logger.warning(f"Feedback loop: scene {idx} still has meta-text after postprocess, requesting rewrite")
+                try:
+                    prompt = (
+                        f"Rewrite this scene as pure narrative prose. Remove ALL meta-text "
+                        f"(preambles like 'Here is...', commentary, explanations). "
+                        f"Keep the same story content, characters, and events.\n\n{content[:4000]}"
+                    )
+                    response = await client.generate(
+                        prompt, max_tokens=3000,
+                        system_prompt=self._format_contract,
+                        stop=self._stop_sequences
+                    )
+                    rewritten = _postprocess_scene(response.content, protagonist, language, gender)
+                    if len(rewritten.split()) >= len(content.split()) * 0.5:
+                        scenes_list[idx]["content"] = rewritten
+                        fixed += 1
+                        logger.info(f"Feedback loop: rewrote scene {idx}")
+                except Exception as e:
+                    logger.warning(f"Feedback loop rewrite failed for scene {idx}: {e}")
+
+        self.state.scenes = scenes_list
+        result = {
+            "errors_found": len(report["issues"]),
+            "fixable_scenes": len(fixable_indices),
+            "auto_fixed": fixed,
+            "summary": report.get("summary", ""),
+        }
+        logger.info(f"Feedback loop complete: {fixed}/{len(fixable_indices)} scenes fixed")
+        return result
 
     async def _stage_output_validation(self) -> tuple:
         """Final quality validation and output generation with comprehensive reporting."""
@@ -5922,6 +6207,23 @@ Respond with JSON:
 
         # Include artifact metrics in validation report
         validation_report["artifact_metrics"] = self.state.artifact_metrics
+
+        # Layer G → Pipeline feedback loop: run scene validation and auto-fix errors
+        regen_report = await self._validation_feedback_loop(client)
+        if regen_report:
+            validation_report["feedback_loop"] = regen_report
+            # Recalculate word count after fixes
+            total_words = sum(count_words_accurate(s.get("content", ""))
+                            for s in (self.state.scenes or []) if isinstance(s, dict))
+            validation_report["total_words"] = total_words
+            word_percentage = (total_words / target_words * 100) if target_words > 0 else 0
+            validation_report["word_percentage"] = round(word_percentage, 1)
+
+        # Persist artifact metrics for cross-run trend analysis
+        self._persist_artifact_metrics()
+        metrics_delta = self._compute_metrics_delta()
+        if metrics_delta:
+            validation_report["metrics_delta"] = metrics_delta
 
         # Save final output
         output_dir = self.state.project_path / "output"

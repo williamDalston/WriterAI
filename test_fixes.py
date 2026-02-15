@@ -1,5 +1,6 @@
 """Test all pipeline fixes: gender POV, scene cleanup, story state, genre hooks."""
 import sys, os
+from pathlib import Path
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -620,6 +621,194 @@ test("DE-AI: uses paragraph split", "split('\\n\\n')" in source_deai, "")
 test("DE-AI: HEAD_PARAS defined", "HEAD_PARAS" in source_deai, "")
 test("DE-AI: TAIL_PARAS defined", "TAIL_PARAS" in source_deai, "")
 test("DE-AI: no HEAD_WORDS (old approach removed)", "HEAD_WORDS" not in source_deai, "")
+
+
+# ═══════════════════════════════════════════════════════════════
+# 11. BATCH 3: DEFENSE ARCHITECTURE IMPROVEMENTS
+# ═══════════════════════════════════════════════════════════════
+print("\n=== 11. Batch 3: Defense Architecture Improvements ===")
+from prometheus_novel.stages.pipeline import FORMAT_CONTRACT, PipelineOrchestrator
+
+# 11a. Nonce sentinel per run
+print("  -- 11a. Nonce sentinel --")
+orch5 = object.__new__(PipelineOrchestrator)
+orch5.project_path = Path(".")
+orch5.llm_client = None
+orch5.llm_clients = {}
+orch5.state = None
+orch5.callbacks = {}
+# Run __init__ nonce generation
+PipelineOrchestrator.__init__(orch5, Path("."))
+test("Nonce: _run_nonce exists and is 8 hex chars",
+     hasattr(orch5, "_run_nonce") and len(orch5._run_nonce) == 8 and all(c in "0123456789abcdef" for c in orch5._run_nonce),
+     repr(getattr(orch5, "_run_nonce", None)))
+test("Nonce: _format_contract contains nonce",
+     orch5._run_nonce in orch5._format_contract,
+     repr(orch5._format_contract[-80:]))
+test("Nonce: _stop_sequences first element has nonce",
+     orch5._run_nonce in orch5._stop_sequences[0],
+     repr(orch5._stop_sequences[0]))
+test("Nonce: static FORMAT_CONTRACT unchanged (no nonce)",
+     "<END_PROSE>" in FORMAT_CONTRACT and "_" not in FORMAT_CONTRACT.split("<END_PROSE>")[1][:5],
+     repr(FORMAT_CONTRACT[-80:]))
+
+# 11b. Nonce sentinel stripping in postprocessor
+print("  -- 11b. Nonce sentinel stripping --")
+from prometheus_novel.stages.pipeline import _postprocess_scene
+# Static variant
+result_static = _postprocess_scene("The rain fell softly.\n<END_PROSE>")
+test("Strip static sentinel", "END_PROSE" not in result_static, repr(result_static))
+# Nonce variant
+result_nonce = _postprocess_scene("The rain fell softly.\n<END_PROSE_a3f1b2c9>")
+test("Strip nonce sentinel", "END_PROSE" not in result_nonce, repr(result_nonce))
+# Mixed case
+result_mixed = _postprocess_scene("The rain fell softly.\n<end_prose_beef1234>")
+test("Strip nonce sentinel case-insensitive", "end_prose" not in result_mixed.lower(), repr(result_mixed))
+
+# 11c. Assistant-anchor guard for fuzzy preamble
+print("  -- 11c. Assistant-anchor guard --")
+source_critic = inspect.getsource(PipelineOrchestrator._validate_scene_output)
+test("Anchor guard: _ASSISTANT_ANCHORS referenced",
+     "_ASSISTANT_ANCHORS" in source_critic or "has_anchor" in source_critic,
+     "")
+# Check that the anchor set is defined in the method
+test("Anchor set defined in critic gate",
+     "_ASSISTANT_ANCHORS" in source_critic and "revised" in source_critic,
+     "")
+
+# 11d. Active salvage guardrail
+print("  -- 11d. Active salvage guardrail --")
+from prometheus_novel.stages.pipeline import _clean_scene_content
+# When cleanup strips too aggressively and original was much longer
+long_original = "Long prose paragraph one. " * 20 + "Certainly! Here is the revised scene. " + "Another paragraph of prose. " * 3
+cleaned = _clean_scene_content(long_original)
+# The cleanup should handle the meta-text but preserve enough content
+# If salvage kicks in, it restores original when cleanup strips to <50 words and original was 3x longer
+test("Salvage: cleaned result has content (not empty)",
+     len(cleaned.split()) > 10,
+     f"only {len(cleaned.split())} words")
+
+# 11e. Prompt injection detection in context validation
+print("  -- 11e. Prompt injection detection --")
+source_schema = inspect.getsource(PipelineOrchestrator._validate_context_schema)
+test("Schema validation: prompt injection patterns present",
+     "ignore" in source_schema.lower() and "injection" in source_schema.lower(),
+     "")
+test("Schema validation: role injection pattern",
+     "role injection" in source_schema.lower() or "act as" in source_schema.lower(),
+     "")
+test("Schema validation: system override pattern",
+     "system override" in source_schema.lower() or "system.*override" in source_schema.lower(),
+     "")
+
+# 11f. Freshness score in quality audit
+print("  -- 11f. Freshness score --")
+source_audit = inspect.getsource(PipelineOrchestrator._stage_quality_audit)
+test("Quality audit: bigram overlap check exists",
+     "bigram" in source_audit.lower() or "scene_bigrams" in source_audit,
+     "")
+test("Quality audit: stale threshold (0.40)",
+     "0.40" in source_audit or "0.4" in source_audit,
+     "")
+
+# 11g. Forbidden-marker explosion check in transaction safety
+print("  -- 11g. Forbidden-marker explosion --")
+source_run = inspect.getsource(PipelineOrchestrator._run_stage)
+test("Transaction safety: meta_markers pattern",
+     "meta_markers" in source_run or "polluted" in source_run,
+     "")
+test("Transaction safety: 40% threshold",
+     "0.4" in source_run,
+     "")
+
+# 11h. Config-driven surgical replacements
+print("  -- 11h. Config-driven surgical replacements --")
+import yaml as yaml_test
+yaml_path = Path(__file__).parent / "prometheus_novel" / "configs" / "surgical_replacements.yaml"
+test("Surgical YAML: file exists", yaml_path.exists(), str(yaml_path))
+if yaml_path.exists():
+    with open(yaml_path, "r") as f:
+        yaml_data = yaml_test.safe_load(f)
+    test("Surgical YAML: has ai_tell_phrases",
+         "ai_tell_phrases" in yaml_data,
+         repr(list(yaml_data.keys())))
+    test("Surgical YAML: has hollow_intensifiers",
+         "hollow_intensifiers" in yaml_data,
+         repr(list(yaml_data.keys())))
+    test("Surgical YAML: has stock_metaphors",
+         "stock_metaphors" in yaml_data,
+         repr(list(yaml_data.keys())))
+    test("Surgical YAML: has emotional_summarization",
+         "emotional_summarization" in yaml_data,
+         repr(list(yaml_data.keys())))
+
+# Test the loader method
+orch6 = object.__new__(PipelineOrchestrator)
+PipelineOrchestrator.__init__(orch6, Path("."))
+orch6._load_surgical_replacements = PipelineOrchestrator._load_surgical_replacements.__get__(orch6)
+replacements = orch6._load_surgical_replacements()
+test("Surgical loader: returns dict",
+     isinstance(replacements, dict) and len(replacements) > 20,
+     f"got {type(replacements).__name__} with {len(replacements)} entries")
+test("Surgical loader: contains known pattern",
+     "I found myself" in replacements,
+     repr(list(replacements.keys())[:5]))
+
+# 11i. Feedback loop method exists
+print("  -- 11i. Feedback loop --")
+test("Feedback loop: _validation_feedback_loop method exists",
+     hasattr(PipelineOrchestrator, "_validation_feedback_loop"),
+     "")
+source_feedback = inspect.getsource(PipelineOrchestrator._validation_feedback_loop)
+test("Feedback loop: imports scene_validator",
+     "scene_validator" in source_feedback or "validate_project_scenes" in source_feedback,
+     "")
+test("Feedback loop: MAX_REGEN limit",
+     "MAX_REGEN" in source_feedback,
+     "")
+test("Feedback loop: uses _postprocess_scene",
+     "_postprocess_scene" in source_feedback,
+     "")
+
+# 11j. Cross-run metrics persistence
+print("  -- 11j. Cross-run metrics --")
+test("Metrics persistence: _persist_artifact_metrics exists",
+     hasattr(PipelineOrchestrator, "_persist_artifact_metrics"),
+     "")
+test("Metrics delta: _compute_metrics_delta exists",
+     hasattr(PipelineOrchestrator, "_compute_metrics_delta"),
+     "")
+source_persist = inspect.getsource(PipelineOrchestrator._persist_artifact_metrics)
+test("Metrics persistence: writes JSONL",
+     "jsonl" in source_persist.lower() or "artifact_metrics_history" in source_persist,
+     "")
+source_delta = inspect.getsource(PipelineOrchestrator._compute_metrics_delta)
+test("Metrics delta: computes direction (improved/regressed)",
+     "improved" in source_delta and "regressed" in source_delta,
+     "")
+
+# 11k. Final DE-AI uses _load_surgical_replacements
+print("  -- 11k. DE-AI uses YAML loader --")
+source_deai2 = inspect.getsource(PipelineOrchestrator._stage_final_deai)
+test("DE-AI: calls _load_surgical_replacements",
+     "_load_surgical_replacements" in source_deai2,
+     "")
+test("DE-AI: no inline hardcoded dict (old approach removed)",
+     "# AI tell phrases" not in source_deai2,
+     "old hardcoded dict still present")
+
+# 11l. Output validation hooks metrics persistence + feedback
+print("  -- 11l. Output validation integration --")
+source_outval = inspect.getsource(PipelineOrchestrator._stage_output_validation)
+test("Output validation: calls _persist_artifact_metrics",
+     "_persist_artifact_metrics" in source_outval,
+     "")
+test("Output validation: calls _compute_metrics_delta",
+     "_compute_metrics_delta" in source_outval,
+     "")
+test("Output validation: calls _validation_feedback_loop",
+     "_validation_feedback_loop" in source_outval,
+     "")
 
 
 # ═══════════════════════════════════════════════════════════════

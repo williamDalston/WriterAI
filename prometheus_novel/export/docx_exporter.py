@@ -5,10 +5,15 @@ Creates professionally formatted .docx files ready for upload to
 Amazon Kindle Direct Publishing.
 """
 
+import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import json
 import yaml
+
+from .scene_validator import validate_project_scenes, _validation_mode
+
+logger = logging.getLogger(__name__)
 
 from docx import Document
 from docx.shared import Inches, Pt, Cm
@@ -257,6 +262,26 @@ class KDPExporter:
                 if j == 0:
                     para.paragraph_format.first_line_indent = Inches(0)
 
+    def _validate_scenes(self) -> None:
+        """Run pre-export validation; log issues. In strict mode, raise on errors."""
+        if not self.scenes:
+            return
+        report = validate_project_scenes(self.scenes, self.config)
+        for i in report["issues"]:
+            msg = f"[{i['code']}] {i['scene_id']}: {i['message']}"
+            if i.get("excerpt"):
+                msg += f" | excerpt: {i['excerpt'][:80]}"
+            if i["severity"] == "error":
+                logger.error(msg)
+            else:
+                logger.warning(msg)
+        mode = _validation_mode(self.config)
+        if report["has_errors"] and mode == "strict":
+            raise ValueError(
+                f"Export blocked: {len([x for x in report['issues'] if x['severity'] == 'error'])} "
+                "validation error(s). Set export.validation_mode: lenient to allow export."
+            )
+
     def export(self, output_path: Optional[Path] = None) -> Path:
         """Export the novel to a Word document.
 
@@ -267,6 +292,7 @@ class KDPExporter:
             Path to the generated .docx file.
         """
         self.load_project()
+        self._validate_scenes()
         self._setup_document()
 
         # Add front matter

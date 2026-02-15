@@ -15,25 +15,33 @@
 | Quantify model vs system | Artifact metrics + critic gate (raw output) + scoring function |
 | Protect hooks and openings during surgical passes | Paragraph-based head/tail protection in final_deai |
 | Trace context provenance | Context hashing + origin stamps in debug logs |
-| Transaction safety with rollback | 5-check integrity validation with snapshot restore |
+| Transaction safety with rollback | 6-check integrity validation with snapshot restore (includes forbidden-marker explosion) |
+| Prevent cross-run prose collision | Per-run nonce sentinel (`<END_PROSE_{hex}>`) |
+| Detect recycled language | Freshness score (bigram overlap against prior 3 scenes) |
+| Detect prompt injection in context | 5 injection patterns in schema validation |
+| Auto-fix validation errors | G→Pipeline feedback loop (postprocess + LLM rewrite) |
+| Track quality trends across runs | Cross-run JSONL metrics persistence + delta analysis |
+| Hot-configurable DE-AI patterns | `configs/surgical_replacements.yaml` (loaded at runtime) |
 
 **Non-goals:** No genre policing unless config opts in. No heavy-handed rewriting -- cleanup truncates; validation flags.
 
 ---
 
-## 2. Pipeline Flow (22 stages)
+## 2. Pipeline Flow (21 stages, 7 phases)
 
 ```
-PLANNING -> DRAFTING -> REFINEMENT -> POLISH -> VALIDATION
+PLANNING -> DRAFTING -> REFINEMENT -> POLISH -> VALIDATION -> OUTPUT -> FEEDBACK
 ```
 
 | Phase | Stages |
 |-------|--------|
-| **Planning** | high_concept, world_building, beat_sheet, emotional_architecture, character_profiles, motif_embedding, master_outline, trope_integration |
-| **Drafting** | scene_drafting, scene_expansion, continuity_audit, continuity_fix, self_refinement |
-| **Refinement** | voice_human_pass, continuity_audit_2, continuity_fix_2 |
-| **Polish** | dialogue_polish, prose_polish, chapter_hooks |
-| **Validation** | final_deai, quality_audit, output_validation |
+| **Planning** (8) | high_concept, world_building, beat_sheet, emotional_architecture, character_profiles, motif_embedding, master_outline, trope_integration |
+| **Drafting** (3) | scene_drafting, scene_expansion, self_refinement |
+| **Continuity** (2) | continuity_audit, continuity_fix |
+| **Refinement** (3) | voice_human_pass, continuity_audit_2, continuity_fix_2 |
+| **Polish** (3) | dialogue_polish, prose_polish, chapter_hooks |
+| **DE-AI** (1) | final_deai |
+| **Validation** (1) | quality_audit, output_validation |
 
 **Prose stages** (get FORMAT_CONTRACT + stop sequences):
 scene_drafting, scene_expansion, self_refinement, continuity_fix, voice_human_pass, continuity_fix_2, dialogue_polish, prose_polish, chapter_hooks, final_deai
@@ -46,7 +54,7 @@ scene_drafting, scene_expansion, self_refinement, continuity_fix, voice_human_pa
 
 ### Layer A: Format Contract (Generation Prompt)
 
-**Location:** `FORMAT_CONTRACT` constant in `pipeline.py`
+**Location:** `FORMAT_CONTRACT` constant + per-run `self._format_contract` in `pipeline.py`
 **When:** Injected as system prompt for all 10 prose stages via `_generate_prose()`
 **Purpose:** Instruct model to output prose only; never preamble, commentary, alternatives, or truncation markers.
 
@@ -55,24 +63,24 @@ ABSOLUTE RULES:
 - Output ONLY narrative prose
 - NEVER: "Certainly", "Here is", "Sure", headings, bullet points, commentary
 - NEVER: "The rest remains unchanged", alternatives, "[Scene continues...]"
-- End your output with <END_PROSE> on its own line when finished.
+- End your output with <END_PROSE_{nonce}> on its own line when finished.
 ```
 
-The sentinel instruction (`<END_PROSE>`) gives the model a clean termination signal, replacing the need for most stop sequences. The model writes prose, then emits the sentinel, and generation stops cleanly.
+**Nonce sentinel:** Each pipeline run generates a unique 8-hex-char nonce via `secrets.token_hex(4)` (e.g. `a3f1b2c9`). The static `<END_PROSE>` is replaced with `<END_PROSE_{nonce}>` in the format contract, making the stop token unpredictable (won't appear in training data) and unique per run (prevents cross-run prose collisions). The postprocessor strips both static and nonce variants via regex `<END_PROSE(?:_[a-f0-9]+)?>`.
 
-**Override:** Stages can pass a custom `system_prompt`; otherwise FORMAT_CONTRACT is default.
+**Override:** Stages can pass a custom `system_prompt`; otherwise the nonce-aware format contract is default.
 
 ---
 
 ### Layer B: Sentinel Stop Token + Backup Sequences
 
-**Location:** `PROSE_SENTINEL` and `CREATIVE_STOP_SEQUENCES` in `pipeline.py`; passed to clients via `stop=` / `stop_sequences=`
+**Location:** `PROSE_SENTINEL` (static) + `self._prose_sentinel` / `self._stop_sequences` (per-run) in `pipeline.py`; passed to clients via `stop=` / `stop_sequences=`
 **When:** Every LLM call for prose stages
-**Purpose:** Primary: sentinel gives clean stop. Backup: catch assistant-mode preambles if model ignores sentinel.
+**Purpose:** Primary: nonce sentinel gives clean, unique stop per run. Backup: catch assistant-mode preambles if model ignores sentinel.
 
 | Token | Purpose |
 |-------|---------|
-| `\n<END_PROSE>` | **Primary sentinel** -- model trained to emit this |
+| `\n<END_PROSE_{nonce}>` | **Primary nonce sentinel** -- unique per run, unpredictable |
 | `\nCertainly! Here` | Blocks assistant-mode preamble restart |
 | `\nHere is the` | Blocks "Here is the revised..." |
 | `\nAs requested,` | Blocks assistant acknowledgment |
@@ -88,7 +96,7 @@ The sentinel instruction (`<END_PROSE>`) gives the model a clean termination sig
 
 **Client mapping:** OpenAI + Ollama use `stop=`; Anthropic uses `stop_sequences=`.
 
-**Sentinel stripping:** `_postprocess_scene()` strips `<END_PROSE>` (case-insensitive) before any other processing.
+**Sentinel stripping:** `_postprocess_scene()` strips `<END_PROSE>` and `<END_PROSE_{hex}>` (nonce variant) via regex before any other processing.
 
 ---
 
@@ -113,7 +121,7 @@ The sentinel instruction (`<END_PROSE>`) gives the model a clean termination sig
 
 | Component | Purpose |
 |-----------|---------|
-| `_validate_context_schema()` | Runtime check for red flags: credentials, Python code, import statements, template placeholders, debug markers. Logs warnings; does not block. |
+| `_validate_context_schema()` | Runtime check for red flags: credentials, Python code, import statements, template placeholders, debug markers, **prompt injection attempts** (5 patterns: "ignore previous instructions", role injection, system override, context override, instruction reset). Logs warnings; does not block. |
 | `_check_alignment()` | Every 5 scenes, compares scene content keywords against outline entries. Warns if <15% keyword overlap (scenes drifting from beat sheet). |
 | **Context hashing + origin stamps** | SHA256 hash (12-char truncated) of assembled context logged at DEBUG level with origin section names and char count. Enables tracing which context produced which scene output. |
 
@@ -130,7 +138,7 @@ The sentinel instruction (`<END_PROSE>`) gives the model a clean termination sig
 | Check | Pattern / Logic |
 |-------|-----------------|
 | Preamble (exact) | First 200 chars: "Sure", "Certainly", "Here is", "Below is", "I've revised" |
-| **Preamble (fuzzy)** | **N-gram Jaccard similarity** (trigram overlap > 35%) against 14 exemplar preamble strings. Catches novel phrasings like "Okay so here is the improved version" that exact match misses. |
+| **Preamble (fuzzy)** | **N-gram Jaccard similarity** (trigram overlap > 35%) against 14 exemplar preamble strings. **Gated by assistant-anchor check**: only runs if the first line contains an anchor word (revised, rewritten, enhanced, below, here is, as requested, changes made, version, i've, let me, etc.). This prevents false positives on prose openings that happen to share trigrams with exemplars. |
 | Truncation marker | REST_UNCHANGED_RE |
 | Alternate version | "Option A/B", "Version 1/2", "=== EXPANDED SCENE ===" |
 | Analysis commentary | "Changes made:", "Notes:", "**Scanning", "**Quality" |
@@ -191,7 +199,7 @@ This tells the model *exactly what went wrong* instead of repeating a generic wa
 | **1.5** | **Truncate** at "rest remains unchanged" (and YAML markers). Keep text before; drop alternate. |
 | **1.6** | **Truncate** at mid-text LLM preamble ("Certainly! Here is the revised opening...") if prefix >= 400 chars or >= 8 lines |
 | **2** | Truncate at tail markers (---, ***, "Changes made:", etc.) |
-| **2.5** | **Salvage guardrail**: If remaining text < 150 words or < 2 paragraphs, log warning. If < 50 words, log as "salvage failed" (content likely corrupt). Does not restore -- just signals. |
+| **2.5** | **Salvage guardrail (active)**: If remaining text < 150 words or < 2 paragraphs, log warning. If < 50 words **and the original pre-cleanup input had 3x more words (≥50)**, automatically **restores the pre-cleanup input** (over-stripping is worse than leaving artifacts). Otherwise logs as "salvage failed". |
 | **3** | Inline removal (CURRENT SCENE:, Physical beats:, XML tags, etc.) |
 | **4** | Whitespace cleanup |
 
@@ -289,13 +297,22 @@ Validation: 2 error(s), 1 warning(s)
 - `strict`: Block export on any error.
 - `lenient` (default): Log issues, allow export.
 
+**G→Pipeline Feedback Loop** (`_validation_feedback_loop()`):
+
+During `output_validation`, scene validation runs automatically. For scenes with `META_TEXT` errors:
+1. First attempt: re-run through `_postprocess_scene()` (no LLM cost)
+2. If still dirty: request clean rewrite from LLM with format contract
+3. Accept rewrite only if it retains ≥50% of original word count (prevents empty rewrites)
+4. Max 5 scenes per feedback loop (bounds cost)
+5. Results stored in `validation_report["feedback_loop"]`
+
 ---
 
-### Layer H: Transaction Safety (5-Check Integrity)
+### Layer H: Transaction Safety (6-Check Integrity)
 
 **Location:** `_run_stage()` in `pipeline.py`
 **When:** Before/after each prose stage
-**Behavior:** Snapshot `self.state.scenes` before prose stage. After stage completes, run 5 integrity checks. Any failure restores the snapshot and returns `StageStatus.FAILED`.
+**Behavior:** Snapshot `self.state.scenes` before prose stage. After stage completes, run 6 integrity checks. Any failure restores the snapshot and returns `StageStatus.FAILED`.
 
 | Check | Trigger | What It Catches |
 |-------|---------|-----------------|
@@ -303,7 +320,8 @@ Validation: 2 error(s), 1 warning(s)
 | **2. Prefix corruption** | >30% of scenes share identical first 100 chars | Stage wrote same preamble/garbage into every scene |
 | **3. Emptied scenes** | Any scene that had content (>50 chars) is now empty | Stage blanked out scenes |
 | **4. Average word count plummet** | Avg word count dropped >40% | Stage truncated/corrupted most scenes |
-| **5. Fingerprint uniqueness collapse** | Unique scene fingerprints dropped >50% | Previously-distinct scenes became identical |
+| **5. Forbidden-marker explosion** | >40% of scenes contain meta-text markers (preambles, "rest unchanged", "changes made:", etc.) | Model regressed to assistant mode across the board |
+| **6. Fingerprint uniqueness collapse** | Unique scene fingerprints dropped >50% | Previously-distinct scenes became identical |
 
 Each check logs an ERROR with specifics and restores the snapshot. The stage result includes the error description.
 
@@ -328,9 +346,9 @@ These run after polish and have their own logic:
 
 | Stage | Purpose | Defense Role |
 |-------|---------|--------------|
-| **final_deai** | Surgical AI-tell removal | **Paragraph-based protection:** First 3 paragraphs (chapter opening) and last 4 paragraphs (chapter hook) are *protected*. Only the *middle* paragraphs of chapter-end scenes are edited. Uses SURGICAL_REPLACEMENTS (40+ patterns: AI tells, hollow intensifiers, stock metaphors, emotional summarization phrases) and FORMAT_CONTRACT for targeted LLM rewrites. Includes Layer I post-check. |
-| **quality_audit** | Audit word count, AI tells, scene lengths, spice, hooks | Can set `needs_iteration` and `stages_to_rerun`. Triggers re-run of **scene_expansion** (word count low, short scenes) or **voice_human_pass** (AI tells high). Max 2 iterations. **Diminishing-returns exit:** Skips re-run if word% delta < 5% AND tells delta < 0.5. |
-| **output_validation** | Final stats + quality rating + save | Produces `validation_report` with word counts, quality_score (LLM rates 3 sample scenes), and **artifact_metrics**. Saves markdown and pipeline state. |
+| **final_deai** | Surgical AI-tell removal | **Paragraph-based protection:** First 3 paragraphs (chapter opening) and last 4 paragraphs (chapter hook) are *protected*. Only the *middle* paragraphs of chapter-end scenes are edited. Uses **SURGICAL_REPLACEMENTS loaded from `configs/surgical_replacements.yaml`** (40+ patterns across 4 categories: AI tells, hollow intensifiers, stock metaphors, emotional summarization; falls back to hardcoded defaults if YAML missing) and nonce-aware FORMAT_CONTRACT for targeted LLM rewrites. Includes Layer I post-check. |
+| **quality_audit** | Audit word count, AI tells, scene lengths, spice, hooks, **freshness** | Can set `needs_iteration` and `stages_to_rerun`. Triggers re-run of **scene_expansion** (word count low, short scenes) or **voice_human_pass** (AI tells high). Max 2 iterations. **Diminishing-returns exit:** Skips re-run if word% delta < 5% AND tells delta < 0.5. **Freshness score (step 6):** Computes bigram overlap between each scene and its 3 predecessors; flags scenes with >40% overlap as "stale" (recycled language). |
+| **output_validation** | Final stats + quality rating + feedback loop + save | Produces `validation_report` with word counts, quality_score (LLM rates 3 sample scenes), **artifact_metrics**, **feedback loop results**, and **cross-run metrics delta**. Runs Layer G→Pipeline feedback loop (see below). Persists artifact metrics to JSONL history. Saves markdown and pipeline state. |
 
 ---
 
@@ -349,15 +367,20 @@ These run after polish and have their own logic:
 | Stage crash / corrupt output | H (5-check transaction safety) | -- |
 | Paraphrased restart (same content, different words) | F2b (semantic dedup) | -- |
 | Scene drift from outline | C (alignment check every 5 scenes) | -- |
-| Suspicious data in context | C (schema validation) | -- |
-| Cleanup over-stripping | F1 Phase 2.5 (salvage guardrail), disabled_builtins | F4 anchor protection |
+| Suspicious data in context | C (schema validation + prompt injection detection) | -- |
+| Cleanup over-stripping | F1 Phase 2.5 (active salvage guardrail), disabled_builtins | F4 anchor protection |
+| Forbidden-marker explosion (model regressed) | H check 5 (>40% scenes polluted → rollback) | -- |
+| Stale/recycled language across scenes | quality_audit freshness score (bigram overlap >40%) | -- |
+| Cross-run quality regression | Cross-run metrics delta analysis | -- |
+| Meta-text leaking to export | G→Pipeline feedback loop (auto postprocess + rewrite) | G pre-export validation |
+| Prompt injection in context | C (5 injection patterns in schema validation) | -- |
 
 ---
 
 ## 5. Artifact Metrics (Diagnostics)
 
 **Location:** `PipelineState.artifact_metrics`
-**Persisted:** Yes (saved in `{project_path}/pipeline_state.json`)
+**Persisted:** Yes (saved in `{project_path}/pipeline_state.json` per run, **and appended to `{project_path}/artifact_metrics_history.jsonl` for cross-run trend analysis**)
 **Logged:** `_log_artifact_summary()` after each stage; included in `output_validation`'s validation report
 
 | Metric | Meaning |
@@ -372,12 +395,25 @@ These run after polish and have their own logic:
 | `per_scene.{scene}.retried` | Whether specific scene was retried |
 | `per_scene.{scene}.preamble` | Preamble detected in specific scene |
 
+**Cross-run delta analysis** (`_compute_metrics_delta()`):
+
+After persisting current metrics to JSONL, computes a delta against the previous run. Each metric gets a `previous`, `current`, `change`, and `direction` (improved/regressed/changed). Delta is included in `validation_report["metrics_delta"]`.
+
+Example output:
+```json
+{
+  "scenes_with_preamble": {"previous": 5, "current": 2, "change": -3, "direction": "improved"},
+  "scenes_retried": {"previous": 8, "current": 12, "change": 4, "direction": "regressed"}
+}
+```
+
 **How to infer:**
 - High `preamble` / `truncation` -> model still emitting meta-text; consider stronger FORMAT_CONTRACT or more stop sequences.
 - High `retried` -> critic gate useful but retries add cost. Check if issue-specific feedback is helping.
 - High `pov_drift` -> POV enforcement (F3) helps; check dialogue masking works.
 - Per-stage spikes -> that stage's prompt or model needs tuning.
 - Diminishing returns triggered -> audit is working efficiently; no wasted iterations.
+- **Cross-run regression** -> compare delta; if `preamble` regressed, check if model version changed or temperature increased.
 
 ---
 
@@ -427,6 +463,29 @@ disabled_builtins:
 
 **Merge rule:** Built-ins always present; YAML adds more. `disabled_builtins` suppresses specific built-in patterns by substring match.
 
+### Surgical replacements (`configs/surgical_replacements.yaml`)
+
+```yaml
+ai_tell_phrases:
+  "I couldn't help but notice": ""
+  "I found myself": "I"
+  # ...
+
+hollow_intensifiers:
+  " incredibly ": " "
+  # ...
+
+stock_metaphors:
+  "a whirlwind of emotions": "confusion"
+  # ...
+
+emotional_summarization:
+  "This wasn't just about": ""
+  # ...
+```
+
+**Loaded by:** `_load_surgical_replacements()` in `PipelineOrchestrator`. Falls back to hardcoded `_DEFAULT_SURGICAL_REPLACEMENTS` if YAML not found. All categories are flattened into a single `{pattern: replacement}` dict. Changes take effect on next pipeline run (no restart needed).
+
 ---
 
 ## 7. Improvement Inference Guide
@@ -447,6 +506,11 @@ disabled_builtins:
 | Scenes drifting from outline | Beat sheet divergence | Check alignment warnings in logs (every 5 scenes); review outline coverage |
 | Stage emptied/corrupted scenes | LLM hallucinated or failed | Transaction safety (H) should auto-restore; check logs for which check triggered |
 | Quality audit re-running forever | Diminishing returns not detected | Check `_prev_audit_snapshot` delta thresholds |
+| Stale/repetitive language across scenes | Model recycling phrases | Check freshness score in quality_audit; scenes >40% bigram overlap flagged |
+| Meta-text in exported docx | Feedback loop didn't catch it | Check feedback_loop report in validation_report; may need to add patterns to scene_validator |
+| Metrics regressed from last run | Model version or config changed | Check `metrics_delta` in validation_report for direction of change |
+| Prompt injection in scene context | Malicious content in project data | Check schema validation warnings in logs; 5 injection patterns checked |
+| Many scenes trigger forbidden-marker check | Model systematically regressed | Transaction safety check 5 (>40% scenes polluted) triggers rollback; check model/temp |
 
 ---
 
@@ -454,18 +518,23 @@ disabled_builtins:
 
 | Component | File |
 |-----------|------|
-| FORMAT_CONTRACT, PROSE_SENTINEL, stop sequences, retry, scoring | `prometheus_novel/stages/pipeline.py` |
-| Critic gate, fuzzy preamble, artifact metrics | `prometheus_novel/stages/pipeline.py` |
-| Context assembly, schema validation, alignment check, hashing | `prometheus_novel/stages/pipeline.py` (_build_scene_context, _validate_context_schema, _check_alignment) |
-| Cleanup, postprocess, salvage guardrail | `prometheus_novel/stages/pipeline.py` (_clean_scene_content) |
+| FORMAT_CONTRACT, PROSE_SENTINEL, nonce sentinel, stop sequences, retry, scoring | `prometheus_novel/stages/pipeline.py` |
+| Critic gate, fuzzy preamble (anchor-gated), artifact metrics | `prometheus_novel/stages/pipeline.py` |
+| Context assembly, schema validation (+ prompt injection), alignment check, hashing | `prometheus_novel/stages/pipeline.py` (_build_scene_context, _validate_context_schema, _check_alignment) |
+| Cleanup, postprocess, active salvage guardrail | `prometheus_novel/stages/pipeline.py` (_clean_scene_content) |
 | Duplicate detection (stitch + suffix/prefix + n-gram + semantic) | `prometheus_novel/stages/pipeline.py` (_detect_duplicate_content, _detect_semantic_duplicates) |
 | POV enforcement (quote masking, clause guard, contextual repair) | `prometheus_novel/stages/pipeline.py` (_enforce_first_person_pov, _mask_quoted_dialogue, _repair_pov_context_errors) |
 | Emotional summary stripping (anchor-protected) | `prometheus_novel/stages/pipeline.py` (_strip_emotional_summaries) |
-| Transaction safety (5-check integrity) | `prometheus_novel/stages/pipeline.py` (_run_stage) |
+| Transaction safety (6-check integrity + forbidden-marker explosion) | `prometheus_novel/stages/pipeline.py` (_run_stage) |
 | Final DE-AI (paragraph-based protection + post-check) | `prometheus_novel/stages/pipeline.py` (_stage_final_deai) |
+| Freshness score (bigram overlap) | `prometheus_novel/stages/pipeline.py` (_stage_quality_audit) |
+| Feedback loop (G→Pipeline auto-fix) | `prometheus_novel/stages/pipeline.py` (_validation_feedback_loop) |
+| Cross-run metrics persistence + delta | `prometheus_novel/stages/pipeline.py` (_persist_artifact_metrics, _compute_metrics_delta) |
+| Surgical replacements YAML config | `prometheus_novel/configs/surgical_replacements.yaml` |
 | Pre-export validation (actionable reports) | `prometheus_novel/export/scene_validator.py` |
 | Export + validation mode | `prometheus_novel/export/docx_exporter.py` |
 | Cleanup patterns YAML + disabled_builtins | `prometheus_novel/configs/cleanup_patterns.yaml` |
 | LLM clients (stop mapping) | `prometheus_novel/prometheus_lib/llm/clients.py` |
 
 **State file:** `{project_path}/pipeline_state.json` -- contains scenes, artifact_metrics, completed_stages, etc.
+**Metrics history:** `{project_path}/artifact_metrics_history.jsonl` -- append-only JSONL with per-run metrics for trend analysis.

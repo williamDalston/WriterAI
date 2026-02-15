@@ -31,6 +31,10 @@ This directory contains documentation, runbooks, and failure scenarios for the P
     uvicorn api:app --reload --port 8000
     ```
 
+## Architecture & Defense Layers
+
+* **[DEFENSE_ARCHITECTURE.md](DEFENSE_ARCHITECTURE.md)** — Defense layers, problem→defense mapping, artifact metrics, config reference, and improvement inference guide.
+
 ## Runbooks & Failure Scenarios
 (Detailed guides for operating the system, diagnosing issues, and recovery procedures)
 

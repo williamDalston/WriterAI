@@ -1,0 +1,50 @@
+# Configurable surgical replacement patterns for DE-AI stage
+# Each entry: pattern -> replacement (empty string = delete)
+# Loaded at runtime; changes take effect on next pipeline run.
+# To disable a pattern, comment it out or remove it.
+
+ai_tell_phrases:
+  "I couldn't help but notice": ""
+  "I found myself": "I"
+  "I noticed that": ""
+  "I realized that": ""
+  "I felt a sense of": "I felt"
+  "Something about it made me": "It made me"
+  "seemed to": ""
+  "appeared to": ""
+  "managed to": ""
+  "proceeded to": ""
+  "began to": ""
+  "started to": ""
+
+hollow_intensifiers:
+  " incredibly ": " "
+  " absolutely ": " "
+  " utterly ": " "
+  " completely ": " "
+  " totally ": " "
+  " truly ": " "
+  " genuinely ": " "
+
+stock_metaphors:
+  "a whirlwind of emotions": "confusion"
+  "time seemed to stop": "everything stilled"
+  "electricity coursed through": "heat rushed through"
+  "my heart skipped a beat": "my breath caught"
+  "butterflies in my stomach": "nerves"
+  "flooded with": "felt"
+  "overwhelmed by": "hit by"
+  "like a knife": ""
+  "like a knife slicing through butter": ""
+
+emotional_summarization:
+  "This wasn't just about": ""
+  "Something about this moment": ""
+  "A fragile connection": ""
+  "It was more than": ""
+  "a quiet promise that": ""
+  "a sense of something new": ""
+  "Tonight wasn't just about": ""
+  "a reminder that": ""
+  "connection in unexpected places": ""
+  "something significant had passed between": ""
