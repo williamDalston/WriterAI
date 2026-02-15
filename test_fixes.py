@@ -483,6 +483,146 @@ test("Alignment check: index 5 runs without error", True, "")
 
 
 # ═══════════════════════════════════════════════════════════════
+# 10. DEFENSE ARCHITECTURE BATCH 2
+# ═══════════════════════════════════════════════════════════════
+print("\n=== 10. Defense Architecture Batch 2 ===")
+
+# 10a. Sentinel stop token constant exists
+from prometheus_novel.stages.pipeline import PROSE_SENTINEL, CREATIVE_STOP_SEQUENCES
+test("PROSE_SENTINEL defined", "<END_PROSE>" in PROSE_SENTINEL, repr(PROSE_SENTINEL))
+test("Sentinel is first stop sequence", CREATIVE_STOP_SEQUENCES[0] == PROSE_SENTINEL,
+     f"first={repr(CREATIVE_STOP_SEQUENCES[0])}")
+
+# 10b. Sentinel stripping in postprocess
+from prometheus_novel.stages.pipeline import _postprocess_scene
+text_with_sentinel = "I walked into the room.\n<END_PROSE>"
+result = _postprocess_scene(text_with_sentinel)
+test("Sentinel stripped from output", "<END_PROSE>" not in result and "walked" in result, repr(result))
+
+# Case-insensitive
+text_with_sentinel2 = "She smiled at me.\n<end_prose>\n"
+result2 = _postprocess_scene(text_with_sentinel2)
+test("Sentinel stripped case-insensitive", "<end_prose>" not in result2 and "smiled" in result2, repr(result2))
+
+# 10c. Critic gate scoring function
+from prometheus_novel.stages.pipeline import PipelineOrchestrator
+# We can't easily call the inner _score_output directly, but we can verify
+# the method _generate_prose exists and has the scoring logic
+import inspect
+source = inspect.getsource(PipelineOrchestrator._generate_prose)
+test("Scoring function in _generate_prose", "_score_output" in source, "")
+test("Hard penalties in scoring", "-100" in source or "100" in source, "")
+test("Soft penalties in scoring", "too_short" in source and "pov_drift" in source, "")
+
+# 10d. Post-truncation salvage guardrail
+# Test via _clean_scene_content — after stripping, if too short, should warn but not crash
+short_text = "Hello."
+result = _clean_scene_content(short_text)
+test("Short text survives cleanup", result is not None, repr(result))
+
+# 10e. Suffix/prefix overlap in dedup
+from prometheus_novel.stages.pipeline import _detect_duplicate_content
+# Text with duplicated ending (must be 25+ words for overlap detection)
+ending = ("The rain hammered down on the cobblestones as she walked away into the night "
+          "leaving me standing alone under the flickering streetlight with nothing but the cold "
+          "wind and the echo of her footsteps fading into the distant darkness ahead")
+text_with_overlap = f"I stood at the corner watching the sunset. {ending} Then I went home. And I wondered about life and meaning and purpose. {ending}"
+result = _detect_duplicate_content(text_with_overlap)
+test("Suffix/prefix overlap: duplicate ending removed",
+     len(result) < len(text_with_overlap), f"len {len(result)} vs {len(text_with_overlap)}")
+
+# 10f. Quote masking for POV enforcement
+# "He said" inside dialogue should NOT be converted when protag is male
+text = 'I replied, "He said he would come tomorrow." He walked away.'
+result = _enforce_first_person_pov(text, "Ethan", "male")
+# "He said" inside quotes should stay, "He walked" outside should convert to "I walked"
+test("Quote-masked: 'He said' in quotes stays",
+     '"He said' in result or '"he said' in result.lower(), repr(result))
+test("Quote-masked: 'He walked' outside converts to 'I walked'",
+     "I walked" in result, repr(result))
+
+# 10g. Anchor-based emotional summary protection
+# Sentence with concrete anchor should survive summary stripping
+text = "I walked home.\n\nThe cold bit through my jacket. Something about this moment felt different as the rain fell on the cracked pavement."
+result = _strip_emotional_summaries(text)
+test("Anchor protection: sentence with 'rain' + 'pavement' kept",
+     "rain" in result and "pavement" in result, repr(result))
+
+# Pure summary without anchors should be stripped
+text2 = "I walked home.\n\nSomething about this moment felt different and meaningful."
+result2 = _strip_emotional_summaries(text2)
+test("No anchor: 'something about this moment' stripped",
+     "Something about this moment" not in result2, repr(result2))
+
+# 10h. Context hashing (verify the code runs without error)
+orch4 = MockOrchestrator()
+orch4.state.scenes = [
+    {"chapter": 1, "scene_number": 1, "content": "Some content here.", "location": "Park"}
+]
+orch4.state.config = {
+    "genre": "romance",
+    "writing_style": "literary prose",
+    "tone": "dark and moody"
+}
+orch4._build_scene_context = PipelineOrchestrator._build_scene_context.__get__(orch4)
+orch4._build_story_state = PipelineOrchestrator._build_story_state.__get__(orch4)
+orch4._get_previous_scenes_context = PipelineOrchestrator._get_previous_scenes_context.__get__(orch4)
+orch4._validate_context_schema = PipelineOrchestrator._validate_context_schema.__get__(orch4)
+orch4._check_alignment = PipelineOrchestrator._check_alignment.__get__(orch4)
+try:
+    ctx = orch4._build_scene_context(0, include_story_state=False, include_previous=0)
+    test("Context hashing: builds without error", isinstance(ctx, str) and len(ctx) > 0, repr(ctx[:80]))
+except Exception as e:
+    test("Context hashing: builds without error", False, str(e))
+
+# 10i. Pre-export validation: actionable reports
+from prometheus_novel.export.scene_validator import validate_scene, validate_project_scenes, format_validation_report
+issues = validate_scene(
+    "Certainly! Here is the revised scene with more detail. " + "x " * 200,
+    {"characters": {"protagonist": "Ethan"}},
+    scene_id="Ch1Sc1",
+    scene_index=0
+)
+test("Validator: scene_index in issue", issues[0].get("scene_index") == 0, repr(issues[0]))
+test("Validator: pattern_name in issue", "pattern_name" in issues[0], repr(issues[0]))
+test("Validator: pattern_name is 'certainly_preamble'", issues[0]["pattern_name"] == "certainly_preamble", repr(issues[0]))
+
+# Format report
+report = format_validation_report(issues)
+test("Report: contains scene id", "Ch1Sc1" in report, repr(report[:200]))
+test("Report: contains index", "index 0" in report, repr(report[:200]))
+test("Report: contains pattern name", "certainly_preamble" in report, repr(report[:200]))
+
+# Word count check
+short_issues = validate_scene(
+    "Too short. " * 20,  # ~40 words
+    {"characters": {"protagonist": "Ethan"}},
+    scene_id="Ch1Sc2",
+    scene_index=1
+)
+short_codes = [i["code"] for i in short_issues]
+test("Validator: SHORT_SCENE for <100 words", "SHORT_SCENE" in short_codes, repr(short_codes))
+
+# Full project validation returns summary
+proj_result = validate_project_scenes(
+    [{"chapter": 1, "scene_number": 1, "content": "Certainly! Here is the revised scene. " + "x " * 200}],
+    {"characters": {"protagonist": "Ethan"}}
+)
+test("Project validation: has summary key", "summary" in proj_result, repr(list(proj_result.keys())))
+test("Project validation: summary is formatted string",
+     isinstance(proj_result["summary"], str) and "error" in proj_result["summary"].lower(),
+     repr(proj_result["summary"][:100]))
+
+# 10j. Final DE-AI paragraph-based protection
+# Verify the source uses paragraph splitting instead of word splitting for chapter ends
+source_deai = inspect.getsource(PipelineOrchestrator._stage_final_deai)
+test("DE-AI: uses paragraph split", "split('\\n\\n')" in source_deai, "")
+test("DE-AI: HEAD_PARAS defined", "HEAD_PARAS" in source_deai, "")
+test("DE-AI: TAIL_PARAS defined", "TAIL_PARAS" in source_deai, "")
+test("DE-AI: no HEAD_WORDS (old approach removed)", "HEAD_WORDS" not in source_deai, "")
+
+
+# ═══════════════════════════════════════════════════════════════
 # SUMMARY
 # ═══════════════════════════════════════════════════════════════
 print(f"\n{'='*60}")

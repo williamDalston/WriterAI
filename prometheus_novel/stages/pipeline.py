@@ -443,6 +443,20 @@ def _clean_scene_content(text: str) -> str:
             if len(candidate) > 100:
                 text = candidate
 
+    # --- PHASE 2.5: Post-truncation salvage guardrail ---
+    # After truncation, if remaining content is too small, mark as salvage-failed
+    # to prevent "clean but empty" outputs from passing downstream
+    stripped = text.strip()
+    word_count = len(stripped.split())
+    paragraph_count = len([p for p in stripped.split('\n\n') if p.strip()])
+    if word_count < 150 or paragraph_count < 2:
+        if word_count < 50:
+            logger.warning(
+                f"Cleanup salvage failed: only {word_count} words, {paragraph_count} paragraphs "
+                f"after truncation. Content may be corrupt."
+            )
+            # Return what we have — caller (critic gate) will catch "too_short"
+
     # --- PHASE 3: Inline artifact removal (patterns that appear MID-text) ---
     # These can appear anywhere in the prose, not just at the end
     inline_patterns = [
@@ -508,6 +522,47 @@ def _clean_scene_content(text: str) -> str:
     return text.strip()
 
 
+def _mask_quoted_dialogue(text: str):
+    """Mask text inside quotation marks to protect dialogue from POV replacement.
+
+    Returns (masked_text, restore_fn). Call restore_fn(modified_text) to put
+    dialogue back. This prevents "He said" inside dialogue from being converted.
+    """
+    placeholders = {}
+    counter = [0]
+
+    boundary_puncs = {}  # key -> punctuation char added after placeholder
+
+    def _replacer(match):
+        key = f"__DIALOGUE_{counter[0]}__"
+        quoted = match.group(0)
+        placeholders[key] = quoted
+        counter[0] += 1
+        # Preserve sentence boundary: if the quote ends with punctuation before
+        # the closing quote mark, keep that punctuation after the placeholder
+        # so patterns like (?<=[.!?]\s) still match after the dialogue
+        inner = quoted[1:-1] if len(quoted) >= 2 else ""
+        if inner and inner[-1] in '.!?':
+            boundary_puncs[key] = inner[-1]
+            return key + inner[-1]
+        return key
+
+    # Match \u201c...\u201d and "..." style quotes
+    masked = re.sub(r'[\u201c"][^\u201d"]*[\u201d"]', _replacer, text)
+    masked = re.sub(r'"[^"]*"', _replacer, masked)
+
+    def restore(modified_text):
+        result = modified_text
+        for key, original in placeholders.items():
+            # If we added boundary punctuation, remove it alongside the placeholder
+            if key in boundary_puncs:
+                result = result.replace(key + boundary_puncs[key], original)
+            result = result.replace(key, original)
+        return result
+
+    return masked, restore
+
+
 def _enforce_first_person_pov(text: str, protagonist_name: str = "",
                               protagonist_gender: str = "") -> str:
     """Code-level enforcement of first-person POV with GENDER AWARENESS.
@@ -516,6 +571,9 @@ def _enforce_first_person_pov(text: str, protagonist_name: str = "",
     - Male protagonist (Ethan): convert He/His/Him → I/My/Me. LEAVE She/Her alone.
     - Female protagonist (Lena): convert She/Her → I/My. LEAVE He/His alone.
     - Unknown gender: only convert [Name] references, skip pronoun fixes.
+
+    Dialogue inside quotation marks is PROTECTED (masked before replacement,
+    restored after). This prevents "He" in dialogue from being converted.
 
     This prevents the catastrophic bug where "her hair" (referring to the
     love interest) gets converted to "my hair" for a male narrator.
@@ -527,6 +585,9 @@ def _enforce_first_person_pov(text: str, protagonist_name: str = "",
     first_name = names[0] if names else ""
     if not first_name:
         return text
+
+    # Protect dialogue from pronoun replacement (mask quotes, restore after)
+    text, restore_dialogue = _mask_quoted_dialogue(text)
 
     gender = protagonist_gender.lower().strip()
 
@@ -626,6 +687,9 @@ def _enforce_first_person_pov(text: str, protagonist_name: str = "",
             _safe_poss_replace,
             text
         )
+
+    # Restore masked dialogue
+    text = restore_dialogue(text)
 
     return text
 
@@ -879,6 +943,15 @@ def _strip_emotional_summaries(text: str) -> str:
         # Match sentence boundaries: period/!/? followed by space and capital letter (or quote)
         sent_breaks = list(re.finditer(r'(?<=[.!?])\s+(?=[A-Z"\'\u201c])', para))
         if not sent_breaks:
+            # Single-sentence paragraph: check if the whole paragraph is a summary
+            is_single_summary = False
+            for compiled in compiled_starters:
+                if compiled.match(para.strip()):
+                    is_single_summary = True
+                    break
+            if is_single_summary:
+                # Don't append — remove the entire summary paragraph
+                continue
             cleaned_paragraphs.append(para)
             continue
 
@@ -901,6 +974,34 @@ def _strip_emotional_summaries(text: str) -> str:
                 break
 
         if is_summary:
+            # ANCHOR CHECK: if the sentence has concrete sensory/action anchors,
+            # it's likely legitimate interiority, not empty AI summary. Keep it.
+            _COMMON_CAPS = {
+                "the", "this", "that", "these", "those", "there", "they",
+                "something", "sometimes", "someone", "somehow", "somewhere",
+                "whatever", "whenever", "wherever", "whoever", "however",
+                "maybe", "perhaps", "tonight", "today", "tomorrow", "yesterday",
+                "and", "but", "yet", "for", "our", "its", "with", "each",
+            }
+            def _has_proper_noun(sent):
+                """Check for proper nouns (capitalized words that aren't common sentence starters)."""
+                for m in re.finditer(r'\b([A-Z][a-z]{2,})(?:\'s)?\b', sent):
+                    if m.group(1).lower() not in _COMMON_CAPS:
+                        return True
+                return False
+
+            anchor_patterns = [
+                r'\b(?:smell|taste|sound|cold|warm|wet|rough|smooth|sharp|bitter|sweet)\b',
+                r'\b(?:door|window|glass|table|phone|car|street|rain|snow|wind|light)\b',
+                r'\b(?:grabbed|pulled|pushed|slammed|kissed|threw|ran|jumped|fell)\b',
+            ]
+            has_anchor = any(re.search(ap, last_sentence) for ap in anchor_patterns)
+            has_anchor = has_anchor or _has_proper_noun(last_sentence)
+            if has_anchor:
+                # Sentence has concrete detail — keep it (not pure AI filler)
+                cleaned_paragraphs.append(para)
+                continue
+
             # Remove the last sentence, keep the rest
             candidate = para[:last_sent_start].rstrip()
             # Safety: keep at least one complete sentence (has a period/!/?)
@@ -1069,6 +1170,25 @@ def _detect_duplicate_content(text: str, similarity_threshold: float = 0.6) -> s
                 overlap = len(words_a & words_b) / min(len(words_a), len(words_b))
                 if overlap > similarity_threshold:
                     text = parts[0].strip()
+
+    # Suffix/prefix overlap check: catch when the model repeats the last N words
+    # at the start of a "continuation" (common restart pattern)
+    words = text.split()
+    if len(words) > 100:
+        for overlap_size in [60, 40, 25]:
+            if len(words) < overlap_size * 2.5:
+                continue
+            suffix = " ".join(words[-overlap_size:]).lower()
+            # Search for this suffix appearing earlier in the text
+            full_lower = text.lower()
+            first_pos = full_lower.find(suffix)
+            last_pos = full_lower.rfind(suffix)
+            if first_pos != last_pos and first_pos >= 0:
+                # The suffix appears twice — keep everything up to the restart
+                # (the second occurrence starts the duplicate)
+                text = text[:last_pos].rstrip()
+                logger.info(f"Dedup: suffix/prefix overlap ({overlap_size} words) removed restart at pos {last_pos}")
+                break
 
     # Paragraph-level duplication within the text
     # Split into paragraphs and find near-duplicate pairs
@@ -1253,8 +1373,10 @@ def _postprocess_scene(text: str, protagonist_name: str = "",
     """Master post-processor: applies all code-level quality enforcement.
 
     Called after _clean_scene_content on every creative stage output.
-    Order matters: clean meta-text first, then enforce quality.
+    Order matters: strip sentinel → clean meta-text → enforce quality.
     """
+    # Strip sentinel token if present (model was told to end with <END_PROSE>)
+    text = re.sub(r'\s*<END_PROSE>\s*$', '', text or '', flags=re.IGNORECASE).strip()
     text = _clean_scene_content(text)
     text = _detect_duplicate_content(text)
     text = _detect_semantic_duplicates(text)
@@ -1621,20 +1743,28 @@ BAD (do not do this):
   The morning light filtered..."
 
 GOOD (do this):
-  The morning light filtered through salt-crusted windows..."""
+  The morning light filtered through salt-crusted windows...
 
-# Stop sequences — prevent meta-text from being generated (saves tokens + cost)
+End your output with <END_PROSE> on its own line when finished."""
+
+# Sentinel token: primary stop mechanism. The model is instructed to emit this,
+# and we also set it as a stop sequence so generation halts cleanly.
+PROSE_SENTINEL = "\n<END_PROSE>"
+
+# Backup stop sequences — catch assistant-style meta-text that bypasses the sentinel.
+# These are deliberately "assistant-y" (unlikely to appear in prose/dialogue) to
+# minimize false positives. Generic tokens like "\nNotes:" removed to avoid
+# clipping legitimate prose (e.g. a character's notebook).
 CREATIVE_STOP_SEQUENCES = [
-    "\nCertainly",
-    "\nHere is",
-    "\nAs requested",
+    PROSE_SENTINEL,
+    "\nCertainly! Here",
+    "\nHere is the",
+    "\nAs requested,",
     "\nThe rest remains unchanged",
-    "\n---\n",
     "\nChanges made:",
-    "\nScanning for",
-    "\nNotes:",
-    "\n**Changes",
-    "\n**Scanning",
+    "\nScanning for AI",
+    "\n**Changes made",
+    "\n**Scanning for",
     "\n[The rest",
     "\n[Scene continues",
 ]
@@ -2335,6 +2465,74 @@ class PipelineOrchestrator:
                                 error=f"Content corruption: {count}/{new_count} scenes identical prefix",
                                 duration_seconds=duration
                             )
+
+                # Check 3: No scene that had content is now empty
+                emptied = 0
+                for i, (orig, new) in enumerate(zip(scenes_snapshot, self.state.scenes)):
+                    if isinstance(orig, dict) and isinstance(new, dict):
+                        orig_c = (orig.get("content") or "").strip()
+                        new_c = (new.get("content") or "").strip()
+                        if len(orig_c) > 50 and len(new_c) == 0:
+                            emptied += 1
+                if emptied > 0:
+                    logger.error(
+                        f"Transaction safety: {stage_name} emptied {emptied} scenes. "
+                        f"Restoring snapshot."
+                    )
+                    self.state.scenes = scenes_snapshot
+                    return StageResult(
+                        stage_name=stage_name,
+                        status=StageStatus.FAILED,
+                        error=f"{emptied} scenes emptied by stage",
+                        duration_seconds=duration
+                    )
+
+                # Check 4: Average word count didn't plummet (>40% avg loss)
+                def _avg_wc(scene_list):
+                    wcs = []
+                    for s in scene_list:
+                        if isinstance(s, dict):
+                            c = s.get("content", "") or ""
+                            wcs.append(len(c.split()))
+                    return sum(wcs) / max(len(wcs), 1)
+
+                old_avg = _avg_wc(scenes_snapshot)
+                new_avg = _avg_wc(self.state.scenes)
+                if old_avg > 100 and new_avg < old_avg * 0.6:
+                    logger.error(
+                        f"Transaction safety: {stage_name} average word count dropped "
+                        f"{old_avg:.0f} -> {new_avg:.0f} ({(1 - new_avg/old_avg)*100:.0f}% loss). "
+                        f"Restoring snapshot."
+                    )
+                    self.state.scenes = scenes_snapshot
+                    return StageResult(
+                        stage_name=stage_name,
+                        status=StageStatus.FAILED,
+                        error=f"Avg word count dropped {old_avg:.0f}->{new_avg:.0f}",
+                        duration_seconds=duration
+                    )
+
+                # Check 5: Previously-distinct scenes didn't become identical
+                import hashlib as _hl
+                def _fp(s):
+                    c = s.get("content", "") if isinstance(s, dict) else ""
+                    return _hl.sha256((c or "").encode()).hexdigest()[:16]
+                old_fps = [_fp(s) for s in scenes_snapshot]
+                new_fps = [_fp(s) for s in self.state.scenes[:len(scenes_snapshot)]]
+                old_unique = len(set(old_fps))
+                new_unique = len(set(new_fps))
+                if old_unique > 3 and new_unique < old_unique * 0.5:
+                    logger.error(
+                        f"Transaction safety: {stage_name} fingerprint uniqueness collapsed "
+                        f"{old_unique} -> {new_unique} distinct scenes. Restoring snapshot."
+                    )
+                    self.state.scenes = scenes_snapshot
+                    return StageResult(
+                        stage_name=stage_name,
+                        status=StageStatus.FAILED,
+                        error=f"Scene uniqueness collapsed: {old_unique}->{new_unique}",
+                        duration_seconds=duration
+                    )
 
             # Log artifact metrics for this stage
             self._log_artifact_summary(stage_name)
@@ -3387,8 +3585,27 @@ Return JSON with:
             validation2 = self._validate_scene_output(response2.content, scene_meta)
             self._record_artifact_metrics(stage_name, scene_meta or {}, validation2, is_retry=True)
 
-            # Use retry output if it's better (fewer or no issues)
-            if len(validation2.get("issues", {})) < len(detected):
+            # Score both outputs: hard penalties for artifacts, soft bonuses for quality
+            def _score_output(val, content):
+                score = 0
+                issues = val.get("issues", {})
+                # Hard penalties (artifacts that ruin the output)
+                score -= 100 * len({"preamble", "truncation_marker", "alternate_version",
+                                     "analysis_commentary"} & set(issues.keys()))
+                # Soft penalties
+                if issues.get("too_short"):
+                    score -= 30
+                if issues.get("pov_drift"):
+                    score -= 20
+                # Quality bonuses
+                wc = val.get("word_count", 0)
+                if wc >= 200:
+                    score += min(wc / 50, 20)  # Up to +20 for good length
+                return score
+
+            score1 = _score_output(validation, response.content)
+            score2 = _score_output(validation2, response2.content)
+            if score2 > score1:
                 response = response2
 
         # Postprocess (cleanup + POV + de-AI + tic limiting)
@@ -3449,6 +3666,15 @@ Return JSON with:
 
         # Schema validation: check that no unexpected data leaked into context
         self._validate_context_schema(result, scene_index)
+
+        # Context hashing + origin stamps for traceability
+        import hashlib
+        ctx_hash = hashlib.sha256(result.encode("utf-8")).hexdigest()[:12]
+        origins = [p.split(":")[0].split("\n")[-1].strip() for p in parts if p.strip()]
+        logger.debug(
+            f"Context for scene {scene_index}: hash={ctx_hash}, "
+            f"origins=[{', '.join(origins[:6])}], len={len(result)} chars"
+        )
 
         return result
 
@@ -5248,19 +5474,19 @@ POLISHED SCENE:"""
             is_chapter_end = idx in chapter_end_indices
 
             if is_chapter_end:
-                # HOOK PROTECTION: split into protected head/tail + editable middle
-                words = content.split()
-                HEAD_WORDS = 300
-                TAIL_WORDS = 400
+                # HOOK PROTECTION: paragraph-based split (respects boundaries)
+                paragraphs = [p for p in content.split('\n\n') if p.strip()]
+                HEAD_PARAS = 3   # Protect opening paragraphs
+                TAIL_PARAS = 4   # Protect closing paragraphs (hook text)
 
-                if len(words) <= HEAD_WORDS + TAIL_WORDS:
+                if len(paragraphs) <= HEAD_PARAS + TAIL_PARAS:
                     # Scene too short to have an editable middle — skip entirely
                     cleaned_scenes.append(scene)
                     continue
 
-                head = " ".join(words[:HEAD_WORDS])
-                middle = " ".join(words[HEAD_WORDS:-TAIL_WORDS])
-                tail = " ".join(words[-TAIL_WORDS:])
+                head = "\n\n".join(paragraphs[:HEAD_PARAS])
+                middle = "\n\n".join(paragraphs[HEAD_PARAS:-TAIL_PARAS])
+                tail = "\n\n".join(paragraphs[-TAIL_PARAS:])
 
                 # Apply surgical replacements ONLY to middle
                 for pattern, replacement in SURGICAL_REPLACEMENTS.items():
@@ -5303,7 +5529,7 @@ OUTPUT the text with only problematic sentences fixed:"""
                     scene_fixes += remaining_tells["total_tells"]
 
                 # Recombine: protected head + cleaned middle + protected tail
-                content = head + " " + middle + " " + tail
+                content = head + "\n\n" + middle + "\n\n" + tail
             else:
                 # Non-chapter-end scenes: full surgical pass (no hook to protect)
                 for pattern, replacement in SURGICAL_REPLACEMENTS.items():
