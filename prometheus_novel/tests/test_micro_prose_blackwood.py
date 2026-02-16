@@ -49,12 +49,14 @@ PLANNING_STAGES = [
     "trope_integration",
 ]
 
-# Target scenes: (chapter, scene) tuples
+# Target scenes: (chapter, scene_position) tuples
+# scene_position = 1-based index within the chapter (NOT the model's scene number,
+# which may be globally numbered like 4,5,6 for Ch2 instead of 1,2,3)
 # Ch1 = Elena (odd), Ch2 = Kaelen (even), Ch6 = Kaelen (even)
 TARGET_SCENES = [
-    (1, 1),   # Elena POV -- blizzard opening
-    (2, 1),   # Kaelen POV -- wolf awakening, perimeter
-    (6, 1),   # Kaelen POV -- midpoint attack + caretaking
+    (1, 1),   # Elena POV -- blizzard opening (1st scene of Ch1)
+    (2, 1),   # Kaelen POV -- wolf awakening, perimeter (1st scene of Ch2)
+    (6, 1),   # Kaelen POV -- midpoint attack + caretaking (1st scene of Ch6)
 ]
 
 # Expected POV per chapter (from config: Elena odd, Kaelen even)
@@ -397,14 +399,13 @@ async def run_micro_prose_blackwood():
             continue
         ch_num = ch.get("chapter", 0)
         if ch_num in target_chapter_nums:
-            target_scene_nums = [s for c, s in TARGET_SCENES if c == ch_num]
+            # Get target scene POSITIONS (1-based index within chapter, not model's scene number)
+            target_positions = [s for c, s in TARGET_SCENES if c == ch_num]
+            all_scenes = [sc for sc in ch.get("scenes", []) if isinstance(sc, dict)]
             filtered_scenes = []
-            for sc in ch.get("scenes", []):
-                if not isinstance(sc, dict):
-                    continue
-                sc_num = sc.get("scene", sc.get("scene_number", 0))
-                if sc_num in target_scene_nums:
-                    filtered_scenes.append(sc)
+            for pos in target_positions:
+                if 1 <= pos <= len(all_scenes):
+                    filtered_scenes.append(all_scenes[pos - 1])
             ch_copy = dict(ch)
             ch_copy["scenes"] = filtered_scenes
             filtered_outline.append(ch_copy)
