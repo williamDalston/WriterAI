@@ -5134,7 +5134,11 @@ Return JSON with:
                             if not isinstance(scene, dict):
                                 continue
                             if scene.get("scene") == sc_num or scene.get("scene_number") == sc_num:
+                                # Protect normalized POV from being overwritten by trope additions
+                                saved_pov = scene.get("pov")
                                 scene.update(additions)
+                                if saved_pov:
+                                    scene["pov"] = saved_pov
                                 logger.info(f"Updated Ch{ch_num} Sc{sc_num} with trope requirements")
 
             return trope_report, response.input_tokens + response.output_tokens
@@ -6477,7 +6481,10 @@ RULES:
                 scene_num = int(scene_info.get("scene", scene_info.get("scene_number", 1)))
                 stable_id = scene_info.get("scene_id", f"ch{chapter_num:02d}_s{scene_num:02d}")
                 pov_char = scene_info.get("pov", "protagonist")
-                spice_level = scene_info.get("spice_level", 0)
+                try:
+                    spice_level = int(scene_info.get("spice_level", 0))
+                except (ValueError, TypeError):
+                    spice_level = 0
                 location = scene_info.get("location", "")
 
                 # Get rolling context from previous scenes
@@ -6513,7 +6520,10 @@ RULES:
                 differentiator = scene_info.get('differentiator', '')  # What makes THIS scene distinct from similar beats
                 foreshadowing = scene_info.get('foreshadowing', '')
                 pacing = scene_info.get('pacing', 'medium')
-                tension_level = scene_info.get('tension_level', 5)
+                try:
+                    tension_level = int(scene_info.get('tension_level', 5))
+                except (ValueError, TypeError):
+                    tension_level = 5
                 emotional_arc = scene_info.get('emotional_arc', '')
                 internalization = scene_info.get('internalization', '')
                 dialogue_notes = scene_info.get('dialogue_notes', '')
@@ -6714,6 +6724,9 @@ Begin DIRECTLY with narrative—no preamble, no title, no scene heading.
 - NEVER end a paragraph by summarizing what the moment means emotionally.
   End on action, dialogue, or sensory observation. Let the reader interpret.
 - Character catchphrases/tics: use at most ONCE in this scene.
+- MINIMUM DIALOGUE: at least 4 lines of quoted dialogue ("..."). Spread across the scene.
+  At least 1 quoted line must appear in the final 25% of the scene.
+  Dialogue advances the scene — it must reveal, challenge, or shift the dynamic.
 {"- Include italic inner voice (*thoughts*) as instructed above." if voice_modifiers else ""}
 
 Write the complete scene as {pov_char} ("I"):"""
@@ -6827,6 +6840,11 @@ Write the complete scene as {pov_char} ("I"):"""
                     content, t = await self._micro_scene_turn_repair(
                         client, content, scene, sid, pov)
                     _tokens += t
+
+                    # Pass 5: Wolf voice seed (LAST — after all rewrites to prevent overwrites)
+                    content, t = await self._micro_wolf_voice_seed(
+                        client, content, scene, sid, pov)
+                    _tokens += t
                     return _tokens
 
                 scene_tokens = await asyncio.wait_for(_run_micro_passes(), timeout=900)
@@ -6898,10 +6916,11 @@ End on action or dialogue, not reflection."""
 
     async def _micro_dialogue_drought(self, client, content: str, scene: dict,
                                        sid: str, pov: str) -> tuple:
-        """Inject dialogue if scene has fewer than MIN_DIALOGUE_LINES.
+        """Surgically insert dialogue into scenes that lack it.
 
-        Dialogue must cause a turn — reveal, challenge, deflect, or surprise.
-        Keeps 90%+ of existing prose verbatim.
+        Instead of rewriting the whole scene (which causes word-count loss),
+        identifies 2-3 anchor points in the existing prose and asks the model
+        to insert short dialogue exchanges at those points only.
         """
         MIN_DIALOGUE_LINES = 3
 
@@ -6911,31 +6930,66 @@ End on action or dialogue, not reflection."""
 
         logger.info(f"Dialogue drought in {sid}: {dialogue_lines} lines (min {MIN_DIALOGUE_LINES})")
 
-        needed = MIN_DIALOGUE_LINES - dialogue_lines + 2
+        # Find insertion anchors: paragraphs with interaction cues
+        paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
+        if len(paragraphs) < 3:
+            return content, 0
 
-        prompt = f"""This scene has {dialogue_lines} dialogue lines but needs at least {MIN_DIALOGUE_LINES}.
-Rewrite the scene, keeping 90%+ of the existing prose VERBATIM, but weaving in natural dialogue.
+        # Build annotated scene with [KEEP] / [INSERT DIALOGUE HERE] markers
+        interaction_cues = re.compile(
+            r'\b(looked at|turned to|faced|glanced|stared|nodded|shook|'
+            r'stepped|moved toward|reached|grabbed|touched|voice|spoke|'
+            r'whispered|mouth|lips|jaw|throat|eyes met)\b', re.IGNORECASE)
 
-=== DIALOGUE INJECTION RULES ===
-1. Dialogue must CAUSE A TURN — it should reveal, challenge, deflect, or surprise.
-2. Each character sounds different (vocabulary, rhythm, register).
-3. Add physical beats between lines (what hands/eyes/body do).
-4. Subtext > text: what characters mean is not what they say.
-5. NO therapeutic-affirmation register. Real people fumble, dodge, interrupt.
+        anchors = []
+        for i, para in enumerate(paragraphs):
+            if interaction_cues.search(para) and i > 0:
+                anchors.append(i)
+
+        # If no interaction cues, pick paragraph before final 2 + midpoint
+        if not anchors:
+            mid = len(paragraphs) // 2
+            anchors = [mid, max(mid + 1, len(paragraphs) - 3)]
+
+        # Limit to 3 anchors, spread across the scene
+        anchors = sorted(set(anchors))[:3]
+        needed = max(MIN_DIALOGUE_LINES - dialogue_lines + 1, 3)
+
+        # Build the annotated scene
+        annotated_parts = []
+        for i, para in enumerate(paragraphs):
+            if i in anchors:
+                annotated_parts.append(f"[INSERT DIALOGUE AFTER THIS PARAGRAPH]\n{para}")
+            else:
+                annotated_parts.append(f"[KEEP VERBATIM]\n{para}")
+
+        annotated_scene = '\n\n'.join(annotated_parts)
+
+        prompt = f"""This scene has only {dialogue_lines} dialogue lines. Insert dialogue at the marked points.
+
+=== RULES (NON-NEGOTIABLE) ===
+1. Every paragraph marked [KEEP VERBATIM] must appear UNCHANGED in your output.
+2. After each [INSERT DIALOGUE AFTER THIS PARAGRAPH], add 1-2 short dialogue exchanges.
+3. A dialogue exchange = a quoted line + a physical beat (what hands/eyes/body do).
+4. Total new dialogue: at least {needed} quoted lines spread across the insert points.
+5. Dialogue must CAUSE A TURN — reveal, challenge, deflect, or surprise.
+6. Each character sounds DIFFERENT. Real people fumble, dodge, interrupt.
+7. You may ONLY add lines. Do NOT delete, rephrase, or compress any existing text.
+8. The final output must be LONGER than the input (you're adding, not replacing).
 
 === POV LOCK ===
 FIRST PERSON ("I") — {pov}'s POV.
 
-=== SCENE TO FIX ===
-{content}
+=== SCENE WITH INSERTION MARKERS ===
+{annotated_scene}
 
-=== NOW REWRITE ===
-Keep the existing narrative structure. Insert {needed} dialogue exchanges
-at natural conversation points. Each exchange must advance the scene.
-Output ONLY the complete rewritten scene — no commentary."""
+=== NOW OUTPUT ===
+Return the complete scene with dialogue inserted at the marked points.
+Remove all [KEEP VERBATIM] and [INSERT DIALOGUE AFTER THIS PARAGRAPH] markers.
+Output ONLY the scene text — no commentary, no labels."""
 
         try:
-            max_tokens = min(max(int(len(content.split()) * 2), 2000), 4096)
+            max_tokens = min(max(int(len(content.split()) * 2.5), 2500), 5000)
             response = await client.generate(
                 prompt, max_tokens=max_tokens, temperature=0.5,
                 system_prompt=self._format_contract,
@@ -6943,14 +6997,16 @@ Output ONLY the complete rewritten scene — no commentary."""
             tokens = response.input_tokens + response.output_tokens
 
             new_content = self._postprocess(response.content, pov_character=pov)
+            # Strip any surviving markers
+            new_content = re.sub(r'\[(?:KEEP VERBATIM|INSERT DIALOGUE[^\]]*)\]\s*', '', new_content)
 
-            # Validate: new version must have more dialogue and not lose too many words
+            # Validate: must have dialogue AND not shrink
             new_dialogue = len(re.findall(r'"[^"]{5,}"', new_content))
             old_words = len(content.split())
             new_words = len(new_content.split())
 
             if (new_dialogue >= MIN_DIALOGUE_LINES and
-                    new_words >= old_words * 0.7 and
+                    new_words >= old_words * 0.92 and
                     new_content and len(new_content.strip()) > 200):
                 logger.info(f"Dialogue drought fixed in {sid}: "
                            f"{dialogue_lines} -> {new_dialogue} lines")
@@ -7115,6 +7171,102 @@ Write exactly 2 paragraphs that replace the current ending. The new ending must:
             return content, tokens
         except Exception as e:
             logger.warning(f"Scene turn repair failed for {sid}: {e}")
+            return content, 0
+
+    async def _micro_wolf_voice_seed(self, client, content: str, scene: dict,
+                                      sid: str, pov: str) -> tuple:
+        """Insert one italic inner-voice line if the scene should have it but doesn't.
+
+        Detects whether the current POV character has an italic inner voice
+        defined in writing_style config. If so and the scene has zero italic
+        lines, surgically inserts exactly one in the opening 3 paragraphs.
+        """
+        # Check if this POV character has an italic inner voice
+        writing_style = self.state.config.get("writing_style", "")
+        if "italic" not in writing_style.lower():
+            return content, 0
+
+        pov_lower = pov.lower().split()[0]  # First name
+        ws_lower = writing_style.lower()
+
+        # Check if this character's name appears near "italic" in the style guide
+        italic_idx = ws_lower.find("italic")
+        if italic_idx == -1:
+            return content, 0
+
+        # Search backwards from "italic" for the character name
+        pre_text = ws_lower[:italic_idx + 20]
+        name_idx = pre_text.rfind(pov_lower)
+        if name_idx == -1 or (italic_idx - name_idx) > 120:
+            return content, 0  # This character doesn't have the inner voice
+
+        # Check if scene already has italic inner voice
+        italic_phrases = re.findall(r'(?<!\*)\*(?!\*)[^*\n]{1,40}\*(?!\*)', content)
+        if italic_phrases:
+            return content, 0  # Already has italics, skip
+
+        logger.info(f"Wolf voice missing in {sid}: inserting italic seed")
+
+        # Find a good insertion point in the first 3 paragraphs
+        paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
+        if len(paragraphs) < 3:
+            return content, 0
+
+        # Pick the first paragraph that has an emotional or sensory moment
+        insert_idx = 1  # Default: after paragraph 2
+        emotion_cues = re.compile(
+            r'\b(chest|gut|stomach|heart|pulse|hands|fists|jaw|teeth|breath|'
+            r'muscle|tension|instinct|wolf|scent|smell|pine|heat)\b', re.IGNORECASE)
+        for i in range(min(3, len(paragraphs))):
+            if emotion_cues.search(paragraphs[i]):
+                insert_idx = i
+                break
+
+        # Build a minimal prompt for exactly one italic line
+        context_para = paragraphs[insert_idx]
+        prompt = f"""Add exactly ONE italic inner-voice thought to this paragraph.
+
+=== RULES ===
+1. The italic thought is {pov}'s raw, primal inner voice — 1 to 5 words.
+2. Format: *word.* or *short phrase.*
+3. It must feel involuntary, like an intrusive thought.
+4. Place it where emotion peaks in the paragraph — mid-sentence or between sentences.
+5. Return ONLY the paragraph with the italic thought inserted. Nothing else.
+
+=== PARAGRAPH ===
+{context_para}
+
+=== OUTPUT ===
+Return the paragraph with exactly one *italic thought* added:"""
+
+        try:
+            response = await client.generate(
+                prompt, max_tokens=600, temperature=0.5,
+                system_prompt=self._format_contract,
+                stop=self._stop_sequences, timeout=120)
+            tokens = response.input_tokens + response.output_tokens
+
+            new_para = response.content.strip()
+            # Remove any preamble/labels the model might add
+            new_para = re.sub(r'^(?:Here|Output|Paragraph|The paragraph)[^\n]*\n', '', new_para, flags=re.IGNORECASE).strip()
+
+            # Validate: must contain an italic phrase and most of the original
+            new_italics = re.findall(r'(?<!\*)\*(?!\*)[^*\n]{1,40}\*(?!\*)', new_para)
+            orig_words = set(context_para.lower().split())
+            new_words_set = set(new_para.lower().split())
+            overlap = len(orig_words & new_words_set) / max(len(orig_words), 1)
+
+            if new_italics and overlap >= 0.7 and len(new_para) > len(context_para) * 0.8:
+                paragraphs[insert_idx] = new_para
+                content = '\n\n'.join(paragraphs)
+                logger.info(f"Wolf voice seeded in {sid}: '{new_italics[0]}'")
+                return content, tokens
+            else:
+                logger.warning(f"Wolf voice seed rejected for {sid}: "
+                             f"italics={len(new_italics)}, overlap={overlap:.2f}")
+                return content, tokens
+        except Exception as e:
+            logger.warning(f"Wolf voice seed failed for {sid}: {e}")
             return content, 0
 
     async def _stage_scene_expansion(self) -> tuple:
