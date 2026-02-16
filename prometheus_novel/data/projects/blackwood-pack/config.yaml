@@ -1,0 +1,245 @@
+# ============================================================================
+# BLACKWOOD PACK — Book 1: Alpha's Regret
+# Series: The Blackwood Pack (6-book wolf shifter romance, KU rapid release)
+# Format: 30k novella, 12 chapters, dual first-person POV (Elena / Kaelen)
+# ============================================================================
+
+project_name: blackwood-pack
+title: "Alpha's Regret"
+series_name: "The Blackwood Pack"
+book_number: 1
+genre: "Paranormal Romance (Wolf Shifters)"
+tone: "Angsty, primal, high-tension, possessive, gritty, ultimately redemptive"
+target_length: "novella (30k)"
+budget_usd: 0
+status: new
+
+# --- Characters (pipeline expects strings, not dicts) ---
+protagonist: >
+  Elena Vance, 26. The Survivor. Hyper-vigilant (counts exits), resourceful,
+  touch-starved, secretly fierce, street-smart. Escaping an abusive ex-husband,
+  hiding under the radar working as a waitress in Silver Springs. Wants safety
+  and anonymity; needs to stop running and fight for a real home. Her fear:
+  control disguised as protection. Her secret strength: when cornered, she
+  becomes unstoppable. Female, dark hair, lean from running.
+
+antagonist: >
+  Marcus, leader of the Rogue Syndicate cell targeting fated mates to weaken
+  Alphas and destabilize packs. Calculating, patient, treats pack destruction
+  as a business operation. Uses scouts and informants rather than direct
+  confrontation until the climax. The real threat is his intelligence, not
+  his strength.
+
+other_characters: >
+  Kaelen Thorn (30, the Alpha love interest, tortured protector, monosyllabic,
+  over-protective, self-sacrificing, violently possessive toward threats, ruthless
+  competence under pressure. His human logic rejects Elena to protect her; his
+  wolf is dying without her touch. Male, scarred hands, built like a logger).
+  Jax (Beta, tension-breaker, loyal, flirt veneer hiding trauma, suspicious of
+  a mole, Book 2 setup). Ronan (Enforcer, scarred, brutal, protective, Book 3
+  setup). Sarah (Healer, bond mechanics exposition in small doses, caretaking
+  scenes). Tamsin (waitress, human ally, helps Elena integrate, town texture).
+
+# --- Story ---
+premise: >
+  When Elena Vance's car breaks down in a blizzard on Blackwood Mountain, she's
+  rescued by the reclusive Alpha, Kaelen. He recognizes her as his Fated Mate
+  instantly but brutally rejects her to keep her off the Rogue Syndicate's radar.
+  Snowed in together, the bond becomes torture. As enemies close in, Kaelen must
+  choose between strategy and instinct.
+
+central_conflict: >
+  Kaelen pushes Elena away to protect her; the mate bond and external threats
+  force intimacy, trust, and eventual acceptance. His lie: love creates targets.
+  Her fear: that his protection is just another cage.
+
+synopsis: >
+  Elena Vance didn't come to Blackwood Mountain for salvation. She came to
+  disappear. A blizzard has other plans. When her car dies on the mountain road,
+  the reclusive Alpha Kaelen Thorn drags her from the snow — and the moment her
+  scent hits him, something in him snaps into place. Mate. Then he does the one
+  thing no Alpha should ever do: he rejects her. Snowed in at his isolated cabin,
+  Elena fights the pull she doesn't understand and the fear that the only man who
+  makes her feel safe might be the monster she ran from. But when the Rogue
+  Syndicate closes in, hunting fated mates to destabilize packs, Kaelen's control
+  fractures. And once his wolf decides she's his, the mountain won't hide anyone
+  who tries to take her.
+
+key_plot_points: >
+  ACT 1:
+  - Opening: Elena stranded in blizzard, failing phone, panic rising.
+  - Inciting incident: Kaelen finds her; scent hits; he saves her then rejects her verbally.
+  - The Void begins immediately for both; physical consequences show on-page.
+  - Forced proximity: Snowed in at Kaelen's cabin; he tries distance; bond escalates.
+  ACT 2:
+  - First external threat (by Ch3): Rogue scout appears; cabin perimeter tested.
+  - Midpoint: Rogues attack the cabin; Kaelen injured defending Elena; caretaking scene.
+  - Revelation: Elena realizes rejection was protection, not hatred.
+  - Low point: Kaelen tries to send her away anyway; Elena refuses; bond near breaking point.
+  ACT 3:
+  - Climax: Elena taken by Rogues to the Old Mine Shafts.
+  - Rescue: Kaelen embraces bond, goes feral to track her; mine showdown.
+  - Resolution: Public claim/acceptance; Elena chooses pack life.
+  - Hook: Evidence of mole + Jax finds a scent trail leading into Book 2.
+
+subplots: >
+  - The Mole: someone is leaking pack movement to the Rogues (teased, not resolved).
+  - Elena's human past: the abusive ex is a looming fear (teased, not the main villain).
+
+themes: >
+  Fate cannot be fought. Strength in vulnerability. Home is a person, not a place.
+  Protection vs possession — the line between guarding someone and caging them.
+
+central_question: >
+  Can Kaelen overcome his fear of loss and accept the bond as strength, not weakness?
+
+motifs: >
+  Snow and cold vs body heat. Amber eyes (wolf near the surface). The scent of
+  pine and rain. Scars (physical and emotional). Fireplace light in a dark cabin.
+  Doors and thresholds (choosing to stay or leave).
+
+setting: >
+  Blackwood Mountain, Colorado. A snow-heavy mining and logging town on the edge
+  of wilderness. Silver Springs is neutral ground where humans live unaware and
+  shifters pass as locals. The Blackwood Pack territory begins where the road
+  turns to timber and the air smells like pine, diesel, and cold. Late winter,
+  heavy snowfall, isolation.
+
+key_locations: >
+  Kaelen's isolated cabin (forced proximity, storm shelter, intimacy pressure-cooker).
+  The Roadhouse bar (neutral ground, public tension, pack politics without long councils).
+  The Pack compound (training yard, hierarchy, pack hospital).
+  The Old Mine Shafts (climax environment, echoing tunnels, high danger).
+  Pack hospital (healer exposition, caretaking scenes).
+  Mechanic shop / logging yard (blue-collar texture, physical action while talking).
+  Ridgeline lookout (scent on the wind, wolf instincts, bond awareness).
+
+world_rules: >
+  Wolf shifters in contemporary Colorado. Fated mates: scent triggers a biological
+  imperative; separation causes escalating pain and instability. Rejection creates
+  "The Void": physical deterioration and emotional destabilization in both mates
+  unless the bond is accepted or ends in death. Shifters' eyes flare gold/amber
+  when the wolf is near the surface; full gold during dominance/territory threats.
+  Alpha command can compel via "The Voice" (rare, dangerous, emergency only).
+  Shifting burns calories fast; injuries heal faster but require protein/rest.
+  Mate-bite/marking seals the bond and amplifies tracking and emotional resonance.
+  The Rogue Syndicate targets fated mates to weaken Alphas and destabilize packs.
+  No magic beyond shifting. Technology is modern. Humans are unaware.
+
+# --- Style ---
+writing_style: >
+  First person, dual POV, alternating chapters. Elena odd chapters (1,3,5,7,9,11),
+  Kaelen even chapters (2,4,6,8,10,12). Each chapter opens with a POV header
+  (ELENA or KAELEN). Short punchy sentences during action; sensory-heavy writing
+  emphasizing smell, touch, and heat. Minimal exposition — show world through
+  action. Kaelen's wolf voice appears in italics as a distinct, blunt inner
+  presence ("Mine. Ours. Protect."). No head-hopping within a scene or chapter.
+
+influences: >
+  Rejected mate trope execution (Cate C. Wells energy). PNR heat level (Suzanne
+  Wright vibe). Shifter atmosphere (Bitten-style grit). Blue-collar romance
+  texture (Sarina Bowen small-town vibes).
+
+avoid: >
+  - Third-person narration or head-hopping within a scene
+  - Long pack councils, political meetings, or talking-head scenes
+  - Lore lectures or history dumps before Chapter 3
+  - Polite, emotionally articulate Alpha in early chapters (monosyllabic until walls crack)
+  - Weak/fainting heroine (Elena fights, runs, or strategizes — never passively waits)
+  - Purple prose or flowery metaphors ("electricity coursed through" etc.)
+  - Vague villains or off-page threats (Marcus and scouts must appear on-page)
+  - Therapy-speak or modern emotional vocabulary from Kaelen
+  - Generic "fate" language without grounding it in physical sensation
+  - AI tells: "couldn't help but", "I found myself", "a whirlwind of emotions"
+
+# --- Strategic Guidance ---
+strategic_guidance:
+  market_positioning: >
+    Paranormal romance / wolf shifters for Kindle Unlimited. Target: women 25-45,
+    KU binge readers, quick-spice readers. Spice level: 4/5 (explicit open-door).
+    Emotional tone: angsty rejection -> grovel -> obsessive protection. Comp phrases:
+    "Yellowstone meets Teen Wolf with spice", "Rejected mates energy", "Small town
+    shifter heat". Keywords: wolf shifter romance, rejected mate, fated mates
+    paranormal, possessive hero, forced proximity, touch her and die, groveling
+    hero, shifter novella, small town paranormal, kindle unlimited shifter romance.
+
+  tropes: >
+    Primary: Rejected Mate, Fated Mates, Forced Proximity (Snowed In), Touch Her
+    and Die, Groveling Hero. Secondary: "Who did this to you?", Caretaking while
+    injured, "Mine", Only one bed (cabin has one bedroom).
+
+  pacing_notes: >
+    Rejection by Chapter 1-2, no delays. Villain presence on-page (or minions) by
+    Chapter 3. First major intimacy by ~40% mark. Bond reminders every chapter
+    (scent/eyes/wolf reaction). Every scene has physical action, not just dialogue.
+    No chapter without either external threat progression or bond escalation.
+
+  dialogue_bank: >
+    Elena: sharp, defensive humor used as armor. Short sentences when scared, longer
+    when she's gaining confidence. Swears when cornered. Never pleads.
+    Kaelen: monosyllabic early ("Go." "No." "Stay."). His wolf voice in italics is
+    blunt and possessive ("Mine. Ours. Keep."). When walls crack, his sentences
+    get longer and rawer. Never flowery — gravel-voiced sincerity.
+    Jax: easy charm, deflects with jokes, uses nicknames, hides worry behind grins.
+
+  aesthetic_guide: >
+    Visual palette: snow white, pine green, firelight amber, blood red, midnight
+    blue. Textures: rough bark, wool blankets, cold metal, warm skin, wet fur.
+    Sounds: wind through pines, fire crackling, bones shifting, heartbeats, silence.
+    Smells: pine, woodsmoke, rain, blood, the mate-scent (described differently by
+    each POV character).
+
+  cultural_notes: >
+    Blue-collar mountain town authenticity: logging, mechanic work, practical
+    clothing, pickup trucks, roadhouse bars. No glamorized wealth. Pack hierarchy
+    shown through action and deference, not explained through lectures.
+
+  commercial_notes: >
+    Series: Book 1 Kaelen/Elena, Book 2 Jax, Book 3 Ronan, Book 4 Scarred Enforcer,
+    Book 5 Rogue Defector, Book 6 Pack Queen + war conclusion. Release cadence:
+    every 21-28 days. Category targets: Romance > Paranormal > Shifters, Romance >
+    Fantasy, Romance > Romantic Suspense (secondary). Cover signals: torso (no face),
+    dark blue/grey grade, wolf silhouette overlay, bold sans-serif type.
+
+# --- Defense Config ---
+defense:
+  foreign_word_whitelist:
+    - "Alpha"
+    - "Beta"
+    - "Omega"
+    - "mate"
+    - "fated mate"
+    - "bond"
+    - "pack"
+    - "territory"
+    - "shift"
+    - "shifter"
+    - "Rogue Syndicate"
+    - "The Void"
+    - "marking"
+    - "claiming"
+    - "scent"
+    - "amber"
+    - "feral"
+  thresholds:
+    structure_gate_max_iterations: 3
+    structure_gate_pass_total: 16
+    structure_gate_pass_min: 3
+
+# --- Model Routing (full-local by default) ---
+model_defaults:
+  api_model: qwen2.5:14b
+  critic_model: qwen2.5:14b
+  fallback_model: qwen2.5:14b
+  local_model: qwen2.5:14b
+
+# Uncomment for mixed (local + API) runs:
+# stage_model_map:
+#   high_concept: claude
+#   scene_drafting: claude
+#   scene_expansion: claude
+#   self_refinement: claude
+#   structure_gate: gemini
+#   continuity_recheck: gemini
+#   continuity_fix: claude
+#   voice_human_pass: claude
