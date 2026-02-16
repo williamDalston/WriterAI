@@ -359,8 +359,10 @@ async def run_micro_prose_blackwood():
     )
     print(f"  Outline: {total_chapters} chapters, {total_scenes} scenes")
 
-    # Show POV assignments from outline
+    # Show POV assignments from outline + contract check
     print("\n  POV assignments from outline:")
+    outline_pov_mismatches = 0
+    outline_pov_missing = 0
     for ch in pipeline.state.master_outline:
         if not isinstance(ch, dict):
             continue
@@ -369,10 +371,19 @@ async def run_micro_prose_blackwood():
             if isinstance(sc, dict):
                 pov = sc.get("pov", "?")
                 expected = EXPECTED_POV.get(ch_num, "?")
-                match = "OK" if pov and expected.lower() in pov.lower() else "MISMATCH"
+                if not pov or pov == "?":
+                    match = "MISSING"
+                    outline_pov_missing += 1
+                elif expected.lower() in pov.lower():
+                    match = "OK"
+                else:
+                    match = "MISMATCH"
+                    outline_pov_mismatches += 1
                 if ch_num in [c for c, _ in TARGET_SCENES]:
                     sc_num = sc.get("scene", sc.get("scene_number", "?"))
                     print(f"    Ch{ch_num}-S{sc_num}: pov={pov} (expected={expected}) [{match}]")
+    print(f"\n  Outline POV contract: {outline_pov_mismatches} mismatches, "
+          f"{outline_pov_missing} missing")
 
     # --- Phase 2: Draft target scenes ---
     print("\n--- PHASE 2: Prose Drafting (3 target scenes) ---")
@@ -517,6 +528,12 @@ async def run_micro_prose_blackwood():
         has_turn = metrics.get("scene_turn_detected", False)
         print(f"  Scene turn: {'DETECTED' if has_turn else 'MISSING'}")
 
+        # Dedup false-positive detection
+        if "[DEDUP_TAIL_TRUNCATED]" in content or "[DEDUP__DIALOGUE" in content:
+            if pct < 50:
+                print(f"  DEDUP: Scene truncated (dedup sentinel present, {pct:.0f}% of target)")
+                all_issues.append(f"{label}: DEDUP_FALSE_POSITIVE: truncated to {pct:.0f}%")
+
         # Preamble
         if "preamble_detected" in metrics:
             print(f"  PREAMBLE: {metrics['preamble_detected']}")
@@ -584,13 +601,40 @@ async def run_micro_prose_blackwood():
     else:
         print(f"\n  Issues: None")
 
-    # Verdict
-    pov_issues = [i for i in all_issues if "POV" in i]
-    preamble_issues = [i for i in all_issues if "preamble" in i]
-    critical = pov_issues + preamble_issues
+    # Classified failure types
+    fail_outline = [i for i in all_issues if "OUTLINE_CONTRACT" in i]
+    fail_dedup = [i for i in all_issues if "DEDUP_FALSE_POSITIVE" in i]
+    fail_backfill = [i for i in all_issues if "BACKFILL_METADATA" in i]
+    fail_pov = [i for i in all_issues if "POV" in i and "OUTLINE" not in i and "BACKFILL" not in i]
+    fail_preamble = [i for i in all_issues if "preamble" in i]
+
+    # Add outline contract failures from Phase 1 check
+    if outline_pov_mismatches > 0:
+        fail_outline.append(f"OUTLINE_CONTRACT: {outline_pov_mismatches} POV mismatches in outline")
+    if outline_pov_missing > 0:
+        fail_backfill.append(f"BACKFILL_METADATA: {outline_pov_missing} scenes with missing POV")
+
+    critical = fail_pov + fail_preamble
+    upstream = fail_outline + fail_dedup + fail_backfill
+
+    print(f"\n  Failure classification:")
+    if fail_outline:
+        print(f"    FAIL_OUTLINE_CONTRACT:    {len(fail_outline)} (model ignored POV rule)")
+    if fail_backfill:
+        print(f"    FAIL_BACKFILL_METADATA:   {len(fail_backfill)} (missing POV on backfill)")
+    if fail_dedup:
+        print(f"    FAIL_DEDUP_FALSE_POSITIVE: {len(fail_dedup)} (dedup truncated good content)")
+    if fail_pov:
+        print(f"    FAIL_POV_CORRUPTION:      {len(fail_pov)} (pronoun drift/corruption)")
+    if fail_preamble:
+        print(f"    FAIL_PREAMBLE:            {len(fail_preamble)} (meta-text in output)")
+    if not (fail_outline or fail_backfill or fail_dedup or fail_pov or fail_preamble):
+        print(f"    (none)")
 
     if critical:
         print(f"\n  VERDICT: FAIL ({len(critical)} critical issues)")
+    elif upstream:
+        print(f"\n  VERDICT: UPSTREAM_FAIL ({len(upstream)} upstream issues, postprocessing clean)")
     elif pov_pass_count < total_scenes:
         print(f"\n  VERDICT: NEEDS WORK (POV issues)")
     elif len(all_issues) > 3:

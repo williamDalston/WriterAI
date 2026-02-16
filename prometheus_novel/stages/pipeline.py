@@ -1889,70 +1889,104 @@ def _semantic_similarity_check(text_a: str, text_b: str) -> float:
     return overlap / min(len(bigrams_a), len(bigrams_b))
 
 
-def _detect_semantic_duplicates(text: str, threshold: float = 0.75) -> str:
-    """Secondary duplicate detection using sliding window semantic similarity.
+def _normalize_paragraph_for_dedup(text: str) -> str:
+    """Normalize a paragraph for exact/near-exact duplicate detection.
 
-    Instead of a single midpoint split, uses a rolling window to compare
-    each window of N paragraphs against all previous windows. If similarity
-    exceeds threshold, truncates at the start of the duplicate window.
+    Lowercase, collapse whitespace, strip punctuation. Two paragraphs that
+    differ only in capitalization, trailing spaces, or punctuation style
+    will produce the same normalized form.
+    """
+    t = text.lower().strip()
+    t = re.sub(r'[^\w\s]', '', t)       # Strip punctuation
+    t = re.sub(r'\s+', ' ', t).strip()  # Collapse whitespace
+    return t
 
-    This catches mid-scene restarts, late-scene paraphrasing, and partial
-    rewrites that a midpoint check would miss.
 
-    Threshold 0.75 (not 0.50): paragraphs in the same scene naturally share
-    vocabulary (same characters, setting, conflict). Cosine similarity of
-    0.50-0.65 is normal within-scene, not duplication. Only 0.75+ reliably
-    indicates an actual restart or copy-paste repetition.
+def _detect_semantic_duplicates(text: str, threshold: float = 0.90) -> str:
+    """Within-scene duplicate detection using normalized paragraph hashing.
+
+    Catches genuine copy-paste restarts and paraphrased re-runs without
+    false-positiving on normal thematic overlap within a scene.
+
+    Two detection modes:
+    1. Exact/near-exact: normalized paragraph hash comparison (fast, no embeddings)
+    2. High-threshold word overlap (0.90+): catches slightly reworded restarts
+
+    Previous approach used semantic embeddings at 0.75 threshold, which
+    false-positived on paragraphs sharing characters/setting vocabulary.
     """
     if not text or len(text) < 500:
         return text
 
     paragraphs = [p.strip() for p in text.split('\n\n') if p.strip() and len(p.strip()) > 100]
-    if len(paragraphs) < 4:
+    if len(paragraphs) < 6:
+        # Need at least 6 paragraphs for a meaningful restart detection
+        # (3 original + 3 restarted). Short scenes don't restart.
         return text
 
-    # Sliding window: compare non-overlapping windows of WINDOW_SIZE paragraphs.
-    # Non-overlapping prevents false positives from shared paragraphs.
-    WINDOW_SIZE = min(3, len(paragraphs) // 2)
-    if WINDOW_SIZE < 2:
-        return text
+    # --- Pass 1: Exact/near-exact paragraph hash matching ---
+    # A restart typically reproduces 2+ consecutive paragraphs from earlier.
+    # Look for consecutive duplicate runs.
+    normalized = [_normalize_paragraph_for_dedup(p) for p in paragraphs]
+    hashes = [hash(n) for n in normalized]
 
-    # Build non-overlapping windows (stride = WINDOW_SIZE)
-    windows = []
-    for i in range(0, len(paragraphs) - WINDOW_SIZE + 1, WINDOW_SIZE):
-        windows.append((i, '\n\n'.join(paragraphs[i:i + WINDOW_SIZE])))
-
-    # Compare each window against all previous non-overlapping windows
+    # Find the first paragraph that starts a run of 2+ consecutive duplicates
+    # matching an earlier position in the text.
     truncate_at = None
-    for j in range(1, len(windows)):
-        window_j_start = windows[j][0]
-        window_j_text = windows[j][1]
-        for k in range(j):
-            window_k_text = windows[k][1]
-            # Only compare if windows are similar length (restarts are ~same length)
-            len_ratio = len(window_j_text) / len(window_k_text) if window_k_text else 0
-            if 0.5 < len_ratio < 2.0:
-                sim = _semantic_similarity_check(window_k_text, window_j_text)
-                if sim > threshold:
-                    truncate_at = window_j_start
-                    logger.info(
-                        f"Semantic dedup (sliding window): window at para {window_j_start} "
-                        f"duplicates window at para {windows[k][0]} "
-                        f"(sim={sim:.2f} > {threshold}). "
-                        f"Truncating at paragraph {truncate_at}."
-                    )
-                    break
+    for j in range(3, len(hashes)):  # Start checking from paragraph 4+
+        # Check if paragraphs j and j+1 match any earlier consecutive pair
+        if j + 1 >= len(hashes):
+            break
+        for k in range(j - 1):
+            if k + 1 >= j:
+                break
+            if hashes[j] == hashes[k] and hashes[j + 1] == hashes[k + 1]:
+                truncate_at = j
+                logger.info(
+                    f"Exact dedup: paragraphs {j}-{j+1} are exact duplicates of "
+                    f"paragraphs {k}-{k+1}. Truncating at paragraph {j}."
+                )
+                break
         if truncate_at is not None:
             break
 
+    # --- Pass 2: High-threshold word overlap for slightly reworded restarts ---
+    # Only if Pass 1 found nothing. Uses sliding windows of 3 paragraphs.
+    if truncate_at is None:
+        WINDOW_SIZE = min(3, len(paragraphs) // 2)
+        if WINDOW_SIZE >= 2:
+            windows = []
+            for i in range(0, len(paragraphs) - WINDOW_SIZE + 1, WINDOW_SIZE):
+                window_text = '\n\n'.join(paragraphs[i:i + WINDOW_SIZE])
+                window_words = set(window_text.lower().split())
+                windows.append((i, window_words, len(window_text)))
+
+            for j in range(1, len(windows)):
+                j_start, j_words, j_len = windows[j]
+                # Don't start checking until at least paragraph 6
+                if j_start < 6:
+                    continue
+                for k in range(j):
+                    k_start, k_words, k_len = windows[k]
+                    # Only compare similar-length windows
+                    len_ratio = j_len / k_len if k_len else 0
+                    if 0.5 < len_ratio < 2.0 and k_words and j_words:
+                        overlap = len(j_words & k_words) / min(len(j_words), len(k_words))
+                        if overlap > threshold:
+                            truncate_at = j_start
+                            logger.info(
+                                f"Near-exact dedup: window at para {j_start} has "
+                                f"{overlap:.0%} word overlap with window at para {k_start}. "
+                                f"Truncating at paragraph {truncate_at}."
+                            )
+                            break
+                if truncate_at is not None:
+                    break
+
     if truncate_at is not None and truncate_at > 0:
-        # Keep the non-duplicate portion and append a sentinel marker.
-        # The async _post_draft_micro_passes will detect this marker and
-        # regenerate the tail with a "new beat" constraint instead of
-        # silently amputating the scene.
         kept = paragraphs[:truncate_at]
         logger.info(
-            f"Semantic dedup: kept {len(kept)}/{len(paragraphs)} paragraphs. "
+            f"Dedup: kept {len(kept)}/{len(paragraphs)} paragraphs. "
             f"Duplicate tail ({len(paragraphs) - truncate_at} paras) removed. "
             f"Scene flagged for tail regeneration."
         )
@@ -3242,6 +3276,13 @@ class PipelineOrchestrator:
         """Run the pipeline with quality-driven iteration and checkpoint resume."""
         await self.initialize(resume=resume)
 
+        # Write resolved config for reproducibility (env + project merged)
+        try:
+            from prometheus_novel.configs.config_resolver import resolve_and_write
+            resolve_and_write(self.project_path, env=os.getenv("PROMETHEUS_ENV"))
+        except Exception as e:
+            logger.debug(f"Could not write resolved config: {e}")
+
         # Set defense mode from config
         defense_cfg = self.state.config.get("defense", {}) or {}
         mode = str(defense_cfg.get("mode", "protect")).lower()
@@ -4400,7 +4441,7 @@ it MUST be in Chapter 1 or 2. Do NOT skip it or start the story after it happene
 === GENERATE CHAPTERS {batch_start} THROUGH {batch_end} ===
 
 TARGET: {self.state.target_chapters} chapters total, {self.state.scenes_per_chapter} scenes per chapter
-{"POV: Alternate between " + protagonist + " and " + hero_name if is_dual_pov else "POV: " + protagonist}
+{self._build_pov_prompt_block(batch_start, batch_end) if is_dual_pov else "POV: " + protagonist}
 
 SUBPLOTS: {config.get('subplots', 'None specified')}
 
@@ -4454,7 +4495,8 @@ Respond with a JSON object containing a "chapters" array of {batch_end - batch_s
                 retry_temp = 0.4 if retry_idx > 0 else None  # Lower temp on retry
                 retry_max = 3072 if retry_idx > 0 else 4096  # Shorter on retry
                 response = await client.generate(prompt, max_tokens=retry_max,
-                                                  json_mode=True, temperature=retry_temp)
+                                                  json_mode=True, temperature=retry_temp,
+                                                  timeout=600)
                 try:
                     batch = extract_json_robust(response.content, expect_array=True)
                     if batch:
@@ -4572,16 +4614,21 @@ Respond with a JSON object containing a "chapters" array of {batch_end - batch_s
                            f"Attempting per-chapter backfill...")
             for miss_ch in missing:
                 # Generate just the missing chapter individually
+                expected_pov = self._expected_pov_for_chapter(miss_ch)
                 backfill_prompt = f"""{story_context}
 {strategic}
 
 Generate ONLY chapter {miss_ch} of {self.state.target_chapters}.
 Include {self.state.scenes_per_chapter} scenes per chapter.
+POV for chapter {miss_ch}: ALL scenes must have "pov": "{expected_pov}".
+
+Each scene must include: scene (number), scene_name, pov, purpose, differentiator, character_scene_goal, central_conflict, opening_hook, outcome, location, emotional_arc, tension_level (1-10), pacing, spice_level (0-5).
 
 Respond with a JSON object: {{"chapters": [{{"chapter": {miss_ch}, "chapter_title": "...", "scenes": [...]}}]}}"""
                 try:
                     bf_response = await client.generate(backfill_prompt, max_tokens=2048,
-                                                        json_mode=True, temperature=0.4)
+                                                        json_mode=True, temperature=0.4,
+                                                        timeout=600)
                     bf_batch = extract_json_robust(bf_response.content, expect_array=True)
                     if isinstance(bf_batch, dict):
                         for key in ("chapters", "outline"):
@@ -4609,6 +4656,11 @@ Respond with a JSON object: {{"chapters": [{{"chapter": {miss_ch}, "chapter_titl
             for i, sc in enumerate(ch.get("scenes", [])):
                 if isinstance(sc, dict):
                     sc["scene_id"] = f"ch{ch_num:02d}_s{i+1:02d}"
+
+        # Deterministic POV normalization: overwrite scene POVs to match
+        # the dual-POV chapter rule. This is the safety net — even if the model
+        # freelances POVs, every scene gets the correct chapter-level assignment.
+        self._normalize_outline_pov(all_chapters)
 
         self.state.master_outline = all_chapters
         total_scenes = sum(len(ch.get("scenes", [])) for ch in all_chapters if isinstance(ch, dict))
@@ -5044,6 +5096,80 @@ Return JSON with:
         if she_count >= 2 * he_count and she_count >= 3:
             return "female"
         return ""
+
+    def _get_dual_pov_characters(self) -> tuple:
+        """Get (protagonist_name, secondary_name) for dual-POV projects.
+
+        Returns the two POV character names extracted from config.
+        Protagonist = odd chapters, secondary (first in other_characters) = even chapters.
+        """
+        config = self.state.config
+        protag = config.get("protagonist", "").split(",")[0].strip() if config.get("protagonist") else "Protagonist"
+        other = config.get("other_characters", "")
+        secondary = other.split("(")[0].strip() if other else "Hero"
+        return protag, secondary
+
+    def _expected_pov_for_chapter(self, chapter_num: int) -> str:
+        """Return the expected POV character name for a chapter number.
+
+        Dual-POV rule: odd chapters = protagonist, even chapters = secondary.
+        Falls back to protagonist for non-dual-POV projects.
+        """
+        writing_style = self.state.config.get("writing_style", "")
+        if "dual pov" not in writing_style.lower():
+            return self._get_protagonist_name()
+        protag, secondary = self._get_dual_pov_characters()
+        return protag if chapter_num % 2 == 1 else secondary
+
+    def _build_pov_prompt_block(self, batch_start: int, batch_end: int) -> str:
+        """Build explicit POV assignment block for master_outline prompt.
+
+        Creates a per-chapter POV table so the model can't freelance.
+        """
+        protag, secondary = self._get_dual_pov_characters()
+        lines = [
+            f"=== DUAL POV: CHAPTER-LEVEL ASSIGNMENT (NON-NEGOTIABLE) ===",
+            f"This novel uses DUAL FIRST-PERSON POV. POV is assigned PER CHAPTER, not per scene.",
+            f"Odd chapters: {protag} (all scenes in odd chapters use {protag}'s POV)",
+            f"Even chapters: {secondary} (all scenes in even chapters use {secondary}'s POV)",
+            f"",
+            f"POV TABLE for this batch:",
+        ]
+        for ch in range(batch_start, batch_end + 1):
+            pov_char = protag if ch % 2 == 1 else secondary
+            lines.append(f"  Chapter {ch}: pov = \"{pov_char}\" (ALL scenes)")
+        lines.extend([
+            f"",
+            f"EVERY scene object must include \"pov\": \"{protag}\" or \"pov\": \"{secondary}\"",
+            f"matching the chapter rule above. Do NOT mix POVs within a chapter.",
+        ])
+        return "\n".join(lines)
+
+    def _normalize_outline_pov(self, chapters: list) -> int:
+        """Deterministic POV normalizer: overwrite scene POVs to match chapter rule.
+
+        Returns the number of POV mismatches corrected.
+        """
+        writing_style = self.state.config.get("writing_style", "")
+        if "dual pov" not in writing_style.lower():
+            return 0
+
+        corrections = 0
+        for ch in chapters:
+            if not isinstance(ch, dict):
+                continue
+            ch_num = ch.get("chapter", 0)
+            expected = self._expected_pov_for_chapter(ch_num)
+            for sc in ch.get("scenes", []):
+                if not isinstance(sc, dict):
+                    continue
+                current = sc.get("pov", "")
+                if not current or self._normalize_character_name(current) != self._normalize_character_name(expected):
+                    sc["pov"] = expected
+                    corrections += 1
+        if corrections:
+            logger.info(f"POV normalizer: corrected {corrections} scene POV assignments to match chapter rule")
+        return corrections
 
     def _get_pov_info(self, pov_character: str = "", scene_text: str = "") -> tuple:
         """Get (name, gender) for the current POV character.
@@ -6388,6 +6514,8 @@ Write the complete scene:"""
                 client, content, scene, sid, pov)
             scene_tokens += tokens
 
+            # Safety: ensure no sentinel markers survive into stored content
+            content = content.replace("[DEDUP_TAIL_TRUNCATED]", "").strip()
             scene["content"] = content
             total_tokens += scene_tokens
             updated.append(scene)
