@@ -18,6 +18,7 @@ Orchestrates the complete novel generation process through 12 stages:
 
 import asyncio
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Callable
@@ -321,86 +322,111 @@ CATEGORY_FILL_INS: Dict[str, Dict[str, Any]] = {
             "No 'why now' constraint creating urgency",
         ],
         "directives": [
-            "State the POV character's immediate goal explicitly within the first 120 words.",
-            "Introduce a concrete obstacle that blocks progress — a person, rule, deadline, or physical barrier.",
-            "Add a 'why now' constraint that creates urgency (time limit, threat of discovery, scarcity).",
+            "State the POV character's concrete goal in the FIRST 120 words.",
+            "Add a named external obstacle (person/rule/deadline/barrier), not mood.",
+            "Add a 'why now' pressure (time limit, discovery risk, scarcity).",
         ],
         "success_criteria": [
-            "By paragraph 2, the goal is stated in a single clear sentence.",
-            "The obstacle is an external blocker, not just emotion or mood.",
-            "A pressure element is present that makes delay costly.",
+            "By paragraph 2 the goal is one clear sentence.",
+            "Obstacle is external, not emotional.",
+            "Delay is costly — a pressure element is explicit.",
+        ],
+        "check_hints": [
+            "first_120_words_contain_goal_verb",
+            "obstacle_is_noun_not_adjective",
+            "urgency_word_in_first_half",
         ],
     },
     "tension": {
         "description": "active conflict, uncertainty, explicit consequences, escalation",
         "common_deficits": [
-            "Stakes feel implied, never stated",
+            "Stakes implied, never stated",
             "No ticking consequence if goal fails",
-            "Tension is flat — same level start to finish",
+            "Tension flat — same level start to finish",
         ],
         "directives": [
-            "State the consequence of failure in one concrete sentence (time, reputation, safety, relationship).",
-            "Add a ticking element: deadline, surveillance, scarcity, or risk of exposure.",
-            "Ensure tension escalates: at least one moment where the situation gets worse before resolution.",
+            "Name a concrete consequence of failure in the FIRST 120 words (job/safety/relationship/freedom).",
+            "Add a worsening beat AFTER the midpoint — something gets harder or more dangerous.",
+            "Last paragraph must contain an escalation line (action or irreversible choice, NOT summary).",
         ],
         "success_criteria": [
-            "A specific consequence is stated explicitly, not just implied.",
-            "A ticking element or countdown creates time pressure.",
-            "Tension in the second half is demonstrably higher than the first half.",
+            "A named consequence appears before the scene midpoint.",
+            "Second half contains a complication that first half did not.",
+            "Last paragraph escalates — no summary, no reflection.",
+        ],
+        "check_hints": [
+            "consequence_word_in_first_half",
+            "complication_after_midpoint",
+            "last_para_is_action_not_summary",
         ],
     },
     "emotional_beat": {
         "description": "clear internal shift from one posture to another, shown through behavior",
         "common_deficits": [
             "Character starts and ends in same emotional state",
-            "Emotion told ('she felt sad') rather than shown through behavior",
-            "No internal contradiction (want vs fear) that resolves into choice",
+            "Emotion told ('she felt sad') not shown through behavior",
+            "No want-vs-fear contradiction resolving into choice",
         ],
         "directives": [
-            "Start with one emotional posture, end with a distinctly different one.",
-            "Show the shift through behavior change — what the character does differently after the turning point.",
-            "Add an internal contradiction (want vs fear) that resolves into a concrete choice or action.",
+            "Start with one emotional posture, end with a DIFFERENT one — name both.",
+            "Show the shift through a BEHAVIOR CHANGE (what the character physically does differently).",
+            "Add one want-vs-fear contradiction that resolves into a concrete action.",
         ],
         "success_criteria": [
-            "The emotional state in the first quarter differs from the last quarter.",
-            "At least one behavior change is visible (not just internal narration).",
-            "An internal conflict produces a concrete decision or action.",
+            "First-quarter emotion word differs from last-quarter emotion word.",
+            "At least one physical behavior change is visible (not narration only).",
+            "A contradiction produces a decision or physical action.",
+        ],
+        "check_hints": [
+            "emotion_words_differ_first_vs_last_quarter",
+            "action_verb_after_turning_point",
+            "decision_or_choice_verb_present",
         ],
     },
     "dialogue_realism": {
         "description": "subtext, evasion, distinct voices, not exposition dumps",
         "common_deficits": [
-            "Characters answer questions directly and perfectly",
-            "Dialogue is exposition — characters explain things they both know",
-            "All characters sound the same",
+            "Characters answer directly — no evasion",
+            "Dialogue is exposition — explaining things both know",
+            "All characters sound identical",
         ],
         "directives": [
-            "Make at least one line evasive — character answers a different question than the one asked.",
-            "Add one interruption, deflection, or trailing off mid-sentence.",
-            "Let a character say something 'safe' while meaning something dangerous (subtext).",
+            "Add one INTERRUPTION or DEFLECTION (character answers a different question).",
+            "Add one line where said ≠ meant (subtext).",
+            "Add one concrete physical action DURING dialogue (grounding gesture, not 'she said').",
         ],
         "success_criteria": [
-            "At least one dialogue line contains evasion or misdirection.",
-            "At least one exchange has an interruption, pause, or deflection.",
-            "Subtext is present: what's said and what's meant diverge at least once.",
+            "One dialogue line contains evasion, deflection, or interruption.",
+            "One exchange has visible subtext (said ≠ meant).",
+            "One physical action occurs mid-conversation (not a speech tag).",
+        ],
+        "check_hints": [
+            "interruption_or_ellipsis_in_dialogue",
+            "action_beat_during_dialogue",
+            "dialogue_lines_have_varied_length",
         ],
     },
     "scene_turn": {
         "description": "ending changes stakes, knowledge, or relationships; next action is forced",
         "common_deficits": [
-            "Scene ends emotionally similar to how it started",
-            "No new information changes the next course of action",
-            "Ending is a summary or reflection, not a pivot",
+            "Scene ends same as it started",
+            "No new info changes the next action",
+            "Ending is summary/reflection, not pivot",
         ],
         "directives": [
-            "End with new info that forces a new next step, an irreversible choice, or a loss that raises stakes.",
-            "Ensure the character's plan at scene end is different from their plan at scene start.",
-            "Cut any final-paragraph emotional summary — end on action, dialogue, or a charged image.",
+            "Last paragraph MUST introduce: new info, irreversible choice, or a loss.",
+            "Character's plan at scene end must differ from plan at scene start.",
+            "Final sentence = action, dialogue, or charged image. NEVER reflection/summary.",
         ],
         "success_criteria": [
-            "The last paragraph contains: (a) new info forcing a new step, (b) an irreversible choice, or (c) a loss.",
-            "The character's situation or plan has objectively changed from the scene's opening.",
-            "The final sentence is action, dialogue, or sensory — not reflection or summary.",
+            "Last paragraph contains new-info/choice/loss (not recap).",
+            "Character's situation has objectively changed.",
+            "Final sentence is action/dialogue/sensory — zero summary words.",
+        ],
+        "check_hints": [
+            "last_para_has_new_info_or_choice",
+            "final_sentence_is_action_or_dialogue",
+            "no_summary_words_in_last_sentence",
         ],
     },
 }
@@ -1864,7 +1890,7 @@ def _semantic_similarity_check(text_a: str, text_b: str) -> float:
     return overlap / min(len(bigrams_a), len(bigrams_b))
 
 
-def _detect_semantic_duplicates(text: str, threshold: float = 0.5) -> str:
+def _detect_semantic_duplicates(text: str, threshold: float = 0.75) -> str:
     """Secondary duplicate detection using sliding window semantic similarity.
 
     Instead of a single midpoint split, uses a rolling window to compare
@@ -1873,6 +1899,11 @@ def _detect_semantic_duplicates(text: str, threshold: float = 0.5) -> str:
 
     This catches mid-scene restarts, late-scene paraphrasing, and partial
     rewrites that a midpoint check would miss.
+
+    Threshold 0.75 (not 0.50): paragraphs in the same scene naturally share
+    vocabulary (same characters, setting, conflict). Cosine similarity of
+    0.50-0.65 is normal within-scene, not duplication. Only 0.75+ reliably
+    indicates an actual restart or copy-paste repetition.
     """
     if not text or len(text) < 500:
         return text
@@ -2607,8 +2638,14 @@ class PipelineState:
                    f"{self.words_per_scene} words/scene")
 
     def save(self):
-        """Save state to disk with checkpoint data for reliable resume."""
+        """Save state to disk with checkpoint data for reliable resume.
+
+        Uses atomic write (temp file + os.replace) to prevent corruption
+        from mid-write crashes. A crash during json.dump() only corrupts
+        the .tmp file; the previous checkpoint survives intact.
+        """
         state_file = self.project_path / "pipeline_state.json"
+        tmp_file = self.project_path / "pipeline_state.json.tmp"
         state_dict = {
             "project_name": self.project_name,
             "current_stage": self.current_stage,
@@ -2641,8 +2678,10 @@ class PipelineState:
                 for r in self.stage_results
             ]
         }
-        with open(state_file, "w") as f:
+        # Atomic write: dump to temp file, then replace original
+        with open(tmp_file, "w") as f:
             json.dump(state_dict, f, indent=2)
+        os.replace(str(tmp_file), str(state_file))
         logger.info(f"Pipeline state checkpointed to {state_file} (stage {self.current_stage}, {len(self.completed_stages)} completed)")
 
     @classmethod
@@ -2877,7 +2916,7 @@ class PipelineOrchestrator:
         "feedback_loop_max_scenes": 5,        # G: max scenes per feedback loop
         "feedback_loop_wc_retention": 0.80,   # G: min word count retention for LLM rewrite (surgical removal = high retention)
         "circuit_breaker_threshold": 3,       # consecutive stage failures before halt
-        "semantic_dedup_threshold": 0.50,     # F2b: cosine/Jaccard > X = duplicate
+        "semantic_dedup_threshold": 0.75,     # F2b: cosine/Jaccard > X = duplicate (0.50 was too aggressive)
         "duplicate_ngram_threshold": 0.60,    # F2: paragraph ngram overlap > X = duplicate
         "budget_max_retries_per_stage": 3,    # max retries per stage per run
         "budget_max_rewritten_scenes": 15,    # max total scenes rewritten (all feedback loops)
@@ -4234,6 +4273,33 @@ Respond as a JSON array of character objects."""
                     prev_lines.append(f"Ch {ch_num} \"{ch_title}\":\n" + "\n".join(scene_summaries))
                 prev_summary = "PREVIOUSLY OUTLINED CHAPTERS:\n" + "\n".join(prev_lines)
 
+            # Collect used scene names for dedup guard
+            used_scene_names = []
+            for ch in all_chapters:
+                if not isinstance(ch, dict):
+                    continue
+                for sc in ch.get("scenes", []):
+                    if isinstance(sc, dict):
+                        sn = sc.get("scene_name", "")
+                        if sn:
+                            used_scene_names.append(sn)
+
+            dedup_guard = ""
+            if used_scene_names:
+                names_list = "\n".join(f"  - {n}" for n in used_scene_names)
+                dedup_guard = (
+                    f"\n=== ALREADY-USED SCENE NAMES (DO NOT REUSE OR PARAPHRASE) ===\n"
+                    f"{names_list}\n"
+                    f"Create NEW scene names that do not share more than 2 consecutive "
+                    f"words with any name above. Each scene must have a fresh, specific title.\n"
+                )
+            # Within-batch uniqueness: model generates all batch scenes in one call
+            within_batch_guard = (
+                f"\n=== WITHIN THIS BATCH (chapters {batch_start}-{batch_end}) ===\n"
+                f"Every scene_name must be UNIQUE. No two scenes in this batch may share the same "
+                f"or nearly identical name (e.g. \"Late Night Call\" and \"Late Night Calls\" are duplicates).\n"
+            )
+
             prompt = f"""Create chapters {batch_start}-{batch_end} of a {self.state.target_chapters}-chapter novel outline.
 
 {story_context}
@@ -4252,7 +4318,8 @@ MOTIF MAP (embed these structurally into scenes — settings, objects, character
 {json.dumps(getattr(self.state, 'motif_map', {}), indent=2)}
 
 {prev_summary}
-
+{dedup_guard}
+{within_batch_guard}
 === MANDATORY PLOT POINTS (these MUST appear in the outline) ===
 {config.get('key_plot_points', 'None specified')}
 Every event listed above MUST be dramatized in at least one scene. Map them to chapters:
@@ -4338,6 +4405,8 @@ Respond with a JSON object containing a "chapters" array of {batch_end - batch_s
                 batch = [batch] if isinstance(batch, dict) else []
 
             # Validate batch - accept chapters with flexible key names
+            # Collect into validated_batch first so we can run collision detection before appending
+            validated_batch = []
             SCENE_KEYS = ("scenes", "scene_list", "scene_details", "chapter_scenes")
             for idx, ch in enumerate(batch):
                 if not isinstance(ch, dict):
@@ -4357,7 +4426,7 @@ Respond with a JSON object containing a "chapters" array of {batch_end - batch_s
                     ch["scenes"] = [s for s in ch["scenes"] if isinstance(s, dict)]
                     if "chapter" not in ch:
                         ch["chapter"] = batch_start + idx
-                    all_chapters.append(ch)
+                    validated_batch.append(ch)
                 elif "raw" in ch:
                     logger.warning(f"Batch {batch_start}-{batch_end} returned raw text, attempting repair")
                     raw = ch["raw"]
@@ -4365,7 +4434,7 @@ Respond with a JSON object containing a "chapters" array of {batch_end - batch_s
                     if repaired:
                         for rch in repaired:
                             if isinstance(rch, dict) and "scenes" in rch:
-                                all_chapters.append(rch)
+                                validated_batch.append(rch)
                 else:
                     logger.warning(f"Chapter object missing 'scenes' key. Keys found: {list(ch.keys())}")
 
@@ -4392,14 +4461,35 @@ Respond with a JSON object containing a "chapters" array of {batch_end - batch_s
                                     sc["scene_number"] = sc["scene"]
                                 elif "scene_number" not in sc:
                                     sc["scene_number"] = i + 1
-                            all_chapters.append({
+                            validated_batch.append({
                                 "chapter": ch_idx,
                                 "chapter_title": ch_scenes[0].get("scene_name", f"Chapter {ch_idx}"),
                                 "scenes": ch_scenes
                             })
 
+            # Post-gen collision detector: fix duplicate/near-duplicate scene names
+            if validated_batch:
+                collisions = self._detect_scene_name_collisions(validated_batch, used_scene_names)
+                if collisions:
+                    logger.warning(f"Scene name collisions: {len(collisions)} duplicates in batch {batch_start}-{batch_end}")
+                    regen_tokens = await self._regenerate_colliding_scene_names(
+                        client, validated_batch, collisions, used_scene_names
+                    )
+                    total_tokens += regen_tokens
+
+            all_chapters.extend(validated_batch)
             total_tokens += response.input_tokens + response.output_tokens
             logger.info(f"Outlined chapters {batch_start}-{batch_end}: {len(all_chapters)} total chapters so far")
+
+        # Stamp stable scene IDs: "ch02_s01" etc. so downstream stages
+        # can reference scenes deterministically regardless of model output order.
+        for ch in all_chapters:
+            if not isinstance(ch, dict):
+                continue
+            ch_num = ch.get("chapter", 0)
+            for i, sc in enumerate(ch.get("scenes", [])):
+                if isinstance(sc, dict):
+                    sc["scene_id"] = f"ch{ch_num:02d}_s{i+1:02d}"
 
         self.state.master_outline = all_chapters
         total_scenes = sum(len(ch.get("scenes", [])) for ch in all_chapters if isinstance(ch, dict))
@@ -4418,6 +4508,92 @@ Respond with a JSON object containing a "chapters" array of {batch_end - batch_s
                 )
 
         return self.state.master_outline, total_tokens
+
+    def _scene_name_fuzzy_match(self, a: str, b: str) -> bool:
+        """True if two scene names are too similar (duplicate risk)."""
+        if not a or not b:
+            return False
+        a_norm = a.lower().strip()
+        b_norm = b.lower().strip()
+        if a_norm == b_norm:
+            return True
+        a_words = [w for w in a_norm.split() if len(w) > 2]
+        b_words = set(w for w in b_norm.split() if len(w) > 2)
+        if not a_words or not b_words:
+            return False
+        # Two+ consecutive words in common
+        for i in range(len(a_words) - 1):
+            bigram = f"{a_words[i]} {a_words[i+1]}"
+            if bigram in b_norm or (a_words[i] in b_words and a_words[i + 1] in b_words):
+                return True
+        # One name contained in the other (e.g. "Late Night" in "Late Night Call")
+        if len(a_norm) >= 4 and len(b_norm) >= 4:
+            if a_norm in b_norm or b_norm in a_norm:
+                return True
+        return False
+
+    def _detect_scene_name_collisions(
+        self, batch_chapters: list, used_names: list
+    ) -> list:
+        """Returns list of (ch_idx, sc_idx, scene, collided_with)."""
+        collisions = []
+        seen_in_batch = []
+        for ch_idx, ch in enumerate(batch_chapters):
+            if not isinstance(ch, dict):
+                continue
+            for sc_idx, sc in enumerate(ch.get("scenes", [])):
+                if not isinstance(sc, dict):
+                    continue
+                name = (sc.get("scene_name") or "").strip()
+                if not name:
+                    continue
+                # Check against used (previous batches)
+                for prev in used_names:
+                    if self._scene_name_fuzzy_match(name, prev):
+                        collisions.append((ch_idx, sc_idx, sc, prev))
+                        break
+                else:
+                    # Check against seen in this batch
+                    for seen_name, (sci, scj) in seen_in_batch:
+                        if self._scene_name_fuzzy_match(name, seen_name):
+                            collisions.append((ch_idx, sc_idx, sc, seen_name))
+                            break
+                    else:
+                        seen_in_batch.append((name, (ch_idx, sc_idx)))
+        return collisions
+
+    async def _regenerate_colliding_scene_names(
+        self, client, batch_chapters: list, collisions: list, used_names: list
+    ) -> int:
+        """Regenerate scene_name for colliding scenes. Returns tokens used."""
+        if not client or not collisions:
+            return 0
+        total_tokens = 0
+        blacklist = list(used_names)
+        for ch_idx, sc_idx, scene, _ in collisions:
+            purpose = scene.get("purpose", "")[:200]
+            differentiator = scene.get("differentiator", "")[:150]
+            names_bl = ", ".join(blacklist[-50:]) if blacklist else "none yet"
+            prompt = f"""Generate a UNIQUE scene name (2-8 words) for this scene.
+Purpose: {purpose}
+Differentiator: {differentiator}
+
+DO NOT use or closely paraphrase any of these already-used names:
+{names_bl}
+
+Output ONLY the new scene name, nothing else. No quotes, no commentary."""
+            try:
+                response = await client.generate(prompt, max_tokens=50, temperature=0.4)
+                if response and response.content:
+                    new_name = response.content.strip().strip('"\'')
+                    if new_name and len(new_name) < 100:
+                        scene["scene_name"] = new_name
+                        blacklist.append(new_name)
+                        logger.info(f"Regenerated scene name: {new_name}")
+                total_tokens += (response.input_tokens or 0) + (response.output_tokens or 0)
+            except Exception as e:
+                logger.warning(f"Scene name regenerate failed: {e}")
+        return total_tokens
 
     def _repair_truncated_json(self, raw: str) -> list:
         """Attempt to repair truncated JSON arrays from LLM output.
@@ -4648,14 +4824,102 @@ Return JSON with:
             return self.state.config.get("defense", {}).get("foreign_word_whitelist", [])
         return []
 
-    def _postprocess(self, text: str) -> str:
+    def _get_character_gender(self, character_name: str) -> str:
+        """Detect gender for any character by name, searching config fields.
+
+        Checks protagonist and other_characters descriptions for gender signals.
+        Returns 'male', 'female', or '' (unknown).
+        """
+        if not character_name or not self.state or not self.state.config:
+            return ""
+
+        config = self.state.config
+        char_lower = character_name.lower().split()[0]  # First name only
+
+        # Check if this is the protagonist
+        protagonist = config.get("protagonist", "")
+        if protagonist:
+            protag_first = protagonist.split(",")[0].split(".")[0].strip().split()[0].lower()
+            if protag_first == char_lower:
+                return self._get_protagonist_gender()
+
+        # Search other_characters for this character's description
+        other_chars = config.get("other_characters", "")
+        if not other_chars:
+            return ""
+
+        # Extract the description block for this character
+        # Pattern: "Name (description)" or "Name — description."
+        char_desc = ""
+        import re as _re
+        # Primary: match "CharName ... (description)" — parens contain the character bio
+        paren_pattern = _re.compile(
+            rf'\b{_re.escape(character_name.split()[0])}\b[^(]*\([^)]*\)',
+            _re.IGNORECASE
+        )
+        match = paren_pattern.search(other_chars)
+        if not match:
+            # Fallback: match "CharName ... next sentence."
+            fallback = _re.compile(
+                rf'\b{_re.escape(character_name.split()[0])}\b[^.]*\.',
+                _re.IGNORECASE
+            )
+            match = fallback.search(other_chars)
+        if match:
+            char_desc = match.group(0).lower()
+
+        if not char_desc:
+            return ""
+
+        # Check for explicit gender markers
+        male_signals = [" male", " man,", " man.", " boy", " husband", " father",
+                        " son,", " son.", " brother", " guy", " he ", " his "]
+        female_signals = [" female", " woman", " girl", " wife", " mother",
+                          " daughter", " sister", " she ", " her "]
+
+        male_score = sum(1 for s in male_signals if s in char_desc)
+        female_score = sum(1 for s in female_signals if s in char_desc)
+
+        if male_score > female_score:
+            return "male"
+        if female_score > male_score:
+            return "female"
+        return ""
+
+    def _get_pov_info(self, pov_character: str = "") -> tuple:
+        """Get (name, gender) for the current POV character.
+
+        If pov_character is provided and differs from the global protagonist,
+        looks up that character's info. Otherwise returns global protagonist info.
+        Returns (pov_name: str, pov_gender: str).
+        """
+        protag_name = self._get_protagonist_name()
+
+        if not pov_character or not pov_character.strip():
+            return protag_name, self._get_protagonist_gender()
+
+        # Check if POV character IS the protagonist (compare first names)
+        pov_first = pov_character.strip().split()[0]
+        if pov_first.lower() == protag_name.lower():
+            return protag_name, self._get_protagonist_gender()
+
+        # POV is a non-protagonist character — use their name and detect their gender
+        pov_gender = self._get_character_gender(pov_character)
+        return pov_first, pov_gender
+
+    def _postprocess(self, text: str, pov_character: str = "") -> str:
         """Apply all code-level post-processing to scene content.
-        Convenience wrapper that gets protagonist info from config."""
+
+        Convenience wrapper that gets POV character info from config.
+        For dual-POV projects, pass pov_character to use the correct name/gender
+        instead of the global protagonist.
+        """
+        pov_name, pov_gender = self._get_pov_info(pov_character)
         return _postprocess_scene(
             text,
-            self._get_protagonist_name(),
+            pov_name,
             self._get_setting_language(),
-            self._get_protagonist_gender(),
+            pov_gender,
             self._get_foreign_whitelist()
         )
 
@@ -5130,7 +5394,9 @@ Return JSON with:
             )
 
         # Postprocess (cleanup + POV + de-AI + tic limiting)
-        processed = self._postprocess(response.content)
+        # Extract per-scene POV character for dual-POV support
+        pov_character = (scene_meta or {}).get("pov", "")
+        processed = self._postprocess(response.content, pov_character=pov_character)
 
         # Prose integrity checksums: hash at raw and clean stages
         import hashlib as _hl
@@ -5229,7 +5495,7 @@ Return JSON with:
             (r'(?i)\b(?:api[_-]?key|secret|password|token)\s*[:=]', "credential leak"),
             (r'(?i)\bdef\s+\w+\s*\(', "Python code in context"),
             (r'(?i)\bclass\s+\w+\s*[:(]', "Python class in context"),
-            (r'(?i)\b(?:import|from)\s+\w+', "import statement in context"),
+            (r'(?m)^\s*(?:import\s+\w+|from\s+\w+\s+import\b)', "Python import statement in context"),
             (r'\{\{.*?\}\}', "template placeholder in context"),
             (r'(?i)(?:TODO|FIXME|HACK|XXX):', "debug marker in context"),
         ]
@@ -5613,6 +5879,7 @@ Return JSON with:
                 if not isinstance(scene_info, dict):
                     continue
                 scene_num = scene_info.get("scene", scene_info.get("scene_number", 1))
+                stable_id = scene_info.get("scene_id", f"ch{chapter_num:02d}_s{scene_num:02d}")
                 pov_char = scene_info.get("pov", "protagonist")
                 spice_level = scene_info.get("spice_level", 0)
                 location = scene_info.get("location", "")
@@ -5832,6 +6099,8 @@ TENSION LEVEL: {tension_level}/10
 === TARGET LENGTH ===
 Approximately {self.state.words_per_scene} words.
 Paragraphs: 4 sentences maximum (mobile-optimized).
+You must reach at least {int(self.state.words_per_scene * 0.7)} words before concluding.
+Do NOT end the scene until the scene turn has occurred.
 
 === NOW WRITE ===
 Begin DIRECTLY with narrative—no preamble, no title, no scene heading.
@@ -5846,6 +6115,12 @@ Begin DIRECTLY with narrative—no preamble, no title, no scene heading.
 
 Write the complete scene:"""
 
+                # Context safety: validate the inline-assembled prompt for
+                # credential leaks, injection attempts, and template placeholders.
+                # Scene drafting builds context inline (not via _build_scene_context),
+                # so we must explicitly run schema validation here.
+                self._validate_context_schema(prompt, len(scenes))
+
                 if client:
                     # Calculate max tokens based on target words (1 token ≈ 1.2-1.4 words)
                     # Use 2.5x multiplier for buffer and comprehensive scenes
@@ -5853,11 +6128,12 @@ Write the complete scene:"""
                     temp = self.get_temperature_for_stage("scene_drafting")
                     content, tokens = await self._generate_prose(
                         client, prompt, "scene_drafting",
-                        scene_meta={"chapter": chapter_num, "scene": scene_num},
+                        scene_meta={"chapter": chapter_num, "scene": scene_num, "pov": pov_char},
                         max_tokens=max_tokens, temperature=temp)
                     scenes.append({
                         "chapter": chapter_num,
                         "scene_number": scene_num,
+                        "scene_id": stable_id,
                         "pov": pov_char,
                         "location": location,
                         "spice_level": spice_level,
@@ -5868,6 +6144,7 @@ Write the complete scene:"""
                     scenes.append({
                         "chapter": chapter_num,
                         "scene_number": scene_num,
+                        "scene_id": stable_id,
                         "pov": pov_char,
                         "content": f"[Scene content for chapter {chapter_num}, scene {scene_num}]"
                     })
@@ -5954,7 +6231,7 @@ Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
 
             expanded_content, exp_tokens = await self._generate_prose(
                 client, prompt, "scene_expansion",
-                scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
                 max_tokens=3000)
 
             # GUARD: Check if the LLM actually expanded (vs rewrote from scratch)
@@ -6057,14 +6334,61 @@ Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
             "patch_targets": patch_targets,
         }
 
+    @staticmethod
+    def _mark_repair_spans(content: str, patch_targets: List[str]) -> str:
+        """Annotate scene paragraphs with [KEEP VERBATIM] / [FIX THIS] markers.
+
+        Maps semantic patch_targets to paragraph indices:
+          "opening paragraphs"  → first 2 paragraphs
+          "middle section"      → paragraphs between opening and closing
+          "final beat"          → last 2 paragraphs
+          "dialogue exchanges"  → paragraphs containing quoted speech
+          "emotional arc"       → middle 50% of paragraphs
+          "consequence/stakes"  → middle 50% of paragraphs
+        Falls back to full-scene repair if >70% of paragraphs are targeted.
+        """
+        paragraphs = [p for p in content.split("\n\n") if p.strip()]
+        n = len(paragraphs)
+        if n < 4:
+            # Scene too short for span targeting — repair everything
+            return content
+
+        fix_indices: set = set()
+        targets_lower = " ".join(patch_targets).lower()
+
+        if "opening" in targets_lower or "goal statement" in targets_lower:
+            fix_indices.update(range(min(2, n)))
+        if "obstacle" in targets_lower or "tactic" in targets_lower or "middle" in targets_lower:
+            fix_indices.update(range(2, max(2, n - 2)))
+        if "final" in targets_lower or "closing" in targets_lower:
+            fix_indices.update(range(max(0, n - 2), n))
+        if "dialogue" in targets_lower:
+            for i, p in enumerate(paragraphs):
+                if '"' in p or '\u201c' in p:  # straight or smart quotes
+                    fix_indices.add(i)
+        if "emotional" in targets_lower or "consequence" in targets_lower or "stakes" in targets_lower:
+            quarter = max(1, n // 4)
+            fix_indices.update(range(quarter, n - quarter))
+
+        # Fallback: if too many paragraphs are targeted, don't bother with markers
+        if len(fix_indices) > n * 0.7:
+            return content
+
+        marked = []
+        for i, p in enumerate(paragraphs):
+            tag = "[FIX THIS]" if i in fix_indices else "[KEEP VERBATIM]"
+            marked.append(f"{tag}\n{p}")
+        return "\n\n".join(marked)
+
     def _build_structure_repair_prompt(
         self, content: str, meta: dict, scores: Dict[str, int],
         repair_info: Dict[str, Any], target_words: int,
     ) -> str:
         """Build a targeted repair prompt with explicit success criteria.
 
-        Uses the user's design: preserve 80%+ wording, fix only what the
-        scorecard demands, prove compliance via success criteria.
+        Uses span-targeted patching: paragraphs are marked [KEEP VERBATIM]
+        or [FIX THIS] so the model knows exactly what to touch. Preserves
+        80%+ wording and proves compliance via success criteria.
         """
         weak_cats = [c for c in STRUCTURE_CATEGORIES if scores.get(c, 0) < 3]
         score_lines = "\n".join(
@@ -6079,20 +6403,32 @@ Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
         )
         patch_lines = ", ".join(repair_info["patch_targets"]) if repair_info["patch_targets"] else "any"
 
+        # Annotate scene with paragraph-level repair markers
+        marked_content = self._mark_repair_spans(content, repair_info["patch_targets"])
+        has_markers = "[FIX THIS]" in marked_content
+
+        span_instruction = (
+            "Paragraphs marked [KEEP VERBATIM] must be preserved word-for-word. "
+            "Only rewrite paragraphs marked [FIX THIS]. "
+            "Remove all [KEEP VERBATIM] and [FIX THIS] tags from your output."
+        ) if has_markers else (
+            f"Only modify these spans: {patch_lines}. Keep everything else verbatim where possible."
+        )
+
         return f"""Rewrite this scene to fix structural weaknesses.
 
 NON-NEGOTIABLES:
-- Output ONLY the revised scene. No preamble, no headings, no notes.
+- Output ONLY the revised scene. No preamble, no headings, no notes, no tags.
 - Preserve first-person POV and the existing character names and facts.
 - Keep at least 80% of the original wording unless a change is required to meet the success criteria.
 - Keep scene length within ±15% of the original (~{target_words} words).
-- Only modify these spans: {patch_lines}. Keep everything else verbatim where possible.
+- {span_instruction}
 
 SCENE META (truth you must satisfy):
 {json.dumps(meta, ensure_ascii=False)}
 
 ORIGINAL SCENE:
-{content}
+{marked_content}
 
 SCORECARD:
 {score_lines}
@@ -6336,7 +6672,7 @@ JSON:"""
                 try:
                     repaired_content, tokens = await self._generate_prose(
                         repair_client, repair_prompt, "structure_gate",
-                        scene_meta={"chapter": chapter, "scene": scene_num},
+                        scene_meta={"chapter": chapter, "scene": scene_num, "pov": scene.get("pov", "")},
                         system_prompt=STRUCTURE_REPAIR_SYSTEM_PROMPT,
                         max_tokens=int(target_words * 2.2),
                         temperature=0.45,
@@ -6453,7 +6789,7 @@ Output ONLY the revised scene—no notes, no commentary, no checklist:"""
             if client:
                 content, tokens = await self._generate_prose(
                     client, prompt, "self_refinement",
-                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
                     max_tokens=2500, temperature=0.7)
                 refined_scenes.append({
                     **scene,
@@ -6604,7 +6940,7 @@ FIXED SCENE:"""
                     if client:
                         content, tokens = await self._generate_prose(
                             client, prompt, "continuity_fix",
-                            scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                            scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
                             max_tokens=2500, temperature=0.7)
                         fixed_scenes[i] = {
                             **scene,
@@ -6752,7 +7088,7 @@ FIXED SCENE:"""
                         try:
                             content, tokens = await self._generate_prose(
                                 fix_client, fix_prompt, "continuity_recheck",
-                                scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                                scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
                                 max_tokens=2500, temperature=0.5,
                             )
                             total_tokens += tokens
@@ -6952,7 +7288,7 @@ Output the revised scene:"""
             if client:
                 content, tokens = await self._generate_prose(
                     client, prompt, "voice_human_pass",
-                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
                     max_tokens=2500, temperature=0.7)
                 enhanced_scenes.append({
                     **scene,
@@ -7075,7 +7411,7 @@ Output the scene with ONLY the factual fix applied:"""
                     if client:
                         content, tokens = await self._generate_prose(
                             client, prompt, "continuity_fix_2",
-                            scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                            scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
                             max_tokens=2500, temperature=0.3)
                         fixed_scenes[i] = {
                             **scene,
@@ -7184,7 +7520,7 @@ Focus ONLY on improving the dialogue and adding physical beats between lines:"""
             if client:
                 content, tokens = await self._generate_prose(
                     client, prompt, "dialogue_polish",
-                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
                     max_tokens=2500, temperature=0.7)
                 polished_scenes.append({
                     **scene,
@@ -7365,7 +7701,7 @@ Output the complete scene with only the ending paragraphs rewritten:"""
 
                     content, tokens = await self._generate_prose(
                         client, prompt, "chapter_hooks",
-                        scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                        scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
                         max_tokens=2500, temperature=0.75)
                     hooked_scenes.append({
                         **scene,
@@ -7393,7 +7729,7 @@ Output the complete scene with only the opening paragraphs rewritten:"""
 
                     content, tokens = await self._generate_prose(
                         client, prompt, "chapter_hooks",
-                        scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                        scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
                         max_tokens=2500, temperature=0.75)
                     hooked_scenes.append({
                         **scene,
@@ -7508,7 +7844,7 @@ POLISHED SCENE:"""
             if client:
                 content, tokens = await self._generate_prose(
                     client, prompt, "prose_polish",
-                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number")},
+                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
                     max_tokens=2500, temperature=0.7)
                 polished_scenes.append({
                     **scene,
@@ -7693,7 +8029,7 @@ OUTPUT the text with only problematic sentences fixed:"""
                         prompt, max_tokens=3000,
                         system_prompt=self._format_contract,
                         stop=self._stop_sequences)
-                    rewritten_middle = self._postprocess(response.content)
+                    rewritten_middle = self._postprocess(response.content, pov_character=scene.get("pov", ""))
                     total_tokens += response.input_tokens + response.output_tokens
 
                     # Per-paragraph word count guard: reject if any paragraph
@@ -7756,7 +8092,7 @@ OUTPUT the text with only problematic sentences fixed:"""
                         prompt, max_tokens=3000,
                         system_prompt=self._format_contract,
                         stop=self._stop_sequences)
-                    content = self._postprocess(response.content)
+                    content = self._postprocess(response.content, pov_character=scene.get("pov", ""))
                     total_tokens += response.input_tokens + response.output_tokens
                     scene_fixes += remaining_tells["total_tells"]
 
@@ -8167,10 +8503,10 @@ OUTPUT the text with only problematic sentences fixed:"""
                 continue
 
             # Re-run through postprocessor (which strips meta-text)
-            protagonist = self._get_protagonist_name()
+            # Use per-scene POV for dual-POV support
+            pov_name, pov_gender = self._get_pov_info(scene.get("pov", ""))
             language = self._get_setting_language()
-            gender = self._get_protagonist_gender()
-            cleaned = _postprocess_scene(content, protagonist, language, gender)
+            cleaned = _postprocess_scene(content, pov_name, language, pov_gender)
 
             # If postprocessor fixed it, accept
             from prometheus_novel.export.scene_validator import validate_scene
@@ -8200,14 +8536,14 @@ OUTPUT the text with only problematic sentences fixed:"""
                     self._budget_tracker["defense_tokens"] += (
                         response.input_tokens + response.output_tokens
                     )
-                    rewritten = _postprocess_scene(response.content, protagonist, language, gender)
+                    rewritten = _postprocess_scene(response.content, pov_name, language, pov_gender)
                     # Accept rewrite only if it preserves length AND key entities
                     _retention = self._get_threshold("feedback_loop_wc_retention")
                     if len(rewritten.split()) >= len(content.split()) * _retention:
                         # Entity preservation: protagonist + shared nouns (scaled by scene length)
                         orig_nouns = set(re.findall(r'\b[A-Z][a-z]{2,}\b', content)) - COMMON_CAPS
                         new_nouns = set(re.findall(r'\b[A-Z][a-z]{2,}\b', rewritten)) - COMMON_CAPS
-                        protag_first = (protagonist or "").split()[0] if protagonist else ""
+                        protag_first = (pov_name or "").split()[0] if pov_name else ""
                         protag_preserved = (
                             not protag_first or
                             protag_first in rewritten or
@@ -8408,6 +8744,62 @@ Respond with JSON:
         output_file.write_text(full_text, encoding='utf-8')
 
         validation_report["output_file"] = str(output_file)
+
+        # Persist run report as structured JSON for post-run analysis
+        # This is the "flight recorder" — one file shows the whole run
+        run_report = {
+            "run_timestamp": datetime.now().isoformat(),
+            "project_name": self.state.project_name,
+            "config_keys": sorted(config.keys()),
+            "stages_completed": list(self.state.completed_stages),
+            "validation": validation_report,
+            "cost": {
+                "total_tokens": self.state.total_tokens,
+                "total_cost_usd": self.state.total_cost_usd,
+                "stage_costs": [
+                    {"stage": r.stage_name, "tokens": r.tokens_used, "cost": r.cost_usd}
+                    for r in self.state.stage_results
+                ],
+            },
+            "artifact_metrics": self.state.artifact_metrics,
+            "defense_budget": dict(self._budget_tracker),
+        }
+        # Quality dashboard: % scenes flagged by each defense mechanism
+        if self.state.scenes:
+            total_sc = len(self.state.scenes)
+            am = self.state.artifact_metrics
+            flagged_dedup = sum(1 for m in am.values() if m.get("retried")) if am else 0
+            flagged_gate = sum(1 for m in am.values()
+                              if m.get("structure_repair_iteration", 0) > 0) if am else 0
+            avg_repair_delta = 0.0
+            repair_deltas = []
+            for m in (am or {}).values():
+                history = m.get("structure_scores_history", [])
+                if len(history) >= 2:
+                    repair_deltas.append(history[-1] - history[0])
+            if repair_deltas:
+                avg_repair_delta = sum(repair_deltas) / len(repair_deltas)
+
+            run_report["quality_dashboard"] = {
+                "pct_scenes_flagged_semantic_dedup": round(flagged_dedup / total_sc * 100, 1),
+                "pct_scenes_repaired_structure_gate": round(flagged_gate / total_sc * 100, 1),
+                "avg_score_delta_per_repair": round(avg_repair_delta, 2),
+                "total_scenes": total_sc,
+            }
+
+        # Add high concept info if available
+        if self.state.high_concept_fingerprint:
+            run_report["high_concept_fingerprint"] = self.state.high_concept_fingerprint
+        if metrics_delta:
+            run_report["metrics_delta"] = metrics_delta
+
+        report_file = output_dir / "run_report.json"
+        try:
+            with open(report_file, "w") as f:
+                json.dump(run_report, f, indent=2, default=str)
+            logger.info(f"Run report saved to {report_file}")
+        except Exception as e:
+            logger.warning(f"Failed to save run report: {e}")
 
         # Log final stats
         logger.info(f"Novel generated: {total_words:,} words across {total_chapters} chapters "
