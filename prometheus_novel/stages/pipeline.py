@@ -739,22 +739,34 @@ def _validate_yaml_config(data: Dict[str, Any], config_name: str,
     return data
 
 
+_cached_cleanup_config: Optional[Dict[str, Any]] = None
+
+
 def _load_cleanup_config() -> Dict[str, Any]:
-    """Load optional cleanup patterns from configs/cleanup_patterns.yaml."""
+    """Load optional cleanup patterns from configs/cleanup_patterns.yaml.
+
+    Cached after first load to avoid repeated file I/O during scene processing.
+    """
+    global _cached_cleanup_config
+    if _cached_cleanup_config is not None:
+        return _cached_cleanup_config
     try:
         config_path = Path(__file__).resolve().parent.parent / "configs" / "cleanup_patterns.yaml"
         if config_path.exists():
             with open(config_path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
-            return _validate_yaml_config(
+            _cached_cleanup_config = _validate_yaml_config(
                 data, "cleanup_patterns.yaml",
                 expected_keys={"inline_truncate_markers", "inline_preamble_markers",
                                "regex_patterns", "disabled_builtins", "inline"},
                 regex_keys={"regex_patterns"}
             )
+            logger.info("Loaded cleanup_patterns.yaml (cached for session — restart to pick up edits)")
+            return _cached_cleanup_config
     except Exception as e:
         logger.warning(f"Failed to load cleanup_patterns.yaml: {e}")
-    return {}
+    _cached_cleanup_config = {}
+    return _cached_cleanup_config
 
 
 # Cleanup morgue: log every "smart deletion" for auditability
@@ -964,6 +976,8 @@ def _clean_scene_content(text: str, scene_id: str = "") -> str:
         r'\n(?:Output (?:ONLY |only )?the (?:revised|enhanced|polished|expanded))',
         # UI / formatting artifacts
         r'\n(?:Visible:\s*\d+%)',
+        # Assistant-style closers (chatbot bleed-through)
+        r'\n(?:I can help|Let me know if you)',
     ]
 
     for pattern in tail_patterns:
@@ -1427,10 +1441,10 @@ def _repair_pov_context_errors(text: str, protagonist_gender: str = "") -> str:
         text
     )
 
-    # === PATTERN 7: Strip stray markdown bold/italic from prose ===
-    # Catches: **word** and *word* in narrative text
+    # === PATTERN 7: Strip stray markdown bold from prose ===
+    # Only strip **bold** markers. Single *italic* is preserved for inner voice
+    # (e.g. wolf voice: *Mine. Ours. Protect.*) which is a legitimate style element.
     text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
-    text = re.sub(r'(?<!\w)\*([^*]+)\*(?!\w)', r'\1', text)
 
     # === PATTERN 8: Generic clause-level POV clash ===
     # Any comma-delimited clause containing BOTH a third-person subject (she/he)
@@ -1854,6 +1868,19 @@ def _detect_duplicate_content(text: str, similarity_threshold: float = 0.6) -> s
     return text
 
 
+_cached_st_model = None  # Module-level cache for SentenceTransformer (lazy-loaded)
+
+
+def _get_st_model():
+    """Get or lazily load the SentenceTransformer model (cached across calls)."""
+    global _cached_st_model
+    if _cached_st_model is None:
+        from sentence_transformers import SentenceTransformer
+        _cached_st_model = SentenceTransformer('all-MiniLM-L6-v2')
+        logger.info("Loaded SentenceTransformer model (cached for session)")
+    return _cached_st_model
+
+
 def _semantic_similarity_check(text_a: str, text_b: str) -> float:
     """Compute semantic similarity between two text segments using word overlap + TF-IDF weighting.
 
@@ -1863,8 +1890,8 @@ def _semantic_similarity_check(text_a: str, text_b: str) -> float:
     # Try sentence-transformers first (if available and texts are large enough)
     if len(text_a) > 200 and len(text_b) > 200:
         try:
-            from sentence_transformers import SentenceTransformer, util
-            model = SentenceTransformer('all-MiniLM-L6-v2')
+            from sentence_transformers import util
+            model = _get_st_model()
             embeddings = model.encode([text_a[:1000], text_b[:1000]], convert_to_tensor=True)
             sim = float(util.cos_sim(embeddings[0], embeddings[1])[0][0])
             return sim
@@ -2250,6 +2277,38 @@ def _repair_json_string(json_str: str) -> str:
     json_str = re.sub(r':\s*\.(\d)', r': 0.\1', json_str)
 
     return json_str
+
+
+def _is_raw_failure(obj: Any) -> bool:
+    """True if parse 'result' is a failure wrapper, not valid data."""
+    if obj is None:
+        return True
+    if isinstance(obj, dict) and "raw" in obj:
+        return True
+    if isinstance(obj, list) and len(obj) == 1 and isinstance(obj[0], dict) and "raw" in obj[0]:
+        return True
+    return False
+
+
+def _is_valid_outline_batch(batch: Any) -> bool:
+    """True if batch has valid outline shape: list of chapters with scenes. Rejects raw wrappers."""
+    if _is_raw_failure(batch):
+        return False
+    if not isinstance(batch, list) or len(batch) == 0:
+        return False
+    # Flat scenes: all items look like scene dicts (scene_name, scene/chapter)
+    def is_flat_scene(x):
+        return isinstance(x, dict) and ("scene" in x or "scene_number" in x or "scene_name" in x)
+    if all(is_flat_scene(x) for x in batch):
+        return True
+    # Chapters-array: each has scenes list (chapter can be filled in later)
+    for ch in batch:
+        if not isinstance(ch, dict) or "raw" in ch:
+            return False
+        scenes = ch.get("scenes")
+        if not isinstance(scenes, list):
+            return False
+    return True
 
 
 def extract_json_robust(text: str, expect_array: bool = False) -> Any:
@@ -2691,6 +2750,9 @@ class PipelineState:
     # Checkpoint tracking - which stages completed successfully
     completed_stages: List[str] = field(default_factory=list)
 
+    # Outline JSON parse/repair telemetry (T1) - written to run_report
+    outline_json_report: Optional[Dict[str, Any]] = None
+
     def calculate_targets(self):
         """Calculate word count targets based on target_length and genre."""
         length_map = {
@@ -2780,10 +2842,18 @@ class PipelineState:
                 for r in self.stage_results
             ]
         }
-        # Atomic write: dump to temp file, then replace original
-        with open(tmp_file, "w") as f:
-            json.dump(state_dict, f, indent=2)
-        os.replace(str(tmp_file), str(state_file))
+        # Atomic write: dump to temp file, then replace original.
+        # If json.dump fails (e.g. disk full), clean up the partial tmp file.
+        try:
+            with open(tmp_file, "w") as f:
+                json.dump(state_dict, f, indent=2)
+            os.replace(str(tmp_file), str(state_file))
+        except Exception:
+            try:
+                tmp_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
         logger.info(f"Pipeline state checkpointed to {state_file} (stage {self.current_stage}, {len(self.completed_stages)} completed)")
 
     @classmethod
@@ -2964,8 +3034,30 @@ class PipelineOrchestrator:
     }
 
     def get_temperature_for_stage(self, stage_name: str) -> float:
-        """Get appropriate temperature for a stage."""
+        """Get appropriate temperature for a stage.
+
+        Config overrides (stage_temperatures or model_tuning.stage_temperatures) take
+        precedence over built-in defaults. Use for paid-model calibration.
+        """
+        if self.state and self.state.config:
+            tuning = self.state.config.get("model_tuning", {}) or {}
+            temps = tuning.get("stage_temperatures") or self.state.config.get("stage_temperatures") or {}
+            if isinstance(temps, dict) and stage_name in temps:
+                return float(temps[stage_name])
         return self.STAGE_TEMPERATURES.get(stage_name, 0.7)
+
+    def get_max_tokens_for_stage(self, stage_name: str, computed_default: int) -> int:
+        """Get max_tokens for a stage. Config override takes precedence.
+
+        Use for paid-model calibration: paid models often need higher runway for
+        scene_drafting, lower for outline/planning.
+        """
+        if self.state and self.state.config:
+            tuning = self.state.config.get("model_tuning", {}) or {}
+            caps = tuning.get("stage_max_tokens") or self.state.config.get("stage_max_tokens") or {}
+            if isinstance(caps, dict) and stage_name in caps:
+                return int(caps[stage_name])
+        return computed_default
 
     def __init__(self, project_path: Path, llm_client=None, llm_clients: Dict = None):
         self.project_path = project_path
@@ -3081,6 +3173,9 @@ class PipelineOrchestrator:
 
     def _get_threshold(self, key: str) -> float:
         """Get defense threshold from config or default, with bounds validation."""
+        if key not in self._DEFAULT_DEFENSE_THRESHOLDS:
+            logger.warning(f"Unknown threshold key '{key}', returning 0.5")
+            return 0.5
         value = self._DEFAULT_DEFENSE_THRESHOLDS[key]
         if self.state and self.state.config:
             user_thresholds = self.state.config.get("defense", {}).get("thresholds", {})
@@ -3198,15 +3293,31 @@ class PipelineOrchestrator:
         """Get the appropriate LLM client for a given stage.
 
         Uses smart routing to pick the best model, with fallback to default.
+        Config: model_overrides (stage -> gpt|claude|gemini) or stage_model_map
+        (stage -> api_model|critic_model|fallback_model). Both supported for
+        easy local/paid swap.
         """
         # Check for stage-specific override in config
         if self.state and self.state.config:
-            model_overrides = self.state.config.get("model_overrides", {})
+            cfg = self.state.config
+            model_overrides = cfg.get("model_overrides", {})
+            stage_model_map = cfg.get("stage_model_map", {})
+
+            # model_overrides: stage -> gpt|claude|gemini (direct bucket)
             if stage_name in model_overrides:
                 model_type = model_overrides[stage_name]
                 if model_type in self.llm_clients:
                     logger.info(f"Using override model '{model_type}' for stage: {stage_name}")
                     return self.llm_clients[model_type]
+
+            # stage_model_map: stage -> api_model|critic_model|fallback_model
+            # Maps to gpt/claude/gemini (api->gpt, critic->claude, fallback->gemini)
+            if stage_name in stage_model_map:
+                key = stage_model_map[stage_name]
+                bucket = {"api_model": "gpt", "critic_model": "claude", "fallback_model": "gemini"}.get(key, "gpt")
+                if bucket in self.llm_clients:
+                    logger.info(f"Using stage_model_map '{key}' ({bucket}) for stage: {stage_name}")
+                    return self.llm_clients[bucket]
 
         # Use recommended model for stage
         recommended = self.STAGE_MODELS.get(stage_name, "gpt")
@@ -3330,143 +3441,150 @@ class PipelineOrchestrator:
         CIRCUIT_BREAKER_THRESHOLD = int(self._get_threshold("circuit_breaker_threshold"))
         consecutive_failures = 0
 
-        i = start_index
-        while i < len(stages_to_run):
-            stage_name = stages_to_run[i]
+        try:
+            i = start_index
+            while i < len(stages_to_run):
+                stage_name = stages_to_run[i]
 
-            # Skip stages already completed (safety check for parallel group overlap)
-            if stage_name in self.state.completed_stages:
-                i += 1
-                continue
-
-            # Check if this stage is part of a parallel group
-            parallel_group = parallel_lookup.get(stage_name)
-            if parallel_group and all(s in stages_to_run[i:] for s in parallel_group):
-                # Find all group members that start at consecutive positions
-                group_members = [s for s in parallel_group if s in stages_to_run[i:] and s not in self.state.completed_stages]
-
-                if len(group_members) > 1:
-                    logger.info(f"Running {len(group_members)} stages in parallel: {group_members}")
-                    for s in group_members:
-                        await self._emit("on_stage_start", s, i)
-
-                    # Run in parallel
-                    results = await asyncio.gather(
-                        *[self._run_stage(s) for s in group_members],
-                        return_exceptions=True
-                    )
-
-                    # Process results
-                    failed = False
-                    for s, result in zip(group_members, results):
-                        if isinstance(result, Exception):
-                            result = StageResult(stage_name=s, status=StageStatus.FAILED, error=str(result))
-                            failed = True
-
-                        self.state.stage_results.append(result)
-                        self.state.total_tokens += result.tokens_used
-                        self.state.total_cost_usd += result.cost_usd
-
-                        if result.status == StageStatus.COMPLETED:
-                            if s not in self.state.completed_stages:
-                                self.state.completed_stages.append(s)
-
-                        await self._emit("on_stage_complete", s, result)
-
-                    self.state.current_stage = i + len(group_members)
-                    self.state.save()
-
-                    if failed:
-                        break
-
-                    # Skip past all group members
-                    i += len(group_members)
+                # Skip stages already completed (safety check for parallel group overlap)
+                if stage_name in self.state.completed_stages:
+                    i += 1
                     continue
 
-            # Sequential execution for non-parallel stages
-            self.state.current_stage = i
-            await self._emit("on_stage_start", stage_name, i)
+                # Check if this stage is part of a parallel group
+                parallel_group = parallel_lookup.get(stage_name)
+                if parallel_group and all(s in stages_to_run[i:] for s in parallel_group):
+                    # Find all group members that start at consecutive positions
+                    group_members = [s for s in parallel_group if s in stages_to_run[i:] and s not in self.state.completed_stages]
 
-            try:
-                result = await self._run_stage(stage_name)
-                self.state.stage_results.append(result)
-                self.state.total_tokens += result.tokens_used
-                self.state.total_cost_usd += result.cost_usd
+                    if len(group_members) > 1:
+                        logger.info(f"Running {len(group_members)} stages in parallel: {group_members}")
+                        for s in group_members:
+                            await self._emit("on_stage_start", s, i)
 
-                # Track completed stages for checkpoint resume
-                if result.status == StageStatus.COMPLETED:
-                    if stage_name not in self.state.completed_stages:
-                        self.state.completed_stages.append(stage_name)
-                    consecutive_failures = 0  # Reset circuit breaker on success
-
-                self.state.save()
-                self._write_run_status(stage_name, result)
-
-                await self._emit("on_stage_complete", stage_name, result)
-
-                if result.status == StageStatus.FAILED:
-                    consecutive_failures += 1
-                    await self._emit("on_stage_error", stage_name, result.error)
-
-                    # Circuit breaker: halt pipeline after N consecutive failures
-                    if consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD:
-                        failed_stages = [
-                            r.stage_name for r in self.state.stage_results[-CIRCUIT_BREAKER_THRESHOLD:]
-                            if r.status == StageStatus.FAILED
-                        ]
-                        logger.error(
-                            f"CIRCUIT BREAKER: {consecutive_failures} consecutive stage failures "
-                            f"({', '.join(failed_stages)}). Halting pipeline. "
-                            f"Diagnostic: check model availability, config validity, and scene state."
+                        # Run in parallel
+                        results = await asyncio.gather(
+                            *[self._run_stage(s) for s in group_members],
+                            return_exceptions=True
                         )
-                        _log_incident(
-                            ",".join(failed_stages), "circuit_breaker_trip",
-                            f"{consecutive_failures} consecutive failures",
-                            severity="critical"
-                        )
-                    break
 
-                # Handle iteration if quality_audit indicates it's needed
-                if stage_name == "quality_audit" and result.output:
-                    audit_output = result.output
-                    if audit_output.get("needs_iteration") and audit_output.get("stages_to_rerun"):
-                        stages_to_rerun = audit_output["stages_to_rerun"]
-                        logger.info(f"Quality audit triggered iteration. Re-running: {stages_to_rerun}")
+                        # Process results
+                        failed = False
+                        for s, result in zip(group_members, results):
+                            if isinstance(result, Exception):
+                                result = StageResult(stage_name=s, status=StageStatus.FAILED, error=str(result))
+                                failed = True
 
-                        # Re-run the problematic stages
-                        for rerun_stage in stages_to_rerun:
-                            logger.info(f"  Re-running stage: {rerun_stage}")
-                            await self._emit("on_stage_start", f"{rerun_stage}_iteration", -1)
+                            self.state.stage_results.append(result)
+                            self.state.total_tokens += result.tokens_used
+                            self.state.total_cost_usd += result.cost_usd
 
-                            rerun_result = await self._run_stage(rerun_stage)
-                            self.state.stage_results.append(rerun_result)
-                            self.state.total_tokens += rerun_result.tokens_used
-                            self.state.total_cost_usd += rerun_result.cost_usd
+                            if result.status == StageStatus.COMPLETED:
+                                if s not in self.state.completed_stages:
+                                    self.state.completed_stages.append(s)
 
-                            await self._emit("on_stage_complete", f"{rerun_stage}_iteration", rerun_result)
+                            await self._emit("on_stage_complete", s, result)
 
-                        # Re-run full polish chain after destructive/expansion fixes
-                        if "voice_human_pass" in stages_to_rerun or "scene_expansion" in stages_to_rerun:
-                            logger.info("  Re-running polish chain: dialogue, prose, hooks, final_deai")
-                            for polish_stage in ["dialogue_polish", "prose_polish", "chapter_hooks", "final_deai"]:
-                                p_result = await self._run_stage(polish_stage)
-                                self.state.stage_results.append(p_result)
-                                self.state.total_tokens += p_result.tokens_used
-
+                        self.state.current_stage = i + len(group_members)
                         self.state.save()
 
-            except Exception as e:
-                logger.error(f"Stage {stage_name} failed: {e}")
-                result = StageResult(
-                    stage_name=stage_name,
-                    status=StageStatus.FAILED,
-                    error=str(e)
-                )
-                self.state.stage_results.append(result)
-                await self._emit("on_stage_error", stage_name, str(e))
-                break
+                        if failed:
+                            break
 
-            i += 1
+                        # Skip past all group members
+                        i += len(group_members)
+                        continue
+
+                # Sequential execution for non-parallel stages
+                self.state.current_stage = i
+                await self._emit("on_stage_start", stage_name, i)
+
+                try:
+                    result = await self._run_stage(stage_name)
+                    self.state.stage_results.append(result)
+                    self.state.total_tokens += result.tokens_used
+                    self.state.total_cost_usd += result.cost_usd
+
+                    # Track completed stages for checkpoint resume
+                    if result.status == StageStatus.COMPLETED:
+                        if stage_name not in self.state.completed_stages:
+                            self.state.completed_stages.append(stage_name)
+                        consecutive_failures = 0  # Reset circuit breaker on success
+
+                    self.state.save()
+                    self._write_run_status(stage_name, result)
+
+                    await self._emit("on_stage_complete", stage_name, result)
+
+                    if result.status == StageStatus.FAILED:
+                        consecutive_failures += 1
+                        await self._emit("on_stage_error", stage_name, result.error)
+
+                        # Circuit breaker: halt pipeline after N consecutive failures
+                        if consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD:
+                            failed_stages = [
+                                r.stage_name for r in self.state.stage_results[-CIRCUIT_BREAKER_THRESHOLD:]
+                                if r.status == StageStatus.FAILED
+                            ]
+                            logger.error(
+                                f"CIRCUIT BREAKER: {consecutive_failures} consecutive stage failures "
+                                f"({', '.join(failed_stages)}). Halting pipeline. "
+                                f"Diagnostic: check model availability, config validity, and scene state."
+                            )
+                            _log_incident(
+                                ",".join(failed_stages), "circuit_breaker_trip",
+                                f"{consecutive_failures} consecutive failures",
+                                severity="critical"
+                            )
+                        break
+
+                    # Handle iteration if quality_audit indicates it's needed
+                    if stage_name == "quality_audit" and result.output:
+                        audit_output = result.output
+                        if audit_output.get("needs_iteration") and audit_output.get("stages_to_rerun"):
+                            stages_to_rerun = audit_output["stages_to_rerun"]
+                            logger.info(f"Quality audit triggered iteration. Re-running: {stages_to_rerun}")
+
+                            # Re-run the problematic stages
+                            for rerun_stage in stages_to_rerun:
+                                logger.info(f"  Re-running stage: {rerun_stage}")
+                                await self._emit("on_stage_start", f"{rerun_stage}_iteration", -1)
+
+                                rerun_result = await self._run_stage(rerun_stage)
+                                self.state.stage_results.append(rerun_result)
+                                self.state.total_tokens += rerun_result.tokens_used
+                                self.state.total_cost_usd += rerun_result.cost_usd
+
+                                await self._emit("on_stage_complete", f"{rerun_stage}_iteration", rerun_result)
+
+                            # Re-run full polish chain after destructive/expansion fixes
+                            if "voice_human_pass" in stages_to_rerun or "scene_expansion" in stages_to_rerun:
+                                logger.info("  Re-running polish chain: dialogue, prose, hooks, final_deai")
+                                for polish_stage in ["dialogue_polish", "prose_polish", "chapter_hooks", "final_deai"]:
+                                    p_result = await self._run_stage(polish_stage)
+                                    self.state.stage_results.append(p_result)
+                                    self.state.total_tokens += p_result.tokens_used
+
+                            self.state.save()
+
+                except Exception as e:
+                    logger.error(f"Stage {stage_name} failed: {e}")
+                    result = StageResult(
+                        stage_name=stage_name,
+                        status=StageStatus.FAILED,
+                        error=str(e)
+                    )
+                    self.state.stage_results.append(result)
+                    await self._emit("on_stage_error", stage_name, str(e))
+                    break
+
+                i += 1
+
+        finally:
+            output_dir = self.state.project_path / "output" if getattr(self.state, "project_path", None) else None
+            if output_dir and getattr(self.state, "outline_json_report", None):
+                from prometheus_novel.configs.config_resolver import update_resolved_outline_meta
+                update_resolved_outline_meta(output_dir, self.state.outline_json_report)
 
         await self._emit("on_pipeline_complete", self.state)
         return self.state
@@ -4488,27 +4606,62 @@ The AI tends to collapse similar scenes into the same output. To prevent this, E
 
 Respond with a JSON object containing a "chapters" array of {batch_end - batch_start + 1} chapter objects. Each chapter MUST have "chapter", "chapter_title", and "scenes" keys."""
 
-            # Retry loop: if JSON parse fails, retry with lower temp + shorter prompt
+            # Retry loop: only break on valid outline shape. Raw wrapper is NOT success.
             MAX_OUTLINE_RETRIES = 2
             batch = []
+            raw_text = ""
+            failure_modes = []
+            recoveries = []
+            if self.state.outline_json_report is None:
+                self.state.outline_json_report = {"batches": [], "backfill": {"requested": [], "attempts": [], "failures": []}}
+
             for retry_idx in range(MAX_OUTLINE_RETRIES + 1):
-                retry_temp = 0.4 if retry_idx > 0 else None  # Lower temp on retry
-                retry_max = 3072 if retry_idx > 0 else 4096  # Shorter on retry
+                retry_temp = 0.4 if retry_idx > 0 else None
+                retry_max = self.get_max_tokens_for_stage("master_outline", 3072 if retry_idx > 0 else 4096)
                 response = await client.generate(prompt, max_tokens=retry_max,
                                                   json_mode=True, temperature=retry_temp,
                                                   timeout=600)
-                try:
-                    batch = extract_json_robust(response.content, expect_array=True)
-                    if batch:
-                        break  # Got valid JSON
-                except Exception as e:
-                    if retry_idx < MAX_OUTLINE_RETRIES:
-                        logger.warning(f"Outline batch {batch_start}-{batch_end} parse failed "
-                                       f"(attempt {retry_idx + 1}/{MAX_OUTLINE_RETRIES + 1}): {e}. Retrying...")
-                    else:
-                        logger.error(f"JSON extraction failed for batch {batch_start}-{batch_end} "
-                                     f"after {MAX_OUTLINE_RETRIES + 1} attempts: {e}")
-                        batch = []
+                raw_text = response.content if response else ""
+                batch = extract_json_robust(raw_text, expect_array=True)
+
+                if _is_valid_outline_batch(batch):
+                    if retry_idx > 0:
+                        recoveries.append({"attempt": retry_idx, "type": "regenerate_success"})
+                    break
+
+                # Record failure
+                fail_type = "raw_wrapper" if _is_raw_failure(batch) else "invalid_shape"
+                failure_modes.append({"attempt": retry_idx, "type": fail_type, "chars": len(raw_text)})
+
+                # Tier A: local repair on raw text
+                repair_raw = raw_text
+                if _is_raw_failure(batch) and isinstance(batch, list) and batch and isinstance(batch[0], dict):
+                    repair_raw = batch[0].get("raw", raw_text)
+                repaired = self._repair_truncated_json(repair_raw)
+                if repaired and _is_valid_outline_batch(repaired):
+                    batch = repaired
+                    recoveries.append({"attempt": retry_idx, "type": "local_repair", "chapters_extracted": len(repaired)})
+                    logger.info(f"Outline batch {batch_start}-{batch_end} recovered via local repair")
+                    break
+
+                if retry_idx < MAX_OUTLINE_RETRIES:
+                    logger.warning(f"Outline batch {batch_start}-{batch_end} parse failed "
+                                   f"(attempt {retry_idx + 1}/{MAX_OUTLINE_RETRIES + 1}): {fail_type}. Retrying...")
+                else:
+                    logger.error(f"Outline batch {batch_start}-{batch_end} failed after {MAX_OUTLINE_RETRIES + 1} attempts")
+
+            attempts_made = len(failure_modes) + (1 if _is_valid_outline_batch(batch) else 0)
+            parse_failures = len(failure_modes)
+            repair_uses = sum(1 for r in recoveries if r.get("type") == "local_repair")
+            self.state.outline_json_report["batches"].append({
+                "batch_range": f"{batch_start}-{batch_end}",
+                "attempts_made": attempts_made,
+                "parse_failures": parse_failures,
+                "repair_uses": repair_uses,
+                "success": _is_valid_outline_batch(batch),
+                "failure_modes": failure_modes,
+                "recoveries": recoveries,
+            })
 
             # Handle json_mode wrapping: model may wrap array in an object
             if isinstance(batch, dict):
@@ -4566,30 +4719,37 @@ Respond with a JSON object containing a "chapters" array of {batch_end - batch_s
             # qwen2.5/llama often output {"chapters": [{scene1}, {scene2}, ...]} - flat scene objects
             has_proper_chapters = any(isinstance(ch, dict) and "scenes" in ch for ch in batch if isinstance(ch, dict))
             if not has_proper_chapters:
-                # Scene objects have "scene" or "scene_number" - avoid matching chapter-like objects (have "scenes")
                 def is_flat_scene(obj):
                     if not isinstance(obj, dict) or "scenes" in obj:
                         return False
                     return "scene" in obj or "scene_number" in obj
                 flat_scenes = [ch for ch in batch if is_flat_scene(ch)]
                 if flat_scenes:
-                    spc = max(1, self.state.scenes_per_chapter)  # Guard against 0
+                    spc = max(1, self.state.scenes_per_chapter)
+                    expected_chapters = set(range(batch_start, batch_end + 1))
                     logger.info(f"Detected {len(flat_scenes)} flat scenes, grouping into chapters (spc={spc})")
                     for ch_idx in range(batch_start, batch_end + 1):
                         offset = (ch_idx - batch_start) * spc
                         ch_scenes = flat_scenes[offset:offset + spc]
                         if ch_scenes:
-                            # Ensure scene_number set for downstream (scene_drafting expects it)
+                            # Ensure scene_number set for downstream; sort by scene_number for contiguous order
                             for i, sc in enumerate(ch_scenes):
                                 if "scene_number" not in sc and "scene" in sc:
                                     sc["scene_number"] = sc["scene"]
                                 elif "scene_number" not in sc:
                                     sc["scene_number"] = i + 1
+                            ch_scenes.sort(key=lambda s: s.get("scene_number", 0))
                             validated_batch.append({
                                 "chapter": ch_idx,
                                 "chapter_title": ch_scenes[0].get("scene_name", f"Chapter {ch_idx}"),
                                 "scenes": ch_scenes
                             })
+                    # Safety: drop chapters with no scenes; ensure chapter numbers in expected set
+                    validated_batch[:] = [
+                        ch for ch in validated_batch
+                        if isinstance(ch, dict) and ch.get("chapter") in expected_chapters
+                        and isinstance(ch.get("scenes"), list) and len(ch["scenes"]) >= 1
+                    ]
 
             # Post-gen collision detector: fix duplicate/near-duplicate scene names
             if validated_batch:
@@ -4610,10 +4770,12 @@ Respond with a JSON object containing a "chapters" array of {batch_end - batch_s
         expected_nums = set(range(1, self.state.target_chapters + 1))
         missing = sorted(expected_nums - produced_nums)
         if missing:
+            if self.state.outline_json_report:
+                self.state.outline_json_report["backfill"]["requested"] = [int(m) for m in missing]
             logger.warning(f"Missing chapters after outline generation: {missing}. "
                            f"Attempting per-chapter backfill...")
+            MAX_BACKFILL_RETRIES = 2
             for miss_ch in missing:
-                # Generate just the missing chapter individually
                 expected_pov = self._expected_pov_for_chapter(miss_ch)
                 backfill_prompt = f"""{story_context}
 {strategic}
@@ -4625,37 +4787,98 @@ POV for chapter {miss_ch}: ALL scenes must have "pov": "{expected_pov}".
 Each scene must include: scene (number), scene_name, pov, purpose, differentiator, character_scene_goal, central_conflict, opening_hook, outcome, location, emotional_arc, tension_level (1-10), pacing, spice_level (0-5).
 
 Respond with a JSON object: {{"chapters": [{{"chapter": {miss_ch}, "chapter_title": "...", "scenes": [...]}}]}}"""
-                try:
-                    bf_response = await client.generate(backfill_prompt, max_tokens=2048,
-                                                        json_mode=True, temperature=0.4,
-                                                        timeout=600)
-                    bf_batch = extract_json_robust(bf_response.content, expect_array=True)
-                    if isinstance(bf_batch, dict):
-                        for key in ("chapters", "outline"):
-                            if key in bf_batch and isinstance(bf_batch[key], list):
-                                bf_batch = bf_batch[key]
-                                break
-                    if isinstance(bf_batch, list):
-                        for bf_ch in bf_batch:
-                            if isinstance(bf_ch, dict) and "scenes" in bf_ch:
+                bf_success = False
+                bf_attempts = 0
+                bf_recovery = None
+                for bf_retry in range(MAX_BACKFILL_RETRIES + 1):
+                    try:
+                        bf_response = await client.generate(backfill_prompt, max_tokens=2048,
+                                                            json_mode=True, temperature=0.4,
+                                                            timeout=600)
+                        bf_raw = bf_response.content if bf_response else ""
+                        bf_batch = extract_json_robust(bf_raw, expect_array=True)
+                        if isinstance(bf_batch, dict):
+                            for key in ("chapters", "outline"):
+                                if key in bf_batch and isinstance(bf_batch[key], list):
+                                    bf_batch = bf_batch[key]
+                                    break
+                        if isinstance(bf_batch, list):
+                            valid_chs = [ch for ch in bf_batch if isinstance(ch, dict) and "scenes" in ch]
+                            if valid_chs:
+                                bf_ch = valid_chs[0]
                                 bf_ch["chapter"] = miss_ch
                                 all_chapters.append(bf_ch)
                                 logger.info(f"Backfilled chapter {miss_ch}")
                                 total_tokens += bf_response.input_tokens + bf_response.output_tokens
-                except Exception as e:
-                    logger.error(f"Failed to backfill chapter {miss_ch}: {e}")
+                                bf_success = True
+                                bf_attempts = bf_retry + 1
+                                if bf_retry > 0:
+                                    bf_recovery = "regenerate_success"
+                                break
+                        if _is_raw_failure(bf_batch):
+                            repair_raw = bf_raw
+                            if isinstance(bf_batch, list) and bf_batch and isinstance(bf_batch[0], dict):
+                                repair_raw = bf_batch[0].get("raw", bf_raw)
+                            repaired = self._repair_truncated_json(repair_raw)
+                            if repaired:
+                                valid_chs = [ch for ch in repaired if isinstance(ch, dict) and "scenes" in ch]
+                                if valid_chs:
+                                    bf_ch = valid_chs[0]
+                                    bf_ch["chapter"] = miss_ch
+                                    all_chapters.append(bf_ch)
+                                    logger.info(f"Backfilled chapter {miss_ch} via local repair")
+                                    total_tokens += bf_response.input_tokens + bf_response.output_tokens
+                                    bf_success = True
+                                    bf_attempts = bf_retry + 1
+                                    bf_recovery = "local_repair"
+                                    break
+                    except Exception as e:
+                        logger.warning(f"Backfill chapter {miss_ch} attempt {bf_retry + 1} failed: {e}")
+                    bf_attempts = bf_retry + 1
+                if self.state.outline_json_report:
+                    self.state.outline_json_report["backfill"]["attempts"].append({
+                        "chapter": miss_ch, "attempts": bf_attempts + 1, "success": bf_success, "recovery": bf_recovery
+                    })
+                if not bf_success and self.state.outline_json_report:
+                    self.state.outline_json_report["backfill"]["failures"].append(miss_ch)
             # Re-sort by chapter number
             all_chapters.sort(key=lambda ch: ch.get("chapter", 0) if isinstance(ch, dict) else 0)
 
-        # Stamp stable scene IDs: "ch02_s01" etc. so downstream stages
-        # can reference scenes deterministically regardless of model output order.
+        # Deterministic scene order within each chapter (chapter_index, scene_index)
+        def _scene_sort_key(s):
+            if not isinstance(s, dict):
+                return 0
+            v = s.get("scene_number") or s.get("scene", 0) or 0
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return 0
+
+        for ch in all_chapters:
+            if isinstance(ch, dict) and "scenes" in ch:
+                ch["scenes"] = sorted(ch["scenes"], key=_scene_sort_key)
+
+        # Stamp stable scene IDs: "ch02_s01" etc. Iteration order is
+        # chapter_num then scene_index. If scene_id already exists (e.g. reload),
+        # assert it matches expected; do not overwrite.
         for ch in all_chapters:
             if not isinstance(ch, dict):
                 continue
-            ch_num = ch.get("chapter", 0)
+            ch_num = int(ch.get("chapter", 0))
             for i, sc in enumerate(ch.get("scenes", [])):
-                if isinstance(sc, dict):
-                    sc["scene_id"] = f"ch{ch_num:02d}_s{i+1:02d}"
+                if not isinstance(sc, dict):
+                    continue
+                expected = f"ch{ch_num:02d}_s{i+1:02d}"
+                existing = sc.get("scene_id")
+                if existing:
+                    if existing != expected:
+                        logger.error(
+                            f"scene_id mismatch: expected {expected}, got {existing} "
+                            f"(ch={ch_num}, scene_idx={i}); possible reorder/stamp drift"
+                        )
+                        raise ValueError(f"scene_id integrity: {existing} != {expected}")
+                else:
+                    sc["scene_id"] = expected
 
         # Deterministic POV normalization: overwrite scene POVs to match
         # the dual-POV chapter rule. This is the safety net — even if the model
@@ -4736,7 +4959,12 @@ Respond with a JSON object: {{"chapters": [{{"chapter": {miss_ch}, "chapter_titl
     async def _regenerate_colliding_scene_names(
         self, client, batch_chapters: list, collisions: list, used_names: list
     ) -> int:
-        """Regenerate scene_name for colliding scenes. Returns tokens used."""
+        """Regenerate scene_name for colliding scenes. Returns tokens used.
+
+        Scene identity is immutable: we patch the existing scene dict in place,
+        overwriting only scene_name. Never replace the scene object or reassign
+        chapter/scene indices. scene_id is stamped based on chapter_index + scene_index.
+        """
         if not client or not collisions:
             return 0
         total_tokens = 0
@@ -5170,6 +5398,71 @@ Return JSON with:
         if corrections:
             logger.info(f"POV normalizer: corrected {corrections} scene POV assignments to match chapter rule")
         return corrections
+
+    def _build_voice_modifiers_block(self, pov_char: str, chapter_num: int) -> str:
+        """Build voice modifier instructions for the scene drafting prompt.
+
+        Detects italic inner voice (wolf voice, etc.) from writing_style config
+        and generates explicit formatting examples when the current POV character
+        has an inner voice described in the config.
+        """
+        writing_style = self.state.config.get("writing_style", "").lower()
+        if "italic" not in writing_style:
+            return ""
+
+        # Parse which character has the italic inner voice
+        # Config format: "Kaelen's wolf voice appears in italics as a distinct..."
+        ws_full = self.state.config.get("writing_style", "")
+        pov_lower = pov_char.lower().split()[0]  # First name only
+
+        # Check if this POV character is the one with the italic voice
+        if pov_lower not in ws_full.lower():
+            return ""
+
+        # Find the italic voice description
+        italic_idx = ws_full.lower().find("italic")
+        if italic_idx == -1:
+            return ""
+
+        # Extract context around "italic" mention (sentence or surrounding text)
+        # Look backwards for the character name
+        pre_text = ws_full[:italic_idx + 80]
+
+        # Only generate if this character's name appears near "italic"
+        name_idx = pre_text.lower().rfind(pov_lower)
+        if name_idx == -1 or (italic_idx - name_idx) > 120:
+            return ""
+
+        # Extract the voice description
+        voice_desc = ws_full[name_idx:min(len(ws_full), italic_idx + 200)]
+        # Trim to sentence boundary
+        for end_char in ['.', ')', '\n']:
+            end_idx = voice_desc.find(end_char, 50)
+            if end_idx != -1:
+                voice_desc = voice_desc[:end_idx + 1]
+                break
+
+        return f"""
+=== INNER VOICE (ITALIC FORMATTING — REQUIRED) ===
+From the style guide: {voice_desc.strip()}
+
+You MUST include italic inner voice lines in this scene. Format: *italic text*
+These are {pov_char}'s raw, unfiltered inner thoughts — short, primal, distinct
+from the narrative voice.
+
+EXAMPLES (adapt to the scene):
+  *Mine.* The thought hit before I could stop it.
+  *Protect. Keep. Ours.* My hands shook with the effort of staying still.
+  I forced myself to breathe. *Not yet. Not safe.*
+  *She's here.* The wolf surged against my ribs.
+
+RULES:
+- Include at least 2-3 italic inner voice lines per scene
+- Keep them SHORT (1-5 words typically, max 10)
+- They interrupt the narrative — placed on their own line or mid-paragraph
+- They should feel involuntary, like intrusive thoughts
+- Use asterisks for italics: *word* (not _word_)
+"""
 
     def _get_pov_info(self, pov_character: str = "", scene_text: str = "") -> tuple:
         """Get (name, gender) for the current POV character.
@@ -6154,6 +6447,10 @@ Return JSON with:
         client = self.get_client_for_stage("scene_drafting")
         config = self.state.config
 
+        # Pre-serialize large objects once (avoid re-serializing per scene)
+        _characters_json = json.dumps(self.state.characters, indent=2) if self.state.characters else ''
+        _world_bible_json = json.dumps(self.state.world_bible, indent=2) if self.state.world_bible else ''
+
         # Extract key config elements for drafting
         writing_style = config.get("writing_style", "")
         tone = config.get("tone", "")
@@ -6172,12 +6469,12 @@ Return JSON with:
         for chapter in (self.state.master_outline or []):
             if not isinstance(chapter, dict):
                 continue
-            chapter_num = chapter.get("chapter", 1)
+            chapter_num = int(chapter.get("chapter", 1))
 
             for scene_info in chapter.get("scenes", []):
                 if not isinstance(scene_info, dict):
                     continue
-                scene_num = scene_info.get("scene", scene_info.get("scene_number", 1))
+                scene_num = int(scene_info.get("scene", scene_info.get("scene_number", 1)))
                 stable_id = scene_info.get("scene_id", f"ch{chapter_num:02d}_s{scene_num:02d}")
                 pov_char = scene_info.get("pov", "protagonist")
                 spice_level = scene_info.get("spice_level", 0)
@@ -6236,8 +6533,12 @@ Return JSON with:
                     last_content = scenes[-1].get("content", "")
                     prev_opening = " ".join(last_content.split()[:50])
 
+                # Build voice modifier block (wolf voice, etc.) if applicable
+                voice_modifiers = self._build_voice_modifiers_block(pov_char, chapter_num)
+
                 prompt = f"""Write Chapter {chapter_num}, Scene {scene_num}: "{scene_name}"
 POSITION: Scene {scene_position + 1} of {total_scenes_in_chapter} in this chapter.
+YOU ARE {pov_char.upper()}. You are writing AS {pov_char}, in first person. "I" = {pov_char}.
 
 === MASTER CRAFT PRINCIPLES ===
 1. SHOW vs TELL:
@@ -6311,7 +6612,7 @@ belongs to HER, not to "my".
   - The love interest should have culturally specific expressions or syntax
   - Characters should NOT speak in identical therapeutic-affirmation register
   - Real people interrupt, use slang, trail off, repeat themselves, dodge questions
-
+{voice_modifiers}
 === SCENE PURPOSE ===
 WHY THIS SCENE EXISTS: {purpose}
 SCENE QUESTION (to answer): {scene_question}
@@ -6382,7 +6683,7 @@ TENSION LEVEL: {tension_level}/10
 {spice_info}
 
 === CHARACTERS IN SCENE ===
-{json.dumps(self.state.characters, indent=2) if self.state.characters else ''}
+{_characters_json}
 {f"ADDITIONAL CHARACTERS: {extra_chars}" if extra_chars else ""}
 
 {f"=== CULTURAL AUTHENTICITY ==={chr(10)}{cultural_notes}" if cultural_notes else ""}
@@ -6402,17 +6703,20 @@ You must reach at least {int(self.state.words_per_scene * 0.7)} words before con
 Do NOT end the scene until the scene turn has occurred.
 
 === NOW WRITE ===
+REMINDER: You are {pov_char}. "I" = {pov_char}. Write every sentence from inside {pov_char}'s head.
+If {pov_char} is mentioned by name in the narrative, something is WRONG — {pov_char} would say "I", not their own name.
 Begin DIRECTLY with narrative—no preamble, no title, no scene heading.
 - FIRST PERSON ONLY. Every line = "I" perspective. Never third person.
 - Open with ACTION or DIALOGUE (not description, not atmosphere)
 - Hook immediately with tension, motion, or intrigue
-- Ground us in the POV character's physical state through what they DO
+- Ground us in {pov_char}'s physical state through what {pov_char} DOES
 - Each paragraph must advance the scene (no restatements)
 - NEVER end a paragraph by summarizing what the moment means emotionally.
   End on action, dialogue, or sensory observation. Let the reader interpret.
 - Character catchphrases/tics: use at most ONCE in this scene.
+{"- Include italic inner voice (*thoughts*) as instructed above." if voice_modifiers else ""}
 
-Write the complete scene:"""
+Write the complete scene as {pov_char} ("I"):"""
 
                 # Context safety: validate the inline-assembled prompt for
                 # credential leaks, injection attempts, and template placeholders.
@@ -6422,8 +6726,10 @@ Write the complete scene:"""
 
                 if client:
                     # Calculate max tokens based on target words (1 token ≈ 1.2-1.4 words)
-                    # Use 2.5x multiplier for buffer and comprehensive scenes
-                    max_tokens = max(int(self.state.words_per_scene * 2.5), 2500)
+                    # Use 2.5x multiplier for buffer and comprehensive scenes.
+                    # Config stage_max_tokens.scene_drafting overrides (e.g. paid models).
+                    computed = max(int(self.state.words_per_scene * 2.5), 2500)
+                    max_tokens = self.get_max_tokens_for_stage("scene_drafting", computed)
                     temp = self.get_temperature_for_stage("scene_drafting")
                     content, tokens = await self._generate_prose(
                         client, prompt, "scene_drafting",
@@ -6484,7 +6790,7 @@ Write the complete scene:"""
         for scene in scenes:
             content = scene.get("content", "")
             sid = scene.get("scene_id",
-                            f"ch{scene.get('chapter', 0):02d}_s{scene.get('scene_number', 0):02d}")
+                            f"ch{int(scene.get('chapter', 0)):02d}_s{int(scene.get('scene_number', 0)):02d}")
             pov = scene.get("pov", "protagonist")
 
             if not content or len(content.strip()) < 200:
@@ -6493,26 +6799,39 @@ Write the complete scene:"""
 
             scene_tokens = 0
 
-            # Pass 1: Dedup tail regeneration
-            if "[DEDUP_TAIL_TRUNCATED]" in content:
-                content, tokens = await self._micro_regen_dedup_tail(
-                    client, content, scene, sid, pov)
-                scene_tokens += tokens
+            # Wrap all 4 micro-passes in a per-scene timeout guard (15 min).
+            # Belt-and-suspenders: individual generate() calls have 300s timeouts,
+            # but asyncio cancellation on Windows can be unreliable.
+            try:
+                async def _run_micro_passes():
+                    nonlocal content
+                    _tokens = 0
 
-            # Pass 2: Dialogue drought guard
-            content, tokens = await self._micro_dialogue_drought(
-                client, content, scene, sid, pov)
-            scene_tokens += tokens
+                    # Pass 1: Dedup tail regeneration
+                    if "[DEDUP_TAIL_TRUNCATED]" in content:
+                        content, t = await self._micro_regen_dedup_tail(
+                            client, content, scene, sid, pov)
+                        _tokens += t
 
-            # Pass 3: AI-tell scrub
-            content, tokens = await self._micro_ai_tell_scrub(
-                client, content, scene, sid, pov)
-            scene_tokens += tokens
+                    # Pass 2: Dialogue drought guard
+                    content, t = await self._micro_dialogue_drought(
+                        client, content, scene, sid, pov)
+                    _tokens += t
 
-            # Pass 4: Scene-turn repair
-            content, tokens = await self._micro_scene_turn_repair(
-                client, content, scene, sid, pov)
-            scene_tokens += tokens
+                    # Pass 3: AI-tell scrub
+                    content, t = await self._micro_ai_tell_scrub(
+                        client, content, scene, sid, pov)
+                    _tokens += t
+
+                    # Pass 4: Scene-turn repair
+                    content, t = await self._micro_scene_turn_repair(
+                        client, content, scene, sid, pov)
+                    _tokens += t
+                    return _tokens
+
+                scene_tokens = await asyncio.wait_for(_run_micro_passes(), timeout=900)
+            except Exception as e:
+                logger.warning(f"Micro-pass timeout/error for {sid}: {type(e).__name__}: {e}")
 
             # Safety: ensure no sentinel markers survive into stored content
             content = content.replace("[DEDUP_TAIL_TRUNCATED]", "").strip()
@@ -6564,7 +6883,7 @@ End on action or dialogue, not reflection."""
             response = await client.generate(
                 prompt, max_tokens=1500, temperature=0.6,
                 system_prompt=self._format_contract,
-                stop=self._stop_sequences)
+                stop=self._stop_sequences, timeout=300)
             tokens = response.input_tokens + response.output_tokens
 
             new_tail = self._postprocess(response.content, pov_character=pov)
@@ -6616,11 +6935,11 @@ at natural conversation points. Each exchange must advance the scene.
 Output ONLY the complete rewritten scene — no commentary."""
 
         try:
-            max_tokens = max(int(len(content.split()) * 2), 2000)
+            max_tokens = min(max(int(len(content.split()) * 2), 2000), 4096)
             response = await client.generate(
                 prompt, max_tokens=max_tokens, temperature=0.5,
                 system_prompt=self._format_contract,
-                stop=self._stop_sequences)
+                stop=self._stop_sequences, timeout=300)
             tokens = response.input_tokens + response.output_tokens
 
             new_content = self._postprocess(response.content, pov_character=pov)
@@ -6686,11 +7005,11 @@ Output the complete scene with tells replaced. Change ONLY the sentences
 that contain the listed phrases. Everything else stays EXACTLY as written."""
 
         try:
-            max_tokens = max(int(len(content.split()) * 1.5), 2000)
+            max_tokens = min(max(int(len(content.split()) * 1.5), 2000), 4096)
             response = await client.generate(
                 prompt, max_tokens=max_tokens, temperature=0.3,
                 system_prompt=self._format_contract,
-                stop=self._stop_sequences)
+                stop=self._stop_sequences, timeout=300)
             tokens = response.input_tokens + response.output_tokens
 
             new_content = self._postprocess(response.content, pov_character=pov)
@@ -6776,7 +7095,7 @@ Write exactly 2 paragraphs that replace the current ending. The new ending must:
             response = await client.generate(
                 prompt, max_tokens=800, temperature=0.5,
                 system_prompt=self._format_contract,
-                stop=self._stop_sequences)
+                stop=self._stop_sequences, timeout=300)
             tokens = response.input_tokens + response.output_tokens
 
             new_ending = self._postprocess(response.content, pov_character=pov)
@@ -6871,10 +7190,11 @@ POV: FIRST PERSON — {scene.get('pov', 'protagonist')}
 === EXPANDED SCENE ===
 Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
 
+            exp_max = self.get_max_tokens_for_stage("scene_expansion", 3000)
             expanded_content, exp_tokens = await self._generate_prose(
                 client, prompt, "scene_expansion",
                 scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
-                max_tokens=3000)
+                max_tokens=exp_max)
 
             # GUARD: Check if the LLM actually expanded (vs rewrote from scratch)
             # If the first 100 chars of the original aren't in the expanded version,
@@ -7539,6 +7859,10 @@ Respond in JSON format with "issues" array and "passed" boolean."""
             self.state._continuity_fixed_indices = []
             return {"fixes_applied": 0, "skipped": True}, 0
 
+        # Pre-serialize large objects once (avoid re-serializing per scene)
+        _world_bible_json = json.dumps(self.state.world_bible, indent=2) if self.state.world_bible else 'Not available'
+        _characters_json = json.dumps(self.state.characters, indent=2) if self.state.characters else 'Not available'
+
         fixed_scenes = list(self.state.scenes or [])
         total_tokens = 0
         fixes_applied = 0
@@ -7569,10 +7893,10 @@ ORIGINAL SCENE:
 {scene.get('content', '')}
 
 WORLD RULES (for reference):
-{json.dumps(self.state.world_bible, indent=2) if self.state.world_bible else 'Not available'}
+{_world_bible_json}
 
 CHARACTERS (for reference):
-{json.dumps(self.state.characters, indent=2) if self.state.characters else 'Not available'}
+{_characters_json}
 
 Rewrite the scene with the continuity issue fixed. Maintain the same tone, length, and style.
 Only change what's necessary to fix the issue.
@@ -8070,6 +8394,8 @@ Output the scene with ONLY the factual fix applied:"""
     async def _stage_dialogue_polish(self) -> tuple:
         """Polish dialogue for authenticity, subtext, and character voice."""
         client = self.get_client_for_stage("dialogue_polish")
+        # Pre-serialize large objects once (avoid re-serializing per scene)
+        _characters_json = json.dumps(self.state.characters, indent=2) if self.state.characters else 'Not available'
         polished_scenes = []
         total_tokens = 0
         config = self.state.config
@@ -8094,7 +8420,7 @@ Output the scene with ONLY the factual fix applied:"""
 - Never end a paragraph by summarizing its emotional meaning.
 
 === CHARACTER PROFILES ===
-{json.dumps(self.state.characters, indent=2) if self.state.characters else 'Not available'}
+{_characters_json}
 
 {f"=== DIALOGUE BANK (Use these patterns/phrases) ===" + chr(10) + dialogue_bank if dialogue_bank else ""}
 
@@ -8970,7 +9296,8 @@ OUTPUT the text with only problematic sentences fixed:"""
             if not prior_bigrams or not scene_bigrams:
                 continue
             overlap = len(scene_bigrams & prior_bigrams) / len(scene_bigrams)
-            if overlap > 0.40:  # >40% content-word bigram reuse = stale
+            freshness_thresh = self._get_threshold("freshness_bigram_pct")
+            if overlap > freshness_thresh:  # content-word bigram reuse = stale
                 stale_scenes.append({
                     "scene_index": i,
                     "chapter": scene.get("chapter", "?"),
@@ -8984,7 +9311,7 @@ OUTPUT the text with only problematic sentences fixed:"""
                 audit_results["issues"].append({
                     "type": "freshness",
                     "severity": "medium",
-                    "message": f"{len(stale_scenes)} scenes have >40% bigram overlap with recent scenes (language recycling)"
+                    "message": f"{len(stale_scenes)} scenes have >{freshness_thresh:.0%} bigram overlap with recent scenes (language recycling)"
                 })
                 # Stale language flagged — will trigger voice_human_pass
                 # in the stages_to_rerun logic below
@@ -9395,6 +9722,7 @@ Respond with JSON:
             "config_keys": sorted(config.keys()),
             "stages_completed": list(self.state.completed_stages),
             "validation": validation_report,
+            "outline_json": self.state.outline_json_report if self.state.outline_json_report else {},
             "cost": {
                 "total_tokens": self.state.total_tokens,
                 "total_cost_usd": self.state.total_cost_usd,
@@ -9423,8 +9751,8 @@ Respond with JSON:
                 avg_repair_delta = sum(repair_deltas) / len(repair_deltas)
 
             run_report["quality_dashboard"] = {
-                "pct_scenes_flagged_semantic_dedup": round(flagged_dedup / total_sc * 100, 1),
-                "pct_scenes_repaired_structure_gate": round(flagged_gate / total_sc * 100, 1),
+                "pct_scenes_flagged_semantic_dedup": round(flagged_dedup / total_sc * 100, 1) if total_sc else 0,
+                "pct_scenes_repaired_structure_gate": round(flagged_gate / total_sc * 100, 1) if total_sc else 0,
                 "avg_score_delta_per_repair": round(avg_repair_delta, 2),
                 "total_scenes": total_sc,
             }
