@@ -1,19 +1,16 @@
 """
-Pipeline Orchestrator - 12-Stage Novel Generation Pipeline
+Pipeline Orchestrator - Novel Generation Pipeline
 
-Orchestrates the complete novel generation process through 12 stages:
-1. High Concept - Generate core theme and hook
-2. World Building - Establish setting and rules
-3. Beat Sheet - Create 3-act structure
-4. Character Profiles - Develop character psychology
-5. Master Outline - Plan scene-by-scene
-6. Scene Drafting - Generate scene content
-7. Self Refinement - Iterative quality improvement
-8. Continuity Audit - Check consistency
-9. Human Passes - Prose enhancement
-10. Voice Humanization - Apply voice signature
-11. Motif Infusion - Weave thematic elements
-12. Output Validation - Final quality checks
+Orchestrates the complete novel generation process through 24 stages across
+planning, drafting, refinement, polish, and validation phases:
+
+Planning: high_concept, world_building, beat_sheet, emotional_architecture,
+  character_profiles, motif_embedding, master_outline, trope_integration
+Drafting: scene_drafting, scene_expansion, structure_gate, continuity_audit,
+  continuity_fix, continuity_recheck, self_refinement
+Refinement: voice_human_pass, continuity_audit_2, continuity_fix_2
+Polish: dialogue_polish, prose_polish, chapter_hooks
+Validation: final_deai, quality_audit, output_validation
 """
 
 import asyncio
@@ -1107,6 +1104,8 @@ def _mask_quoted_dialogue(text: str):
     masked = re.sub(r'"[^"]*"', _replacer, masked)
     # Italic thoughts: *thought text* (single asterisks, not bold **)
     masked = re.sub(r'(?<!\*)\*(?!\*)[^*\n]{3,80}\*(?!\*)', _replacer, masked)
+    # Italic thoughts: _thought text_ (underscore style, not __bold__)
+    masked = re.sub(r'(?<!_)_(?!_)[^_\n]{3,80}_(?!_)', _replacer, masked)
     # Block quotes: lines starting with >
     masked = re.sub(r'^>[^\n]+', _replacer, masked, flags=re.MULTILINE)
     # Bracketed message blocks: [Text message:] ... or [Letter:]
@@ -1947,8 +1946,17 @@ def _detect_semantic_duplicates(text: str, threshold: float = 0.75) -> str:
             break
 
     if truncate_at is not None and truncate_at > 0:
+        # Keep the non-duplicate portion and append a sentinel marker.
+        # The async _post_draft_micro_passes will detect this marker and
+        # regenerate the tail with a "new beat" constraint instead of
+        # silently amputating the scene.
         kept = paragraphs[:truncate_at]
-        return '\n\n'.join(kept)
+        logger.info(
+            f"Semantic dedup: kept {len(kept)}/{len(paragraphs)} paragraphs. "
+            f"Duplicate tail ({len(paragraphs) - truncate_at} paras) removed. "
+            f"Scene flagged for tail regeneration."
+        )
+        return '\n\n'.join(kept) + "\n\n[DEDUP_TAIL_TRUNCATED]"
 
     return text
 
@@ -2093,7 +2101,67 @@ def _postprocess_scene(text: str, protagonist_name: str = "",
     text = _limit_tic_frequency(text)
     if setting_language:
         text = _flag_language_inconsistencies(text, setting_language, foreign_whitelist)
+    # Final sanity: detect catastrophic pronoun corruption after all transforms
+    drift = _detect_pov_drift(text, protagonist_name, protagonist_gender)
+    if drift:
+        logger.warning(f"POV drift detected after postprocess: {drift}")
     return text
+
+
+def _detect_pov_drift(text: str, pov_name: str, pov_gender: str) -> str:
+    """Detect catastrophic POV pronoun corruption after postprocessing.
+
+    Checks for patterns that indicate the wrong pronoun conversion was applied:
+    - First-person "I" mixed with same-gender third-person as self-reference
+    - Corruption sentinels: "I said," she/he (first-person + wrong speaker tag)
+
+    Returns a warning string if drift detected, empty string if clean.
+    """
+    if not text or not pov_gender:
+        return ""
+
+    # Strip dialogue to only check narrative voice
+    narrative = re.sub(r'"[^"]*"', '', text)
+    narrative = re.sub(r'[\u201c][^\u201d]*[\u201d]', '', narrative)
+
+    i_count = len(re.findall(r'\bI\b', narrative))
+    if i_count < 3:
+        return ""  # Not enough first-person to judge
+
+    # Count third-person pronouns that match the POV character's gender
+    # These are suspicious — they might be the narrator referring to themselves
+    if pov_gender == "male":
+        # Male POV: "He walked" should have been converted to "I walked"
+        same_gender_3p = len(re.findall(r'\bHe\s+(?:walked|thought|felt|looked|turned|knew|noticed|realized)\b', narrative))
+    elif pov_gender == "female":
+        same_gender_3p = len(re.findall(r'\bShe\s+(?:walked|thought|felt|looked|turned|knew|noticed|realized)\b', narrative))
+    else:
+        return ""
+
+    # Corruption sentinel: "I said/whispered," + wrong speaker tag
+    # e.g., male POV: "I said," he whispered — means "he" is referring to
+    # the narrator, which shouldn't happen in first person
+    if pov_gender == "male":
+        corruption_patterns = len(re.findall(
+            r'\bI\s+(?:said|whispered|murmured|asked)\b[^.]*\bhe\b',
+            narrative, re.IGNORECASE
+        ))
+    else:
+        corruption_patterns = len(re.findall(
+            r'\bI\s+(?:said|whispered|murmured|asked)\b[^.]*\bshe\b',
+            narrative, re.IGNORECASE
+        ))
+
+    issues = []
+    # If same-gender 3rd person > I-verb count, something went wrong
+    if same_gender_3p > i_count * 0.3 and same_gender_3p >= 3:
+        issues.append(
+            f"high same-gender 3rd person ({same_gender_3p} vs {i_count} I-refs)"
+        )
+    if corruption_patterns >= 2:
+        issues.append(f"corruption sentinels ({corruption_patterns} 'I said...he/she' patterns)")
+
+    return "; ".join(issues)
 
 
 def _repair_json_string(json_str: str) -> str:
@@ -4379,12 +4447,26 @@ The AI tends to collapse similar scenes into the same output. To prevent this, E
 
 Respond with a JSON object containing a "chapters" array of {batch_end - batch_start + 1} chapter objects. Each chapter MUST have "chapter", "chapter_title", and "scenes" keys."""
 
-            response = await client.generate(prompt, max_tokens=4096, json_mode=True)
-            try:
-                batch = extract_json_robust(response.content, expect_array=True)
-            except Exception as e:
-                logger.error(f"JSON extraction failed for batch {batch_start}-{batch_end}: {e}")
-                batch = []
+            # Retry loop: if JSON parse fails, retry with lower temp + shorter prompt
+            MAX_OUTLINE_RETRIES = 2
+            batch = []
+            for retry_idx in range(MAX_OUTLINE_RETRIES + 1):
+                retry_temp = 0.4 if retry_idx > 0 else None  # Lower temp on retry
+                retry_max = 3072 if retry_idx > 0 else 4096  # Shorter on retry
+                response = await client.generate(prompt, max_tokens=retry_max,
+                                                  json_mode=True, temperature=retry_temp)
+                try:
+                    batch = extract_json_robust(response.content, expect_array=True)
+                    if batch:
+                        break  # Got valid JSON
+                except Exception as e:
+                    if retry_idx < MAX_OUTLINE_RETRIES:
+                        logger.warning(f"Outline batch {batch_start}-{batch_end} parse failed "
+                                       f"(attempt {retry_idx + 1}/{MAX_OUTLINE_RETRIES + 1}): {e}. Retrying...")
+                    else:
+                        logger.error(f"JSON extraction failed for batch {batch_start}-{batch_end} "
+                                     f"after {MAX_OUTLINE_RETRIES + 1} attempts: {e}")
+                        batch = []
 
             # Handle json_mode wrapping: model may wrap array in an object
             if isinstance(batch, dict):
@@ -4480,6 +4562,43 @@ Respond with a JSON object containing a "chapters" array of {batch_end - batch_s
             all_chapters.extend(validated_batch)
             total_tokens += response.input_tokens + response.output_tokens
             logger.info(f"Outlined chapters {batch_start}-{batch_end}: {len(all_chapters)} total chapters so far")
+
+        # Chapter completeness check: detect and backfill any missing chapters
+        produced_nums = {ch.get("chapter", 0) for ch in all_chapters if isinstance(ch, dict)}
+        expected_nums = set(range(1, self.state.target_chapters + 1))
+        missing = sorted(expected_nums - produced_nums)
+        if missing:
+            logger.warning(f"Missing chapters after outline generation: {missing}. "
+                           f"Attempting per-chapter backfill...")
+            for miss_ch in missing:
+                # Generate just the missing chapter individually
+                backfill_prompt = f"""{story_context}
+{strategic}
+
+Generate ONLY chapter {miss_ch} of {self.state.target_chapters}.
+Include {self.state.scenes_per_chapter} scenes per chapter.
+
+Respond with a JSON object: {{"chapters": [{{"chapter": {miss_ch}, "chapter_title": "...", "scenes": [...]}}]}}"""
+                try:
+                    bf_response = await client.generate(backfill_prompt, max_tokens=2048,
+                                                        json_mode=True, temperature=0.4)
+                    bf_batch = extract_json_robust(bf_response.content, expect_array=True)
+                    if isinstance(bf_batch, dict):
+                        for key in ("chapters", "outline"):
+                            if key in bf_batch and isinstance(bf_batch[key], list):
+                                bf_batch = bf_batch[key]
+                                break
+                    if isinstance(bf_batch, list):
+                        for bf_ch in bf_batch:
+                            if isinstance(bf_ch, dict) and "scenes" in bf_ch:
+                                bf_ch["chapter"] = miss_ch
+                                all_chapters.append(bf_ch)
+                                logger.info(f"Backfilled chapter {miss_ch}")
+                                total_tokens += bf_response.input_tokens + bf_response.output_tokens
+                except Exception as e:
+                    logger.error(f"Failed to backfill chapter {miss_ch}: {e}")
+            # Re-sort by chapter number
+            all_chapters.sort(key=lambda ch: ch.get("chapter", 0) if isinstance(ch, dict) else 0)
 
         # Stamp stable scene IDs: "ch02_s01" etc. so downstream stages
         # can reference scenes deterministically regardless of model output order.
@@ -4824,23 +4943,40 @@ Return JSON with:
             return self.state.config.get("defense", {}).get("foreign_word_whitelist", [])
         return []
 
+    @staticmethod
+    def _normalize_character_name(name: str) -> str:
+        """Normalize a character name for matching: lowercase, strip parens/titles/punctuation."""
+        if not name:
+            return ""
+        # Strip parentheticals like "(Alpha)" or "(30, the Alpha...)"
+        cleaned = re.sub(r'\([^)]*\)', '', name)
+        # Strip common titles/prefixes
+        cleaned = re.sub(r'\b(alpha|beta|dr|mr|mrs|ms|the)\b', '', cleaned, flags=re.IGNORECASE)
+        # Strip punctuation, collapse whitespace
+        cleaned = re.sub(r'[^\w\s]', '', cleaned)
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip().lower()
+        return cleaned.split()[0] if cleaned else ""
+
     def _get_character_gender(self, character_name: str) -> str:
         """Detect gender for any character by name, searching config fields.
 
         Checks protagonist and other_characters descriptions for gender signals.
+        Name matching is normalized (lowercase, stripped of titles/parens).
         Returns 'male', 'female', or '' (unknown).
         """
         if not character_name or not self.state or not self.state.config:
             return ""
 
         config = self.state.config
-        char_lower = character_name.lower().split()[0]  # First name only
+        char_normalized = self._normalize_character_name(character_name)
+        if not char_normalized:
+            return ""
 
         # Check if this is the protagonist
         protagonist = config.get("protagonist", "")
         if protagonist:
-            protag_first = protagonist.split(",")[0].split(".")[0].strip().split()[0].lower()
-            if protag_first == char_lower:
+            protag_normalized = self._normalize_character_name(protagonist)
+            if protag_normalized == char_normalized:
                 return self._get_protagonist_gender()
 
         # Search other_characters for this character's description
@@ -4849,24 +4985,24 @@ Return JSON with:
             return ""
 
         # Extract the description block for this character
-        # Pattern: "Name (description)" or "Name — description."
-        char_desc = ""
-        import re as _re
         # Primary: match "CharName ... (description)" — parens contain the character bio
-        paren_pattern = _re.compile(
-            rf'\b{_re.escape(character_name.split()[0])}\b[^(]*\([^)]*\)',
-            _re.IGNORECASE
+        char_first = character_name.strip().split()[0]
+        paren_pattern = re.compile(
+            rf'\b{re.escape(char_first)}\b[^(]*\([^)]*\)',
+            re.IGNORECASE
         )
         match = paren_pattern.search(other_chars)
         if not match:
             # Fallback: match "CharName ... next sentence."
-            fallback = _re.compile(
-                rf'\b{_re.escape(character_name.split()[0])}\b[^.]*\.',
-                _re.IGNORECASE
+            fallback = re.compile(
+                rf'\b{re.escape(char_first)}\b[^.]*\.',
+                re.IGNORECASE
             )
             match = fallback.search(other_chars)
         if match:
             char_desc = match.group(0).lower()
+        else:
+            char_desc = ""
 
         if not char_desc:
             return ""
@@ -4886,11 +5022,35 @@ Return JSON with:
             return "female"
         return ""
 
-    def _get_pov_info(self, pov_character: str = "") -> tuple:
+    @staticmethod
+    def _infer_gender_from_pronouns(text: str) -> str:
+        """Fallback gender inference from pronoun frequency in raw text.
+
+        Used when config-based gender detection returns unknown.
+        Counts he/his/him vs she/her outside dialogue, requires 2x dominance.
+        Returns 'male', 'female', or '' (unknown).
+        """
+        if not text:
+            return ""
+        # Strip dialogue to avoid counting character speech
+        stripped = re.sub(r'"[^"]*"', '', text)
+        stripped = re.sub(r'[\u201c][^\u201d]*[\u201d]', '', stripped)
+
+        he_count = len(re.findall(r'\b(?:he|his|him)\b', stripped, re.IGNORECASE))
+        she_count = len(re.findall(r'\b(?:she|her|hers)\b', stripped, re.IGNORECASE))
+
+        if he_count >= 2 * she_count and he_count >= 3:
+            return "male"
+        if she_count >= 2 * he_count and she_count >= 3:
+            return "female"
+        return ""
+
+    def _get_pov_info(self, pov_character: str = "", scene_text: str = "") -> tuple:
         """Get (name, gender) for the current POV character.
 
         If pov_character is provided and differs from the global protagonist,
         looks up that character's info. Otherwise returns global protagonist info.
+        Falls back to pronoun frequency in scene_text if config lookup fails.
         Returns (pov_name: str, pov_gender: str).
         """
         protag_name = self._get_protagonist_name()
@@ -4898,13 +5058,25 @@ Return JSON with:
         if not pov_character or not pov_character.strip():
             return protag_name, self._get_protagonist_gender()
 
-        # Check if POV character IS the protagonist (compare first names)
-        pov_first = pov_character.strip().split()[0]
-        if pov_first.lower() == protag_name.lower():
+        # Normalize for comparison
+        pov_normalized = self._normalize_character_name(pov_character)
+        protag_normalized = self._normalize_character_name(protag_name)
+
+        if pov_normalized == protag_normalized:
             return protag_name, self._get_protagonist_gender()
 
         # POV is a non-protagonist character — use their name and detect their gender
+        pov_first = pov_character.strip().split()[0]
         pov_gender = self._get_character_gender(pov_character)
+
+        # Fallback: if config-based detection failed, try pronoun counting in scene text
+        if not pov_gender and scene_text:
+            pov_gender = self._infer_gender_from_pronouns(scene_text)
+            if pov_gender:
+                logger.debug(
+                    f"Gender for {pov_first} inferred from pronouns: {pov_gender}"
+                )
+
         return pov_first, pov_gender
 
     def _postprocess(self, text: str, pov_character: str = "") -> str:
@@ -4914,7 +5086,8 @@ Return JSON with:
         For dual-POV projects, pass pov_character to use the correct name/gender
         instead of the global protagonist.
         """
-        pov_name, pov_gender = self._get_pov_info(pov_character)
+        # Pass raw text for pronoun-based fallback gender inference
+        pov_name, pov_gender = self._get_pov_info(pov_character, scene_text=text)
         return _postprocess_scene(
             text,
             pov_name,
@@ -6153,8 +6326,349 @@ Write the complete scene:"""
                 # Log progress
                 logger.info(f"Drafted Chapter {chapter_num}, Scene {scene_num} ({len(scenes)} total)")
 
+        # Post-draft micro-passes: dialogue drought, AI-tell scrub, scene-turn repair,
+        # and dedup tail regeneration. These run on every scene after initial drafting.
+        scenes, micro_tokens = await self._post_draft_micro_passes(scenes)
+        total_tokens += micro_tokens
+
         self.state.scenes = scenes
         return scenes, total_tokens
+
+    # ========================================================================
+    # Post-Draft Micro-Passes
+    # ========================================================================
+
+    async def _post_draft_micro_passes(self, scenes: list) -> tuple:
+        """Run quality micro-passes on drafted scenes.
+
+        Returns (updated_scenes, tokens_used).
+        Passes run in order:
+          1. Semantic dedup tail regeneration (scenes truncated by dedup)
+          2. Dialogue drought guard (min 3 dialogue lines)
+          3. AI-tell scrub (remove AI-tell phrases)
+          4. Scene-turn repair (ensure scene ends with a turn)
+        """
+        client = self.get_client_for_stage("scene_drafting")
+        if not client:
+            return scenes, 0
+
+        total_tokens = 0
+        updated = []
+
+        for scene in scenes:
+            content = scene.get("content", "")
+            sid = scene.get("scene_id",
+                            f"ch{scene.get('chapter', 0):02d}_s{scene.get('scene_number', 0):02d}")
+            pov = scene.get("pov", "protagonist")
+
+            if not content or len(content.strip()) < 200:
+                updated.append(scene)
+                continue
+
+            scene_tokens = 0
+
+            # Pass 1: Dedup tail regeneration
+            if "[DEDUP_TAIL_TRUNCATED]" in content:
+                content, tokens = await self._micro_regen_dedup_tail(
+                    client, content, scene, sid, pov)
+                scene_tokens += tokens
+
+            # Pass 2: Dialogue drought guard
+            content, tokens = await self._micro_dialogue_drought(
+                client, content, scene, sid, pov)
+            scene_tokens += tokens
+
+            # Pass 3: AI-tell scrub
+            content, tokens = await self._micro_ai_tell_scrub(
+                client, content, scene, sid, pov)
+            scene_tokens += tokens
+
+            # Pass 4: Scene-turn repair
+            content, tokens = await self._micro_scene_turn_repair(
+                client, content, scene, sid, pov)
+            scene_tokens += tokens
+
+            scene["content"] = content
+            total_tokens += scene_tokens
+            updated.append(scene)
+
+        if total_tokens > 0:
+            logger.info(f"Post-draft micro-passes: {total_tokens} tokens across {len(updated)} scenes")
+
+        return updated, total_tokens
+
+    async def _micro_regen_dedup_tail(self, client, content: str, scene: dict,
+                                       sid: str, pov: str) -> tuple:
+        """Regenerate tail paragraphs that were truncated by semantic dedup.
+
+        Instead of accepting a truncated scene, generates new concluding
+        paragraphs with a 'new beat' constraint to avoid repeating the
+        content that triggered dedup.
+        """
+        content = content.replace("\n\n[DEDUP_TAIL_TRUNCATED]", "").strip()
+
+        paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
+        if len(paragraphs) < 2:
+            return content, 0
+
+        target_paras = max(3, len(paragraphs) // 3)
+
+        prompt = f"""Continue this scene with {target_paras} NEW paragraphs.
+The scene was building toward its climax but the ending was repetitive and has been removed.
+
+=== CRITICAL: NEW BEAT CONSTRAINT ===
+The continuation must introduce a NEW development — NOT restate what already happened.
+Options: a reveal, a reversal, a decision, an interruption, a physical action.
+Do NOT echo the emotional state or situation from the existing paragraphs.
+
+=== POV LOCK ===
+FIRST PERSON ("I") — {pov}'s POV. Maintain the exact same voice and style.
+
+=== EXISTING SCENE (continue from here) ===
+{content}
+
+=== NOW CONTINUE ===
+Write {target_paras} new paragraphs that advance the scene to its conclusion.
+Include a scene turn (something changes, someone decides, a truth emerges).
+End on action or dialogue, not reflection."""
+
+        try:
+            response = await client.generate(
+                prompt, max_tokens=1500, temperature=0.6,
+                system_prompt=self._format_contract,
+                stop=self._stop_sequences)
+            tokens = response.input_tokens + response.output_tokens
+
+            new_tail = self._postprocess(response.content, pov_character=pov)
+            if new_tail and len(new_tail.strip()) > 100:
+                content = content + "\n\n" + new_tail.strip()
+                logger.info(f"Dedup tail regen for {sid}: added {len(new_tail.split())} words")
+
+            return content, tokens
+        except Exception as e:
+            logger.warning(f"Dedup tail regen failed for {sid}: {e}")
+            return content, 0
+
+    async def _micro_dialogue_drought(self, client, content: str, scene: dict,
+                                       sid: str, pov: str) -> tuple:
+        """Inject dialogue if scene has fewer than MIN_DIALOGUE_LINES.
+
+        Dialogue must cause a turn — reveal, challenge, deflect, or surprise.
+        Keeps 90%+ of existing prose verbatim.
+        """
+        MIN_DIALOGUE_LINES = 3
+
+        dialogue_lines = len(re.findall(r'"[^"]{5,}"', content))
+        if dialogue_lines >= MIN_DIALOGUE_LINES:
+            return content, 0
+
+        logger.info(f"Dialogue drought in {sid}: {dialogue_lines} lines (min {MIN_DIALOGUE_LINES})")
+
+        needed = MIN_DIALOGUE_LINES - dialogue_lines + 2
+
+        prompt = f"""This scene has {dialogue_lines} dialogue lines but needs at least {MIN_DIALOGUE_LINES}.
+Rewrite the scene, keeping 90%+ of the existing prose VERBATIM, but weaving in natural dialogue.
+
+=== DIALOGUE INJECTION RULES ===
+1. Dialogue must CAUSE A TURN — it should reveal, challenge, deflect, or surprise.
+2. Each character sounds different (vocabulary, rhythm, register).
+3. Add physical beats between lines (what hands/eyes/body do).
+4. Subtext > text: what characters mean is not what they say.
+5. NO therapeutic-affirmation register. Real people fumble, dodge, interrupt.
+
+=== POV LOCK ===
+FIRST PERSON ("I") — {pov}'s POV.
+
+=== SCENE TO FIX ===
+{content}
+
+=== NOW REWRITE ===
+Keep the existing narrative structure. Insert {needed} dialogue exchanges
+at natural conversation points. Each exchange must advance the scene.
+Output ONLY the complete rewritten scene — no commentary."""
+
+        try:
+            max_tokens = max(int(len(content.split()) * 2), 2000)
+            response = await client.generate(
+                prompt, max_tokens=max_tokens, temperature=0.5,
+                system_prompt=self._format_contract,
+                stop=self._stop_sequences)
+            tokens = response.input_tokens + response.output_tokens
+
+            new_content = self._postprocess(response.content, pov_character=pov)
+
+            # Validate: new version must have more dialogue and not lose too many words
+            new_dialogue = len(re.findall(r'"[^"]{5,}"', new_content))
+            old_words = len(content.split())
+            new_words = len(new_content.split())
+
+            if (new_dialogue >= MIN_DIALOGUE_LINES and
+                    new_words >= old_words * 0.7 and
+                    new_content and len(new_content.strip()) > 200):
+                logger.info(f"Dialogue drought fixed in {sid}: "
+                           f"{dialogue_lines} -> {new_dialogue} lines")
+                return new_content, tokens
+            else:
+                logger.warning(f"Dialogue fix rejected for {sid}: "
+                             f"dialogue {new_dialogue}, words {new_words}/{old_words}")
+                return content, tokens
+        except Exception as e:
+            logger.warning(f"Dialogue drought fix failed for {sid}: {e}")
+            return content, 0
+
+    async def _micro_ai_tell_scrub(self, client, content: str, scene: dict,
+                                    sid: str, pov: str) -> tuple:
+        """Scrub AI-tell phrases from scene content.
+
+        Treats AI tells as lint errors: finds them, rewrites only the
+        offending sentences to show-not-tell, keeps everything else verbatim.
+        """
+        tell_results = count_ai_tells(content)
+
+        if tell_results["total_tells"] <= 1:
+            return content, 0
+
+        found_tells = list(tell_results["patterns_found"].keys())
+        logger.info(f"AI tells in {sid}: {tell_results['total_tells']} "
+                    f"({', '.join(found_tells[:5])})")
+
+        tell_list = '\n'.join(f'- "{t}"' for t in found_tells[:10])
+
+        prompt = f"""Remove these AI-tell phrases from the scene. For each one,
+rewrite the sentence to SHOW the emotion through action, body language, or sensory detail.
+
+=== PHRASES TO KILL ===
+{tell_list}
+
+=== REWRITE RULES ===
+1. Replace each tell with a concrete physical action or sensory detail.
+2. "I felt a sense of dread" -> describe the physical sensation (stomach, throat, hands).
+3. "I couldn't help but notice" -> just describe what the character notices.
+4. "Suddenly" -> delete it. Start the action directly.
+5. Keep EVERYTHING ELSE verbatim. Only change sentences containing these phrases.
+
+=== POV LOCK ===
+FIRST PERSON ("I") — {pov}'s POV.
+
+=== SCENE TO FIX ===
+{content}
+
+=== NOW REWRITE ===
+Output the complete scene with tells replaced. Change ONLY the sentences
+that contain the listed phrases. Everything else stays EXACTLY as written."""
+
+        try:
+            max_tokens = max(int(len(content.split()) * 1.5), 2000)
+            response = await client.generate(
+                prompt, max_tokens=max_tokens, temperature=0.3,
+                system_prompt=self._format_contract,
+                stop=self._stop_sequences)
+            tokens = response.input_tokens + response.output_tokens
+
+            new_content = self._postprocess(response.content, pov_character=pov)
+
+            # Validate: fewer tells, similar word count
+            new_tells = count_ai_tells(new_content)
+            old_words = len(content.split())
+            new_words = len(new_content.split())
+
+            if (new_tells["total_tells"] < tell_results["total_tells"] and
+                    new_words >= old_words * 0.8 and
+                    new_content and len(new_content.strip()) > 200):
+                logger.info(f"AI tells scrubbed in {sid}: "
+                           f"{tell_results['total_tells']} -> {new_tells['total_tells']}")
+                return new_content, tokens
+            else:
+                logger.warning(f"AI tell scrub rejected for {sid}: "
+                             f"tells {new_tells['total_tells']}, words {new_words}/{old_words}")
+                return content, tokens
+        except Exception as e:
+            logger.warning(f"AI tell scrub failed for {sid}: {e}")
+            return content, 0
+
+    async def _micro_scene_turn_repair(self, client, content: str, scene: dict,
+                                        sid: str, pov: str) -> tuple:
+        """Repair scenes that lack a scene turn in the final paragraphs.
+
+        Only rewrites the last 2 paragraphs — the rest stays untouched.
+        The new ending must contain a clear turn: decision, revelation,
+        action, or shift.
+        """
+        paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
+        if len(paragraphs) < 3:
+            return content, 0
+
+        # Check last 2 paragraphs for turn signals
+        last_two = '\n\n'.join(paragraphs[-2:]).lower()
+        turn_signals = [
+            "but", "then", "until", "except", "instead",
+            "realize", "understand", "knew", "changed", "shifted",
+            "door", "phone", "voice", "said", "asked", "told",
+            "decided", "chose", "turned", "stopped", "froze",
+            "no", "wait", "wrong", "different", "?",
+        ]
+        has_turn = sum(1 for sig in turn_signals if sig in last_two)
+
+        if has_turn >= 2:
+            return content, 0
+
+        logger.info(f"No scene turn in {sid}: repairing final paragraphs")
+
+        kept = '\n\n'.join(paragraphs[:-2])
+        old_ending = '\n\n'.join(paragraphs[-2:])
+
+        prompt = f"""The ending of this scene lacks a scene turn. Rewrite ONLY the final 2 paragraphs
+to include a clear turn — something that changes the situation or the character's understanding.
+
+=== WHAT IS A SCENE TURN? ===
+A moment where the scene's trajectory shifts:
+- A decision that can't be undone
+- New information that changes everything
+- An action that creates consequences
+- A question or statement that reframes the conflict
+The turn must be EARNED by what came before, not random.
+
+=== SCENE CONTEXT (keep this, do NOT rewrite) ===
+{kept}
+
+=== CURRENT ENDING (rewrite this) ===
+{old_ending}
+
+=== POV LOCK ===
+FIRST PERSON ("I") — {pov}'s POV.
+
+=== NOW REWRITE ===
+Write exactly 2 paragraphs that replace the current ending. The new ending must:
+1. Flow naturally from the context above
+2. Contain a clear turn (decision, revelation, action, or shift)
+3. End on action or dialogue, NOT reflection or summary
+4. Match the tone and voice of the rest of the scene"""
+
+        try:
+            response = await client.generate(
+                prompt, max_tokens=800, temperature=0.5,
+                system_prompt=self._format_contract,
+                stop=self._stop_sequences)
+            tokens = response.input_tokens + response.output_tokens
+
+            new_ending = self._postprocess(response.content, pov_character=pov)
+
+            if new_ending and len(new_ending.strip()) > 50:
+                new_ending_lower = new_ending.lower()
+                new_turn_count = sum(1 for sig in turn_signals if sig in new_ending_lower)
+
+                if new_turn_count >= 2:
+                    content = kept + "\n\n" + new_ending.strip()
+                    logger.info(f"Scene turn repaired in {sid}")
+                    return content, tokens
+                else:
+                    logger.warning(f"Turn repair for {sid} still lacks signals, keeping original")
+                    return content, tokens
+
+            return content, tokens
+        except Exception as e:
+            logger.warning(f"Scene turn repair failed for {sid}: {e}")
+            return content, 0
 
     async def _stage_scene_expansion(self) -> tuple:
         """Expand scenes that are below target word count.
@@ -8504,7 +9018,7 @@ OUTPUT the text with only problematic sentences fixed:"""
 
             # Re-run through postprocessor (which strips meta-text)
             # Use per-scene POV for dual-POV support
-            pov_name, pov_gender = self._get_pov_info(scene.get("pov", ""))
+            pov_name, pov_gender = self._get_pov_info(scene.get("pov", ""), scene_text=content)
             language = self._get_setting_language()
             cleaned = _postprocess_scene(content, pov_name, language, pov_gender)
 

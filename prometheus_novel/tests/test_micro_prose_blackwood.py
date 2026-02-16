@@ -80,6 +80,79 @@ def count_words(text):
     return len(text.split())
 
 
+def count_pronouns(text):
+    """Count pronoun groups in narrative text (dialogue stripped).
+
+    Returns dict with counts for each pronoun category.
+    """
+    # Strip dialogue to only count narrative voice
+    narrative = re.sub(r'"[^"]*"', '', text)
+    narrative = re.sub(r'[\u201c][^\u201d]*[\u201d]', '', narrative)
+
+    return {
+        "I/my/me": len(re.findall(r'\b(?:I|my|me)\b', narrative)),
+        "he/his/him": len(re.findall(r'\b(?:he|his|him)\b', narrative, re.IGNORECASE)),
+        "she/her": len(re.findall(r'\b(?:she|her|hers)\b', narrative, re.IGNORECASE)),
+    }
+
+
+def check_corruption_sentinels(content, pov_gender):
+    """Check for catastrophic pronoun corruption patterns.
+
+    Returns list of corruption issues found.
+    """
+    issues = []
+
+    # Strip dialogue
+    narrative = re.sub(r'"[^"]*"', '', content)
+
+    # Sentinel 1: "I said/whispered," + same-gender pronoun as speaker tag
+    # This indicates the postprocessor converted the wrong pronoun
+    if pov_gender == "male":
+        # Male POV: "I said," he → corruption (he = narrator in 1st person)
+        bad_tags = re.findall(
+            r'\bI\s+(?:said|whispered|murmured|asked)[^.]*?\bhe\b',
+            narrative, re.IGNORECASE
+        )
+        if bad_tags:
+            issues.append(f"Corruption: {len(bad_tags)}x 'I said...he' (self-reference in 3rd person)")
+    elif pov_gender == "female":
+        bad_tags = re.findall(
+            r'\bI\s+(?:said|whispered|murmured|asked)[^.]*?\bshe\b',
+            narrative, re.IGNORECASE
+        )
+        if bad_tags:
+            issues.append(f"Corruption: {len(bad_tags)}x 'I said...she' (self-reference in 3rd person)")
+
+    # Sentinel 2: "my hands on her hips" in male POV (possessive swap)
+    # or "my jaw clenched, his eyes" in female POV
+    if pov_gender == "male":
+        # Male POV narrator shouldn't have "She" + narrator body parts with "my"
+        # "She grabbed my hand" is fine (other char grabs narrator's hand)
+        # "my hands on her" is fine (narrator touching other)
+        # But "She looked at me with my eyes" is corruption
+        pass  # Too many false positives — skip for now
+
+    # Sentinel 3: name used where "I" should be
+    if pov_gender == "male":
+        # Check if Kaelen is used in third person as narrator
+        kaelen_3p = len(re.findall(
+            r'\bKaelen\s+(?:thought|felt|walked|looked|turned|moved|knew|noticed|realized)',
+            narrative, re.IGNORECASE
+        ))
+        if kaelen_3p > 0:
+            issues.append(f"Narrator Kaelen in 3rd person {kaelen_3p}x (should be 'I')")
+    elif pov_gender == "female":
+        elena_3p = len(re.findall(
+            r'\bElena\s+(?:thought|felt|walked|looked|turned|moved|knew|noticed|realized)',
+            narrative, re.IGNORECASE
+        ))
+        if elena_3p > 0:
+            issues.append(f"Narrator Elena in 3rd person {elena_3p}x (should be 'I')")
+
+    return issues
+
+
 def check_pov_correctness(content, chapter_num, scene_label):
     """Validate POV is correct for this chapter.
 
@@ -87,53 +160,58 @@ def check_pov_correctness(content, chapter_num, scene_label):
     - First person ("I") is dominant
     - No head-hopping (wrong character's internal thoughts)
     - Correct gender pronoun enforcement
+    - Corruption sentinels
+    - Before/after pronoun counts
     """
     expected = EXPECTED_POV.get(chapter_num, "unknown")
     issues = []
 
-    # Count first-person references
-    first_person = len(re.findall(r'\bI\b', content))
-    if first_person < 5:
-        issues.append(f"Low first-person count ({first_person})")
+    # Pronoun counts (narrative only, dialogue stripped)
+    pronouns = count_pronouns(content)
 
+    # First-person dominance check
+    i_count = pronouns["I/my/me"]
+    if i_count < 5:
+        issues.append(f"Low first-person count ({i_count})")
+
+    pov_gender = ""
     if expected == "Elena":
-        # Elena is female. Her POV should use "I" for self.
-        # Check that "Elena thought/felt/walked" etc. doesn't appear (should be "I")
-        elena_third = len(re.findall(r'\bElena\s+(thought|felt|walked|looked|turned|moved|knew|noticed|realized)', content, re.I))
-        if elena_third > 0:
-            issues.append(f"Elena referenced in third person {elena_third}x (should be 'I')")
-
-        # Check for wrong pronoun: "He walked" where Elena should be "I walked"
-        # (This would indicate the postprocessor used the wrong gender)
-        he_verb = len(re.findall(r'\bHe\s+(walked|thought|felt|looked|turned)', content))
-        # Some "He" is fine (referring to Kaelen), but Elena's internal thoughts shouldn't use He for self
-        # Heuristic: if He-verb > I-verb, something's wrong
+        pov_gender = "female"
+        # Elena is female. "She/her" in narrative should be lower than "I/my/me"
+        # Some "she/her" is fine (referring to other female characters)
+        # But "he/his" as self-reference = wrong conversion applied
+        he_count = pronouns["he/his/him"]
+        she_count = pronouns["she/her"]
         i_verb = len(re.findall(r'\bI\s+(walked|thought|felt|looked|turned)', content))
+        he_verb = len(re.findall(r'\bHe\s+(walked|thought|felt|looked|turned)', content))
         if he_verb > i_verb + 5:
             issues.append(f"Suspicious He-verb dominance ({he_verb} vs I-verb {i_verb})")
 
     elif expected == "Kaelen":
-        # Kaelen is male. His POV should use "I" for self.
-        kaelen_third = len(re.findall(r'\bKaelen\s+(thought|felt|walked|looked|turned|moved|knew|noticed|realized)', content, re.I))
-        if kaelen_third > 0:
-            issues.append(f"Kaelen referenced in third person {kaelen_third}x (should be 'I')")
-
-        # Check for wrong pronoun: "She walked" where Kaelen should be "I walked"
-        she_verb = len(re.findall(r'\bShe\s+(walked|thought|felt|looked|turned)', content))
+        pov_gender = "male"
+        # Kaelen is male. "He/his" in narrative should be lower than "I/my/me"
+        he_count = pronouns["he/his/him"]
+        she_count = pronouns["she/her"]
         i_verb = len(re.findall(r'\bI\s+(walked|thought|felt|looked|turned)', content))
+        she_verb = len(re.findall(r'\bShe\s+(walked|thought|felt|looked|turned)', content))
         if she_verb > i_verb + 5:
             issues.append(f"Suspicious She-verb dominance ({she_verb} vs I-verb {i_verb})")
 
         # Check for wolf voice (italics) — Kaelen chapters should have some
-        # Markdown italics: *text* or _text_
         italic_phrases = re.findall(r'\*([^*]+)\*|_([^_]+)_', content)
         wolf_voice_count = len(italic_phrases)
         if wolf_voice_count == 0:
             issues.append("No wolf voice (italic inner monologue) detected in Kaelen chapter")
 
+    # Run corruption sentinels
+    corruption = check_corruption_sentinels(content, pov_gender)
+    issues.extend(corruption)
+
     return {
         "expected_pov": expected,
-        "first_person_count": first_person,
+        "pov_gender": pov_gender,
+        "pronoun_counts": pronouns,
+        "corruption_sentinels": corruption,
         "issues": issues,
         "pass": len(issues) == 0,
     }
@@ -392,12 +470,25 @@ async def run_micro_prose_blackwood():
         # POV correctness (CRITICAL for dual-POV)
         pov_check = metrics.get("pov_check", {})
         expected_pov = pov_check.get("expected_pov", "?")
+        pov_gender = pov_check.get("pov_gender", "?")
         pov_ok = pov_check.get("pass", False)
-        fp_count = pov_check.get("first_person_count", 0)
+        pcounts = pov_check.get("pronoun_counts", {})
+        i_count = pcounts.get("I/my/me", 0)
+        he_count = pcounts.get("he/his/him", 0)
+        she_count = pcounts.get("she/her", 0)
         if pov_ok:
             pov_pass_count += 1
         print(f"  POV: {'PASS' if pov_ok else 'FAIL'} "
-              f"(expected={expected_pov}, I-count={fp_count})")
+              f"(expected={expected_pov}, gender={pov_gender})")
+        print(f"  Pronouns (narrative): I/my/me={i_count}  "
+              f"he/his/him={he_count}  she/her={she_count}")
+
+        # Corruption sentinels
+        corruptions = pov_check.get("corruption_sentinels", [])
+        if corruptions:
+            for c in corruptions:
+                print(f"    !! {c}")
+
         for issue in pov_check.get("issues", []):
             print(f"    -> {issue}")
             all_issues.append(f"{label}: POV: {issue}")
@@ -460,6 +551,22 @@ async def run_micro_prose_blackwood():
     # Dual-POV verdict
     total_scenes = len(pipeline.state.scenes)
     print(f"\n  DUAL-POV: {pov_pass_count}/{total_scenes} scenes passed POV check")
+
+    # Per-scene pronoun summary table
+    print(f"\n  Pronoun summary (narrative only, dialogue stripped):")
+    print(f"  {'Scene':<12} {'POV':<8} {'Gender':<7} {'I/my/me':>7} {'he/his':>7} {'she/her':>7} {'Result':<6}")
+    print(f"  {'-'*60}")
+    for i, m in enumerate(all_metrics):
+        pc = m.get("pov_check", {})
+        pcnts = pc.get("pronoun_counts", {})
+        sc = pipeline.state.scenes[i] if i < len(pipeline.state.scenes) else {}
+        lbl = f"Ch{sc.get('chapter', '?')}-S{sc.get('scene_number', '?')}"
+        print(f"  {lbl:<12} {pc.get('expected_pov', '?'):<8} "
+              f"{pc.get('pov_gender', '?'):<7} "
+              f"{pcnts.get('I/my/me', 0):>7} "
+              f"{pcnts.get('he/his/him', 0):>7} "
+              f"{pcnts.get('she/her', 0):>7} "
+              f"{'PASS' if pc.get('pass') else 'FAIL':<6}")
 
     if all_metrics:
         avg_wc = sum(m.get("word_count", 0) for m in all_metrics) / len(all_metrics)
