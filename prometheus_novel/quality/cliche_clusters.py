@@ -11,9 +11,12 @@ rotating alternatives from the YAML config, preserving capitalization.
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import yaml
+
+if TYPE_CHECKING:
+    from quality.ceiling import CeilingTracker
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +137,7 @@ def repair_clusters(
     config_path: Optional[Path] = None,
     clusters_dict: Optional[Dict[str, Any]] = None,
     only_flagged: bool = True,
+    ceiling: Optional["CeilingTracker"] = None,
 ) -> Tuple[List[str], Dict[str, Any]]:
     """Repair cliche clusters by replacing excess occurrences with alternatives.
 
@@ -146,6 +150,7 @@ def repair_clusters(
         config_path: Path to cliche_clusters.yaml.
         clusters_dict: Pre-loaded cluster config (overrides config_path).
         only_flagged: If True, only repair clusters that exceed their threshold.
+        ceiling: Optional CeilingTracker for edit limits.
 
     Returns:
         Tuple of (modified_scenes, report_dict).
@@ -167,6 +172,11 @@ def repair_clusters(
     modified = list(scenes)
     report: Dict[str, Dict[str, Any]] = {}
 
+    # Register scenes with ceiling tracker
+    if ceiling:
+        for i, text in enumerate(modified):
+            ceiling.register_scene(i, len(text.split()))
+
     for cluster_name, cluster_def in clusters.items():
         if cluster_name not in flagged_names:
             continue
@@ -174,9 +184,8 @@ def repair_clusters(
         keep_first = cluster_def.get("keep_first", 2)
         compiled = _compile_patterns(cluster_def)
 
-        # Track occurrences per-pattern across the full manuscript
-        pattern_occurrence: Dict[int, int] = {}  # pattern_index -> count
-        pattern_replacement_idx: Dict[int, int] = {}  # pattern_index -> next replacement index
+        pattern_occurrence: Dict[int, int] = {}
+        pattern_replacement_idx: Dict[int, int] = {}
         cluster_replaced = 0
         cluster_found = 0
 
@@ -195,24 +204,26 @@ def repair_clusters(
 
                 cluster_found += len(matches)
 
-                # Process in reverse to preserve offsets
                 for match in reversed(matches):
                     pattern_occurrence[pat_idx] += 1
-                    # Sum all pattern occurrences for this cluster to determine keep_first
                     total_cluster_occ = sum(pattern_occurrence.values())
 
                     if total_cluster_occ <= keep_first:
-                        continue  # Keep this one
+                        continue
 
                     if not replacements:
-                        continue  # No alternatives available
+                        continue
 
-                    # Get next replacement (rotating)
+                    # Check ceiling before editing
+                    if ceiling and not ceiling.can_edit(
+                        scene_idx, family=cluster_name
+                    ):
+                        continue
+
                     ridx = pattern_replacement_idx[pat_idx]
                     repl = replacements[ridx % len(replacements)]
                     pattern_replacement_idx[pat_idx] = ridx + 1
 
-                    # Preserve capitalization of first character
                     original = match.group()
                     if original[0].isupper():
                         repl = repl[0].upper() + repl[1:]
@@ -220,6 +231,9 @@ def repair_clusters(
                     text = text[: match.start()] + repl + text[match.end() :]
                     cluster_replaced += 1
                     any_changed = True
+
+                    if ceiling:
+                        ceiling.record_edit(scene_idx, family=cluster_name)
 
             if any_changed:
                 modified[scene_idx] = text

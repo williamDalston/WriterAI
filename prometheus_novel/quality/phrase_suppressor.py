@@ -7,7 +7,10 @@ alternatives.
 
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from quality.ceiling import CeilingTracker
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +96,7 @@ def suppress_phrases(
     scenes: List[str],
     phrase_configs: List[Dict[str, Any]],
     replacement_bank: Optional[Dict[str, List[str]]] = None,
+    ceiling: Optional["CeilingTracker"] = None,
 ) -> Tuple[List[str], Dict[str, Any]]:
     """Suppress repeated phrases across a manuscript.
 
@@ -102,6 +106,7 @@ def suppress_phrases(
             Optional 'replacements' list per phrase.
         replacement_bank: Global replacement bank (phrase -> alternatives).
             Merged with _DEFAULT_REPLACEMENTS.
+        ceiling: Optional CeilingTracker for edit limits.
 
     Returns:
         Tuple of (modified_scenes, report_dict).
@@ -113,17 +118,20 @@ def suppress_phrases(
     report: Dict[str, Dict[str, int]] = {}
     modified = list(scenes)
 
+    # Register scenes with ceiling tracker
+    if ceiling:
+        for i, text in enumerate(modified):
+            ceiling.register_scene(i, len(text.split()))
+
     for config in phrase_configs:
         phrase = config["phrase"]
         keep_first = config.get("keep_first", 2)
         replacements = config.get("replacements") or bank.get(phrase, [])
 
         if not replacements:
-            # No replacements available — skip (just report)
             logger.debug("No replacements for '%s', skipping suppression", phrase)
             continue
 
-        # Build case-insensitive pattern
         escaped = re.escape(phrase)
         pattern = re.compile(escaped, re.IGNORECASE)
 
@@ -138,23 +146,27 @@ def suppress_phrases(
                 continue
 
             new_text = text
-            # Process matches in reverse order to preserve offsets
             for match in reversed(matches):
                 occurrence += 1
                 if occurrence <= keep_first:
-                    continue  # Keep this one
+                    continue
 
-                # Get replacement (cycle through bank)
+                # Check ceiling before editing
+                if ceiling and not ceiling.can_edit(scene_idx, family=phrase):
+                    continue
+
                 repl = replacements[replacement_idx % len(replacements)]
                 replacement_idx += 1
 
-                # Preserve capitalization of first character
                 original = match.group()
                 if original[0].isupper():
                     repl = repl[0].upper() + repl[1:]
 
                 new_text = new_text[: match.start()] + repl + new_text[match.end() :]
                 replaced += 1
+
+                if ceiling:
+                    ceiling.record_edit(scene_idx, family=phrase)
 
             modified[scene_idx] = new_text
 

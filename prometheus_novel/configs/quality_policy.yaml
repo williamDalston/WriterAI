@@ -1,0 +1,109 @@
+# Quality polish policy — genre presets + ceiling rules.
+# Project-level overrides go in project config.yaml under `quality_policy:`.
+
+default_preset: romance
+
+presets:
+  romance:
+    ceiling:
+      max_edits_per_scene: 15
+      max_edits_per_1k_words: 8.0
+      max_per_family_per_chapter: 5
+      max_pct_sentences_changed: 20.0
+    phrase_suppression:
+      keep_first_default: 2
+      enabled: true
+    dialogue_trimming:
+      max_tag_words: 12
+      enabled: true
+    emotion_diversification:
+      keep_first: 2
+      density_threshold: 5.0
+      enabled: true
+    cliche_clusters:
+      only_flagged: true
+      enabled: true
+    enabled_passes:
+      - phrase_mining
+      - phrase_suppression
+      - dialogue_trimming
+      - emotion_diversification
+      - cliche_repair
+
+  thriller:
+    ceiling:
+      max_edits_per_scene: 10
+      max_edits_per_1k_words: 5.0
+      max_per_family_per_chapter: 4
+      max_pct_sentences_changed: 15.0
+    phrase_suppression:
+      keep_first_default: 3
+      enabled: true
+    dialogue_trimming:
+      max_tag_words: 10
+      enabled: true
+    emotion_diversification:
+      keep_first: 3
+      density_threshold: 8.0
+      enabled: true
+    cliche_clusters:
+      only_flagged: true
+      enabled: true
+    enabled_passes:
+      - phrase_mining
+      - phrase_suppression
+      - dialogue_trimming
+      - cliche_repair
+
+  literary:
+    ceiling:
+      max_edits_per_scene: 8
+      max_edits_per_1k_words: 4.0
+      max_per_family_per_chapter: 3
+      max_pct_sentences_changed: 12.0
+    phrase_suppression:
+      keep_first_default: 3
+      enabled: true
+    dialogue_trimming:
+      max_tag_words: 15
+      enabled: true
+    emotion_diversification:
+      keep_first: 3
+      density_threshold: 10.0
+      enabled: true
+    cliche_clusters:
+      # Literary: repair even below-threshold clusters
+      only_flagged: false
+      enabled: true
+    enabled_passes:
+      - phrase_mining
+      - phrase_suppression
+      - dialogue_trimming
+      - emotion_diversification
+      - cliche_repair
+
+  fantasy:
+    ceiling:
+      max_edits_per_scene: 12
+      max_edits_per_1k_words: 6.0
+      max_per_family_per_chapter: 5
+      max_pct_sentences_changed: 18.0
+    phrase_suppression:
+      keep_first_default: 2
+      enabled: true
+    dialogue_trimming:
+      max_tag_words: 14
+      enabled: true
+    emotion_diversification:
+      keep_first: 2
+      density_threshold: 6.0
+      enabled: true
+    cliche_clusters:
+      only_flagged: true
+      enabled: true
+    enabled_passes:
+      - phrase_mining
+      - phrase_suppression
+      - dialogue_trimming
+      - emotion_diversification
+      - cliche_repair

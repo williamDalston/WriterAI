@@ -30,7 +30,12 @@ from quality.phrase_miner import mine_hot_phrases, write_auto_yaml, load_phrase_
 from quality.phrase_suppressor import suppress_phrases
 from quality.dialogue_trimmer import process_scenes as trim_dialogue_scenes
 from quality.emotion_diversifier import process_scenes as diversify_emotion_scenes
-from quality.cliche_clusters import detect_clusters, repair_clusters
+from quality.cliche_clusters import detect_clusters, repair_clusters, load_cluster_config
+from quality.delta_report import compute_pass_delta, build_delta_report
+from quality.ceiling import CeilingRules, CeilingTracker
+from quality.policy import load_policy as _load_quality_policy_legacy, is_pass_enabled
+from policy import load_policy as load_central_policy, Policy
+from quality.loop_guard import check_replacement_loops
 
 logger = logging.getLogger(__name__)
 
@@ -884,7 +889,7 @@ def _flush_incidents(project_path):
     _incident_buffer = []
 
 
-def _clean_scene_content(text: str, scene_id: str = "") -> str:
+def _clean_scene_content(text: str, scene_id: str = "", policy: 'Policy | None' = None) -> str:
     """Strip meta-text, LLM preambles, editing artifacts, and analysis notes.
 
     Catches all known artifact categories:
@@ -3136,6 +3141,10 @@ class PipelineOrchestrator:
         self._stop_sequences = [
             self._prose_sentinel,
         ] + CREATIVE_STOP_SEQUENCES[1:]  # Keep backup sequences, replace primary
+
+        # Centralized policy: single source of truth for cleanup/validation/lexicon/quality/export
+        self.policy: Policy = load_central_policy(project_path=project_path)
+        logger.info("Policy loaded (version %s)", self.policy.policy_version)
 
         # Defense mode: observe (log only), protect (default), aggressive (stricter)
         self._defense_mode = "protect"
@@ -6669,6 +6678,42 @@ RULES:
 
         return "\n".join(lines)
 
+    def _get_chapter_openings_to_avoid(self, scenes: List[Dict], current_chapter: int) -> str:
+        """Collect first ~30 words of each of the last 3 chapters' first scenes.
+
+        Prevents LLMs from repeating syntactic patterns like "The [Noun] [Verb]..."
+        across chapter openings. Injected into scene drafting.
+        """
+        if not scenes or current_chapter <= 1:
+            return ""
+
+        # Build map: chapter -> first scene content in that chapter
+        chapter_first_scenes: Dict[int, str] = {}
+        for s in scenes:
+            if not isinstance(s, dict):
+                continue
+            ch = int(s.get("chapter", 0))
+            if ch <= 0:
+                continue
+            if ch not in chapter_first_scenes:
+                content = s.get("content", "")
+                opening = " ".join(content.split()[:30]) if content else ""
+                if opening:
+                    chapter_first_scenes[ch] = opening
+
+        # Get last 3 chapters before current
+        previous_chapters = sorted([c for c in chapter_first_scenes if c < current_chapter], reverse=True)[:3]
+        if not previous_chapters:
+            return ""
+
+        lines = ["=== CHAPTER OPENINGS TO AVOID ECHOING ===",
+                 "Do NOT open with similar syntax, sense, or entry point:"]
+        for ch in reversed(previous_chapters):  # Chronological order
+            lines.append(f'- Ch{ch}: "{chapter_first_scenes[ch]}..."')
+        lines.append("Use a DIFFERENT structure, sense, or action.")
+
+        return "\n".join(lines)
+
     async def _stage_scene_drafting(self) -> tuple:
         """Draft all scenes with rolling context, POV, and full config awareness."""
         scenes = []
@@ -6771,6 +6816,50 @@ RULES:
                 # Build voice modifier block (wolf voice, etc.) if applicable
                 voice_modifiers = self._build_voice_modifiers_block(pov_char, chapter_num)
 
+                # Tension → syntax constraints (P0: pacing gap)
+                if tension_level >= 8:
+                    tension_instruction = f"""
+=== TENSION (Level {tension_level}/10 — CRITICAL) ===
+- Use short, punchy sentences.
+- Focus strictly on immediate sensory details and physical action.
+- NO introspection or long internal monologues.
+- Characters react viscerally, not logically.
+"""
+                elif tension_level <= 3:
+                    tension_instruction = f"""
+=== TENSION (Level {tension_level}/10 — LOW) ===
+- Allow room for introspection and atmospheric description.
+- Sentence structure can be more complex and rhythmic.
+"""
+                else:
+                    tension_instruction = f"""
+=== TENSION (Level {tension_level}/10) ===
+Balance action with internal reaction. Maintain or escalate — do not deflate mid-scene.
+"""
+
+                # Chapter opening variety (P0): collect last 3 chapter openings to avoid repetition
+                chapter_openings_block = self._get_chapter_openings_to_avoid(scenes, chapter_num)
+
+                # Romance prose block (P1): genre-specific constraints
+                genre = (config.get("genre") or "").lower()
+                romance_block = ""
+                if genre in ("romance", "contemporary romance", "rom-com"):
+                    romance_block = """
+=== ROMANCE GENRE (strict) ===
+- NO instalove language: no "instant soulmate," "meant to be" in first meeting, instant certainty.
+- Slow burn: emotional resistance before surrender. Tension sustains across beats.
+- Romantic stakes in subtext, not stated.
+"""
+
+                # First-chapter hook (P1): Ch1 Sc1 must open with immediate engagement
+                first_chapter_hook = ""
+                if chapter_num == 1 and scene_num == 1:
+                    first_chapter_hook = """
+=== FIRST SCENE OF NOVEL ===
+Open with immediate engagement (action or dialogue). No slow atmospheric preamble.
+Hook in the first 100 words.
+"""
+
                 prompt = f"""Write Chapter {chapter_num}, Scene {scene_num}: "{scene_name}"
 POSITION: Scene {scene_position + 1} of {total_scenes_in_chapter} in this chapter.
 YOU ARE {pov_char.upper()}. You are writing AS {pov_char}, in first person. "I" = {pov_char}.
@@ -6800,6 +6889,9 @@ YOU ARE {pov_char.upper()}. You are writing AS {pov_char}, in first person. "I" 
 STYLE: {writing_style}
 TONE: {tone}
 INFLUENCES TO CHANNEL: {influences}
+{tension_instruction}
+{first_chapter_hook}
+{romance_block}
 
 === ABSOLUTE RESTRICTIONS (NEVER INCLUDE) ===
 {avoid_list}
@@ -6814,6 +6906,7 @@ INFLUENCES TO CHANNEL: {influences}
 - NEVER use two metaphors in the same paragraph
 - NEVER open with weather, atmosphere, or description—open with ACTION or DIALOGUE
 - NEVER loop: if you made a point, advance; do not restate it
+- NEVER dump backstory in a block. Weave or imply; reveal through conflict or dialogue.
 
 === SCENE DIFFERENTIATION (critical) ===
 When outline beats are similar, the AI repeats itself. THIS SCENE MUST BE DISTINCT:
@@ -6822,6 +6915,7 @@ When outline beats are similar, the AI repeats itself. THIS SCENE MUST BE DISTIN
 - Do NOT retell the same story beat. Advance the story. This is Scene {scene_position + 1} of {total_scenes_in_chapter} in this chapter—it must do something the previous scene did not
 {"This scene MUST open differently from the previous scene." if scenes else ""}
 {f"PREVIOUS SCENE OPENED WITH: {prev_opening}..." if prev_opening else ""}
+{chapter_openings_block}
 {"DO NOT repeat similar atmospheric descriptions, sensory details, or emotional" if scenes else ""}
 {"states from the previous opening. Use a DIFFERENT sense, action, or entry point." if scenes else ""}
 
@@ -7428,41 +7522,68 @@ that contain the listed phrases. Everything else stays EXACTLY as written."""
             logger.warning(f"AI tell scrub failed for {sid}: {e}")
             return content, 0
 
+    # Bow-tie markers: abstract emotional summary endings that kill narrative drive.
+    # "And she knew everything had changed" — syntactically correct, but bad craft.
+    _BOW_TIE_MARKERS = [
+        "knew that", "realized that", "felt like", "beginning of",
+        "only time would tell", "changed forever", "new chapter",
+        "weight of", "sense of", "uncertain future",
+        "nothing would ever be the same", "everything had changed",
+        "nothing would be the same", "would never be the same",
+        "in that moment", "she knew", "he knew", "i knew",
+    ]
+
     async def _micro_scene_turn_repair(self, client, content: str, scene: dict,
                                         sid: str, pov: str) -> tuple:
-        """Repair scenes that lack a scene turn in the final paragraphs.
+        """Repair scenes that lack a scene turn or end with philosophical bow-tie.
 
-        Only rewrites the last 2 paragraphs — the rest stays untouched.
-        The new ending must contain a clear turn: decision, revelation,
-        action, or shift.
+        Bow-tie: abstract emotional summary ("And she knew everything had changed").
+        Turn: concrete decision, revelation, action, or shift.
+        Only rewrites the last 2 paragraphs.
         """
         paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
         if len(paragraphs) < 3:
             return content, 0
 
-        # Check last 2 paragraphs for turn signals
+        last_para = paragraphs[-1].lower()
         last_two = '\n\n'.join(paragraphs[-2:]).lower()
+
+        # P0: Bow-tie check — if last paragraph has abstract summary markers, always repair
+        has_bow_tie = any(m in last_para for m in self._BOW_TIE_MARKERS)
+        if has_bow_tie:
+            logger.info(f"Bow-tie ending in {sid}: abstract emotional summary detected, repairing")
+
         turn_signals = [
             "but", "then", "until", "except", "instead",
-            "realize", "understand", "knew", "changed", "shifted",
+            "realize", "understand", "changed", "shifted",
             "door", "phone", "voice", "said", "asked", "told",
             "decided", "chose", "turned", "stopped", "froze",
             "no", "wait", "wrong", "different", "?",
-            # Challenge turns (confrontation / dare / ultimatum)
             "prove", "show me", "try me", "let's see", "make me",
             "dare", "confront", "face me", "choose", "swear",
         ]
-        has_turn = sum(1 for sig in turn_signals if sig in last_two)
-
-        if has_turn >= 2:
-            return content, 0
+        # Turn signal check (only if no bow-tie) — skip repair if clear turn present
+        if not has_bow_tie:
+            has_turn = sum(1 for sig in turn_signals if sig in last_two)
+            if has_turn >= 2:
+                return content, 0
 
         logger.info(f"No scene turn in {sid}: repairing final paragraphs")
 
         kept = '\n\n'.join(paragraphs[:-2])
         old_ending = '\n\n'.join(paragraphs[-2:])
 
-        prompt = f"""The ending of this scene lacks a scene turn. Rewrite ONLY the final 2 paragraphs
+        bow_tie_note = ""
+        if has_bow_tie:
+            bow_tie_note = """
+=== BOW-TIE DETECTED ===
+The current ending relies on abstract emotional summary (e.g. "she knew everything had changed").
+CUT IT. Replace with concrete action or dialogue the reader can see/hear.
+"""
+
+        prompt = f"""The ending of this scene lacks a scene turn or ends with a philosophical bow-tie.
+{bow_tie_note}
+Rewrite ONLY the final 2 paragraphs
 to include a clear turn — something that changes the situation or the character's understanding.
 
 === WHAT IS A SCENE TURN? ===
@@ -7501,8 +7622,11 @@ Write exactly 2 paragraphs that replace the current ending. The new ending must:
             if new_ending and len(new_ending.strip()) > 50:
                 new_ending_lower = new_ending.lower()
                 new_turn_count = sum(1 for sig in turn_signals if sig in new_ending_lower)
+                new_has_bow_tie = any(m in new_ending_lower for m in self._BOW_TIE_MARKERS)
 
-                if new_turn_count >= 2:
+                # Accept if: (a) has turn signals, or (b) was bow-tie repair and new ending has no bow-tie
+                accept = (new_turn_count >= 2) or (has_bow_tie and not new_has_bow_tie)
+                if accept:
                     content = kept + "\n\n" + new_ending.strip()
                     logger.info(f"Scene turn repaired in {sid}")
                     return content, tokens
@@ -7996,6 +8120,19 @@ Now output the revised scene."""
                 else:
                     scene_excerpt = content
 
+                # Opening variety: for chapter-opening scenes, check if this opening echoes previous chapters
+                opening_variety_note = ""
+                if scene_num == 1 and chapter > 1:
+                    openings_block = self._get_chapter_openings_to_avoid(
+                        self.state.scenes, chapter
+                    )
+                    if openings_block:
+                        opening_variety_note = f"""
+OPENING VARIETY CHECK (this is the first scene of Ch{chapter}):
+{openings_block}
+If this scene's opening echoes the syntax/structure of those openings, penalize "structure" and include in fail_reasons.
+"""
+
                 # Enhanced scoring prompt: requests fail_reasons, repair_directives, patch_targets
                 scoring_prompt = f"""Evaluate this scene's narrative structure.
 
@@ -8010,7 +8147,7 @@ Rubric (0-5 each, 5 is best):
 - emotional_beat: clear internal shift from one posture to another, shown through behavior change, matches intended arc
 - dialogue_realism: subtext present, evasion/deflection, distinct voices, not exposition dumps
 - scene_turn: ending changes stakes/knowledge/relationships, next action is forced, no summary endings
-
+{opening_variety_note}
 Target length: ~{target_words} words.
 
 SCENE META:
@@ -8950,6 +9087,7 @@ Output the scene with ONLY the factual fix applied:"""
    - Add micro-actions between dialogue lines
    - Characters don't float—they move, touch, look away
    - Body language should reinforce or contradict words
+   - Every dialogue exchange should include at least one grounding detail (setting, object, body) so it's not floating in a void
 
 6. TENSION IN CONVERSATION:
    - Create conflict or push-pull in exchanges
@@ -9625,118 +9763,223 @@ OUTPUT the text with only problematic sentences fixed:"""
 
         Runs after final_deai, before quality_meters. No LLM calls — all
         transformations are regex/config-driven. Modifies scenes in-place.
+
+        Features: policy-driven config, ceiling rules, delta reports, loop guard.
         """
         scenes_list = [s for s in (self.state.scenes or []) if isinstance(s, dict)]
         if not scenes_list:
             return {"skipped": "no scenes"}, 0
 
         texts = [s.get("content", "") for s in scenes_list]
+        original_texts = list(texts)  # Snapshot for delta report
         project_path = Path(self.state.config.get("_project_path", ""))
         configs_dir = Path(__file__).parent.parent / "configs"
         report = {}
+        pass_deltas = []
+
+        # --- Load quality policy ---
+        genre = self.state.config.get("genre", "romance")
+        project_overrides = self.state.config.get("quality_policy", {})
+        policy = load_policy(genre=genre, project_overrides=project_overrides)
+        report["policy"] = {"genre": genre, "preset_loaded": True}
+
+        # --- Initialize ceiling rules ---
+        ceiling_cfg = policy.get("ceiling", {})
+        ceiling_rules = CeilingRules.from_dict(ceiling_cfg)
+
+        # --- Loop guard: check replacement banks for feedback loops ---
+        try:
+            from quality.phrase_suppressor import _DEFAULT_REPLACEMENTS
+            from quality.emotion_diversifier import _REACTION_PHRASES
+            cliche_config = load_cluster_config(configs_dir / "cliche_clusters.yaml")
+
+            loop_report = check_replacement_loops(
+                cliche_config,
+                dict(_DEFAULT_REPLACEMENTS),
+                dict(_REACTION_PHRASES),
+            )
+            report["loop_guard"] = loop_report
+            if loop_report["collisions_found"] > 0:
+                logger.warning(
+                    "Loop guard: %d replacement collisions found and cleaned",
+                    loop_report["collisions_found"],
+                )
+        except Exception as e:
+            logger.warning(f"Loop guard check failed (non-blocking): {e}")
+            report["loop_guard"] = {"error": str(e)}
 
         # --- 1. Hot phrase mining ---
-        try:
-            miner_cfg = load_miner_config(configs_dir / "phrase_miner.yaml")
-            mine_result = mine_hot_phrases(
-                texts,
-                ignore_phrases=miner_cfg.get("ignore_phrases", []),
-                ignore_regex=miner_cfg.get("ignore_regex", []),
-            )
-            # Write auto YAML for this run
-            auto_yaml_path = project_path / "covergen" if project_path.exists() else configs_dir
-            auto_yaml_path = configs_dir / "hot_phrases.auto.yaml"
-            write_auto_yaml(mine_result, auto_yaml_path)
-            report["phrase_miner"] = {
-                "phrases_flagged": mine_result["stats"]["phrases_flagged"],
-                "top_5": [
-                    {"phrase": p["phrase"], "count": p["total_count"], "scenes": p["scene_count"]}
-                    for p in mine_result["phrases"][:5]
-                ],
-            }
-            logger.info(
-                "Phrase miner: %d phrases flagged",
-                mine_result["stats"]["phrases_flagged"],
-            )
-        except Exception as e:
-            logger.warning(f"Phrase mining failed (non-blocking): {e}")
+        if is_pass_enabled(policy, "phrase_mining"):
+            try:
+                miner_cfg = load_miner_config(configs_dir / "phrase_miner.yaml")
+                mine_result = mine_hot_phrases(
+                    texts,
+                    ignore_phrases=miner_cfg.get("ignore_phrases", []),
+                    ignore_regex=miner_cfg.get("ignore_regex", []),
+                )
+                auto_yaml_path = configs_dir / "hot_phrases.auto.yaml"
+                write_auto_yaml(mine_result, auto_yaml_path)
+                report["phrase_miner"] = {
+                    "phrases_flagged": mine_result["stats"]["phrases_flagged"],
+                    "top_5": [
+                        {"phrase": p["phrase"], "count": p["total_count"], "scenes": p["scene_count"]}
+                        for p in mine_result["phrases"][:5]
+                    ],
+                }
+                logger.info(
+                    "Phrase miner: %d phrases flagged",
+                    mine_result["stats"]["phrases_flagged"],
+                )
+            except Exception as e:
+                logger.warning(f"Phrase mining failed (non-blocking): {e}")
+                mine_result = {"phrases": []}
+                report["phrase_miner"] = {"error": str(e)}
+        else:
             mine_result = {"phrases": []}
-            report["phrase_miner"] = {"error": str(e)}
+            report["phrase_miner"] = {"skipped": "disabled by policy"}
 
         # --- 2. Phrase suppression ---
-        try:
-            phrase_configs = load_phrase_config(
-                auto_path=configs_dir / "hot_phrases.auto.yaml",
-                manual_path=configs_dir / "hot_phrases.yaml" if (configs_dir / "hot_phrases.yaml").exists() else None,
-            )
-            if phrase_configs:
-                texts, suppress_report = suppress_phrases(texts, phrase_configs)
-                report["phrase_suppression"] = suppress_report
-                logger.info(
-                    "Phrase suppression: %d total replacements",
-                    suppress_report["total_replacements"],
+        if is_pass_enabled(policy, "phrase_suppression"):
+            try:
+                phrase_configs = load_phrase_config(
+                    auto_path=configs_dir / "hot_phrases.auto.yaml",
+                    manual_path=configs_dir / "hot_phrases.yaml" if (configs_dir / "hot_phrases.yaml").exists() else None,
                 )
-        except Exception as e:
-            logger.warning(f"Phrase suppression failed (non-blocking): {e}")
-            report["phrase_suppression"] = {"error": str(e)}
+                if phrase_configs:
+                    before = list(texts)
+                    suppress_ceiling = CeilingTracker(ceiling_rules)
+                    texts, suppress_report = suppress_phrases(
+                        texts, phrase_configs, ceiling=suppress_ceiling,
+                    )
+                    suppress_report["ceiling"] = suppress_ceiling.report()
+                    report["phrase_suppression"] = suppress_report
+                    pass_deltas.append(compute_pass_delta(
+                        before, texts, "phrase_suppression", suppress_report,
+                    ))
+                    logger.info(
+                        "Phrase suppression: %d total replacements",
+                        suppress_report["total_replacements"],
+                    )
+            except Exception as e:
+                logger.warning(f"Phrase suppression failed (non-blocking): {e}")
+                report["phrase_suppression"] = {"error": str(e)}
+        else:
+            report["phrase_suppression"] = {"skipped": "disabled by policy"}
 
         # --- 3. Dialogue tag trimming ---
-        try:
-            texts, dialogue_report = trim_dialogue_scenes(texts)
-            report["dialogue_trimming"] = dialogue_report
-            logger.info(
-                "Dialogue trimming: %d tags trimmed across %d scenes",
-                dialogue_report["tags_trimmed"],
-                dialogue_report["scenes_modified"],
-            )
-        except Exception as e:
-            logger.warning(f"Dialogue trimming failed (non-blocking): {e}")
-            report["dialogue_trimming"] = {"error": str(e)}
+        if is_pass_enabled(policy, "dialogue_trimming"):
+            try:
+                before = list(texts)
+                max_tag_words = policy.get("dialogue_trimming", {}).get("max_tag_words", 12)
+                texts, dialogue_report = trim_dialogue_scenes(texts, max_tag_words=max_tag_words)
+                report["dialogue_trimming"] = dialogue_report
+                pass_deltas.append(compute_pass_delta(
+                    before, texts, "dialogue_trimming", dialogue_report,
+                ))
+                logger.info(
+                    "Dialogue trimming: %d tags trimmed across %d scenes",
+                    dialogue_report["tags_trimmed"],
+                    dialogue_report["scenes_modified"],
+                )
+            except Exception as e:
+                logger.warning(f"Dialogue trimming failed (non-blocking): {e}")
+                report["dialogue_trimming"] = {"error": str(e)}
+        else:
+            report["dialogue_trimming"] = {"skipped": "disabled by policy"}
 
         # --- 4. Emotion diversification ---
-        try:
-            texts, emotion_report = diversify_emotion_scenes(texts)
-            report["emotion_diversification"] = emotion_report
-            logger.info(
-                "Emotion diversification: %d replaced across %d scenes",
-                emotion_report["total_replaced"],
-                emotion_report["scenes_modified"],
-            )
-        except Exception as e:
-            logger.warning(f"Emotion diversification failed (non-blocking): {e}")
-            report["emotion_diversification"] = {"error": str(e)}
+        if is_pass_enabled(policy, "emotion_diversification"):
+            try:
+                before = list(texts)
+                emo_cfg = policy.get("emotion_diversification", {})
+                emotion_ceiling = CeilingTracker(ceiling_rules)
+                texts, emotion_report = diversify_emotion_scenes(
+                    texts,
+                    keep_first_per_phrase=emo_cfg.get("keep_first", 2),
+                    density_threshold=emo_cfg.get("density_threshold", 5.0),
+                    ceiling=emotion_ceiling,
+                )
+                emotion_report["ceiling"] = emotion_ceiling.report()
+                report["emotion_diversification"] = emotion_report
+                pass_deltas.append(compute_pass_delta(
+                    before, texts, "emotion_diversification", emotion_report,
+                ))
+                logger.info(
+                    "Emotion diversification: %d replaced across %d scenes",
+                    emotion_report["total_replaced"],
+                    emotion_report["scenes_modified"],
+                )
+            except Exception as e:
+                logger.warning(f"Emotion diversification failed (non-blocking): {e}")
+                report["emotion_diversification"] = {"error": str(e)}
+        else:
+            report["emotion_diversification"] = {"skipped": "disabled by policy"}
 
         # --- 5. Cliche cluster repair + detection ---
-        try:
-            # Repair first: replace excess cliche occurrences with alternatives
-            texts, cluster_repair_report = repair_clusters(texts, only_flagged=True)
-            report["cliche_cluster_repair"] = cluster_repair_report
-            if cluster_repair_report["total_replaced"] > 0:
-                logger.info(
-                    "Cliche cluster repair: %d replacements across %d clusters",
-                    cluster_repair_report["total_replaced"],
-                    cluster_repair_report["clusters_repaired"],
+        if is_pass_enabled(policy, "cliche_repair"):
+            try:
+                before = list(texts)
+                cliche_cfg = policy.get("cliche_clusters", {})
+                cliche_ceiling = CeilingTracker(ceiling_rules)
+                texts, cluster_repair_report = repair_clusters(
+                    texts,
+                    only_flagged=cliche_cfg.get("only_flagged", True),
+                    ceiling=cliche_ceiling,
                 )
+                cluster_repair_report["ceiling"] = cliche_ceiling.report()
+                report["cliche_cluster_repair"] = cluster_repair_report
+                pass_deltas.append(compute_pass_delta(
+                    before, texts, "cliche_cluster_repair", cluster_repair_report,
+                ))
+                if cluster_repair_report["total_replaced"] > 0:
+                    logger.info(
+                        "Cliche cluster repair: %d replacements across %d clusters",
+                        cluster_repair_report["total_replaced"],
+                        cluster_repair_report["clusters_repaired"],
+                    )
 
-            # Then detect what remains (for the report)
-            cluster_report = detect_clusters(texts)
-            report["cliche_clusters"] = {
-                "flagged": cluster_report["flagged_count"],
-                "total_checked": cluster_report["total_clusters"],
-                "details": {
-                    k: {"hits": v["total_hits"], "threshold": v["threshold"]}
-                    for k, v in cluster_report["clusters"].items()
-                    if v["flagged"]
-                },
-            }
-            if cluster_report["flagged_count"] > 0:
-                logger.warning(
-                    "Cliche clusters still flagged after repair: %s",
-                    ", ".join(cluster_report["flagged_names"]),
-                )
+                # Detect what remains (for the report)
+                cluster_report = detect_clusters(texts)
+                report["cliche_clusters"] = {
+                    "flagged": cluster_report["flagged_count"],
+                    "total_checked": cluster_report["total_clusters"],
+                    "details": {
+                        k: {"hits": v["total_hits"], "threshold": v["threshold"]}
+                        for k, v in cluster_report["clusters"].items()
+                        if v["flagged"]
+                    },
+                }
+                if cluster_report["flagged_count"] > 0:
+                    logger.warning(
+                        "Cliche clusters still flagged after repair: %s",
+                        ", ".join(cluster_report["flagged_names"]),
+                    )
+            except Exception as e:
+                logger.warning(f"Cliche cluster repair/detection failed (non-blocking): {e}")
+                report["cliche_clusters"] = {"error": str(e)}
+        else:
+            report["cliche_clusters"] = {"skipped": "disabled by policy"}
+
+        # --- Build quality delta report ---
+        unresolved = {}
+        if "cliche_clusters" in report and isinstance(report["cliche_clusters"], dict):
+            details = report["cliche_clusters"].get("details", {})
+            if details:
+                unresolved["cliche_clusters_still_flagged"] = details
+
+        delta_report = build_delta_report(pass_deltas, unresolved)
+        report["delta"] = delta_report
+
+        # Write quality_delta.json to project output dir
+        try:
+            output_dir = project_path / "output" if project_path.exists() else Path(".")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            delta_path = output_dir / "quality_delta.json"
+            with open(delta_path, "w", encoding="utf-8") as f:
+                json.dump(delta_report, f, indent=2, ensure_ascii=False)
+            logger.info("Quality delta report written to %s", delta_path)
         except Exception as e:
-            logger.warning(f"Cliche cluster repair/detection failed (non-blocking): {e}")
-            report["cliche_clusters"] = {"error": str(e)}
+            logger.warning(f"Failed to write quality_delta.json: {e}")
 
         # --- Write modified texts back to scenes ---
         modified_count = 0

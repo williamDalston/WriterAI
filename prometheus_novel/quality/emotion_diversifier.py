@@ -8,7 +8,10 @@ environment, cognition, posture).
 import logging
 import re
 from collections import Counter
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from quality.ceiling import CeilingTracker
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +202,8 @@ def diversify_scene(
     keep_first_per_phrase: int = _DEFAULT_KEEP_FIRST,
     global_counts: Optional[Counter] = None,
     global_keep: Optional[Dict[str, int]] = None,
+    ceiling: Optional["CeilingTracker"] = None,
+    scene_idx: int = 0,
 ) -> Tuple[str, Dict[str, Any]]:
     """Diversify emotional beats in a single scene.
 
@@ -242,6 +247,10 @@ def diversify_scene(
 
         replacements = occ["replacements"]
         if replacements:
+            # Check ceiling before editing
+            if ceiling and not ceiling.can_edit(scene_idx, family=occ["category"]):
+                continue
+
             # Cycle through replacements
             idx = replacement_idx.get(phrase, 0)
             repl = replacements[idx % len(replacements)]
@@ -254,6 +263,9 @@ def diversify_scene(
 
             text = text[: occ["start"]] + repl + text[occ["end"] :]
             replaced += 1
+
+            if ceiling:
+                ceiling.record_edit(scene_idx, family=occ["category"])
         elif density > density_threshold:
             # No replacements and over density — remove the sentence
             # (risky, so only do it for extreme density)
@@ -267,6 +279,7 @@ def process_scenes(
     phrase_bank: Optional[Dict[str, Dict[str, Any]]] = None,
     density_threshold: float = _DEFAULT_DENSITY_THRESHOLD,
     keep_first_per_phrase: int = _DEFAULT_KEEP_FIRST,
+    ceiling: Optional["CeilingTracker"] = None,
 ) -> Tuple[List[str], Dict[str, Any]]:
     """Run emotion diversification across all scenes.
 
@@ -277,16 +290,21 @@ def process_scenes(
     global_counts: Counter = Counter()
     global_keep: Dict[str, int] = Counter()
 
+    # Register scenes with ceiling tracker
+    if ceiling:
+        for i, text in enumerate(scenes):
+            ceiling.register_scene(i, len(text.split()))
+
     modified = []
     total_found = 0
     total_replaced = 0
     total_removed = 0
     scenes_modified = 0
 
-    for scene in scenes:
+    for i, scene in enumerate(scenes):
         result, report = diversify_scene(
             scene, bank, density_threshold, keep_first_per_phrase,
-            global_counts, global_keep,
+            global_counts, global_keep, ceiling=ceiling, scene_idx=i,
         )
         modified.append(result)
         total_found += report["found"]
