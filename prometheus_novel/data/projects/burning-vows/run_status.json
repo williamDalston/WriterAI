@@ -1,6 +1,6 @@
 {
-  "timestamp": "2026-02-16T21:25:13.853485",
-  "last_stage": "continuity_fix_2",
+  "timestamp": "2026-02-16T23:54:14.671784",
+  "last_stage": "quality_audit",
   "last_status": "completed",
   "completed_stages": [
     "high_concept",
@@ -20,16 +20,22 @@
     "self_refinement",
     "voice_human_pass",
     "continuity_audit_2",
-    "continuity_fix_2"
+    "continuity_fix_2",
+    "dialogue_polish",
+    "prose_polish",
+    "chapter_hooks",
+    "final_deai",
+    "quality_meters",
+    "quality_audit"
   ],
-  "total_stages": 18,
-  "total_tokens": 1545725,
-  "total_cost_usd": 15.4572,
+  "total_stages": 24,
+  "total_tokens": 2466646,
+  "total_cost_usd": 24.6665,
   "scene_count": 81,
   "incidents": 0,
   "budget": {
-    "defense_tokens": 6173,
-    "generation_tokens": 1177634,
+    "defense_tokens": 88437,
+    "generation_tokens": 2016291,
     "rewritten_scenes": 0
   }
 }

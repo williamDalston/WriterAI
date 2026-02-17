@@ -111,9 +111,12 @@ class RateLimitError(LLMError):
     pass
 
 
-class TimeoutError(LLMError):
+class LLMTimeoutError(LLMError):
     """Request timed out."""
     pass
+
+# Backward compat alias
+TimeoutError = LLMTimeoutError  # noqa: A001
 
 
 class AuthenticationError(LLMError):
@@ -287,9 +290,6 @@ class OpenAIClient(BaseLLMClient):
                 finish_reason="stop"
             )
 
-        # Apply rate limiting
-        await rate_limit_check("openai")
-
         # Retry loop with exponential backoff
         last_error = None
         delay = INITIAL_RETRY_DELAY
@@ -305,6 +305,8 @@ class OpenAIClient(BaseLLMClient):
 
         for attempt in range(MAX_RETRIES + 1):
             try:
+                # Rate limit check inside retry loop (re-check on each attempt)
+                await rate_limit_check("openai")
                 create_kwargs = {
                     "model": self.model_name,
                     "messages": messages,
@@ -394,7 +396,7 @@ class OpenAIClient(BaseLLMClient):
             )
 
             async for chunk in stream:
-                if chunk.choices[0].delta.content:
+                if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
 
         except Exception as e:
@@ -554,21 +556,38 @@ class GeminiClient(BaseLLMClient):
                 await asyncio.sleep(0.05)
             return
 
+        stop = kwargs.get("stop")
         try:
+            gen_config = {
+                "max_output_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            if stop:
+                gen_config["stop_sequences"] = stop
+
             response = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: self.model.generate_content(
                     full_prompt,
-                    generation_config={
-                        "max_output_tokens": max_tokens,
-                        "temperature": temperature
-                    },
+                    generation_config=gen_config,
                     stream=True
                 )
             )
 
+            collected = ""
             for chunk in response:
                 if chunk.text:
+                    collected += chunk.text
+                    # Post-stream stop sequence clamp
+                    if stop:
+                        for s in stop:
+                            idx = collected.find(s)
+                            if idx != -1:
+                                # Yield only the part before the stop sequence
+                                remaining = collected[len(collected) - len(chunk.text):idx] if idx >= len(collected) - len(chunk.text) else ""
+                                if remaining:
+                                    yield remaining
+                                return
                     yield chunk.text
 
         except Exception as e:
@@ -830,7 +849,7 @@ class AnthropicClient(BaseLLMClient):
                 error_str = str(e).lower()
                 last_error = e
 
-                if "401" in error_str or "invalid" in error_str and "key" in error_str:
+                if "401" in error_str or ("invalid" in error_str and "api" in error_str and "key" in error_str):
                     raise AuthenticationError(f"Anthropic authentication failed: {e}")
 
                 if "429" in error_str or "rate limit" in error_str:

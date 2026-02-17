@@ -319,7 +319,7 @@ def _extract_dialogue_by_character(
         # Find dialogue + attribution patterns
         # Pattern: "dialogue" followed by attribution
         for match in re.finditer(
-            r'"([^"]{10,})"[^"]*?(?:(\w+)\s+(?:said|whispered|murmured|replied|asked|snapped|muttered|called|yelled|answered|demanded|insisted|admitted|suggested|offered|growled|hissed|breathed))',
+            r'[\u201c"]([^\u201d"]{10,})[\u201d"][^\u201d"]*?(?:(\w+)\s+(?:said|whispered|murmured|replied|asked|snapped|muttered|called|yelled|answered|demanded|insisted|admitted|suggested|offered|growled|hissed|breathed))',
             content, re.IGNORECASE
         ):
             dialogue_text = match.group(1)
@@ -584,8 +584,8 @@ def voice_sub_metrics(
     Returns:
         {
             "catchphrase_flags": [(char, top3_ratio, top3_words), ...],
-            "rhythm_per_character": {char: {"avg_len": float, "variance": float}},
-            "rhythm_flags": [(char, variance), ...],
+            "rhythm_per_character": {char: {"avg_len": float, "std_dev": float}},
+            "rhythm_flags": [(char, std_dev), ...],
             "pass": bool,
         }
     """
@@ -624,13 +624,13 @@ def voice_sub_metrics(
 
         if sentence_lengths:
             avg_len = sum(sentence_lengths) / len(sentence_lengths)
-            variance = (sum((l - avg_len) ** 2 for l in sentence_lengths) / len(sentence_lengths)) ** 0.5
+            std_dev = (sum((l - avg_len) ** 2 for l in sentence_lengths) / len(sentence_lengths)) ** 0.5
             rhythm_data[char_name] = {
                 "avg_len": round(avg_len, 1),
-                "variance": round(variance, 1),
+                "std_dev": round(std_dev, 1),
             }
-            if variance < min_rhythm_variance:
-                rhythm_flags.append((char_name, round(variance, 1)))
+            if std_dev < min_rhythm_variance:
+                rhythm_flags.append((char_name, round(std_dev, 1)))
 
     passed = len(catchphrase_flags) == 0 and len(rhythm_flags) == 0
 
@@ -789,8 +789,9 @@ def print_meter_report(report: Dict) -> None:
     rhythm = vsub.get("rhythm_per_character", {})
     if rhythm:
         for char, data in sorted(rhythm.items()):
-            flag = " <<< MONOTONE" if data["variance"] < 3.0 else ""
-            print(f"      {char}: avg_len={data['avg_len']}, rhythm_var={data['variance']}{flag}")
+            std = data.get("std_dev", data.get("variance", 0))
+            flag = " <<< MONOTONE" if std < 3.0 else ""
+            print(f"      {char}: avg_len={data['avg_len']}, rhythm_std={std}{flag}")
     if vsub.get("rhythm_flags"):
         print(f"      Rhythm flags: {len(vsub['rhythm_flags'])} characters monotone")
     if vsub.get("note"):

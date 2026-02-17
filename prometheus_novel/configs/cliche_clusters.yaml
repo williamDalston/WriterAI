@@ -1,76 +1,328 @@
-# Cliche cluster detector — category-based, not phrase-based.
-# Catches formulaic patterns even when surface phrasing varies across models.
-# Each cluster is a semantic family of tropes.
+# Cliche cluster detector + repair — category-based, not phrase-based.
+# Each cluster defines regex patterns for DETECTION and replacement banks for REPAIR.
+# Replacements are rotated; keep_first controls how many to leave untouched.
 
 clusters:
   physiological_cardiac:
     label: "Heart racing/pounding"
+    keep_first: 2
     patterns:
-      - "\\bheart\\s+(?:races|raced|racing|pounds|pounded|pounding|thuds|thudded|thudding|hammers|hammered|hammering)\\b"
-      - "\\bpulse\\s+(?:quickens|quickened|races|raced|spikes|spiked)\\b"
-      - "\\bheart\\s+skips?\\s+a\\s+beat\\b"
+      - regex: "\\bheart\\s+(?:races|raced|racing)\\b"
+        replacements:
+          - "pulse kicks sideways"
+          - "something slams behind my sternum"
+          - "blood rushes to my ears"
+          - "adrenaline floods my limbs"
+          - "my blood hums"
+      - regex: "\\bheart\\s+(?:pounds|pounded|pounding)\\b"
+        replacements:
+          - "chest feels like a drum"
+          - "pressure in my ears rises"
+          - "something hammers once then settles"
+          - "ribcage vibrates"
+      - regex: "\\bheart\\s+(?:thuds|thudded|thudding)\\b"
+        replacements:
+          - "something heavy knocks behind my ribs"
+          - "I feel each beat in my jaw"
+          - "dull percussion in my chest"
+      - regex: "\\bheart\\s+(?:hammers|hammered|hammering)\\b"
+        replacements:
+          - "my chest shakes with it"
+          - "percussion against my ribs"
+          - "each beat lands like a fist"
+      - regex: "\\bpulse\\s+(?:quickens|quickened)\\b"
+        replacements:
+          - "blood heats under my skin"
+          - "something accelerates inside me"
+          - "the tempo of my body shifts"
+      - regex: "\\bpulse\\s+(?:races|raced)\\b"
+        replacements:
+          - "current tears through my veins"
+          - "everything inside me speeds up"
+          - "my nervous system fires on all cylinders"
+      - regex: "\\bpulse\\s+(?:spikes|spiked)\\b"
+        replacements:
+          - "a jolt runs through me"
+          - "electricity snaps at the base of my skull"
+      - regex: "\\bheart\\s+skips?\\s+a\\s+beat\\b"
+        replacements:
+          - "the world hitches for a second"
+          - "everything pauses mid-frame"
+          - "the ground tilts slightly"
+          - "time stumbles"
     threshold: 10
 
   physiological_respiratory:
     label: "Breath catching/holding"
+    keep_first: 3
     patterns:
-      - "\\bbreath\\s+(?:catches|caught|hitches|hitched)\\b"
-      - "\\bhold(?:s|ing)?\\s+(?:my|her|his|their)\\s+breath\\b"
-      - "\\blet(?:s|ting)?\\s+out\\s+a\\s+breath\\b"
-      - "\\b(?:take|took|taking)\\s+a\\s+deep\\s+breath\\b"
-      - "\\bexhale(?:s|d)?\\s+(?:slowly|sharply|deeply)\\b"
+      - regex: "\\bbreath\\s+(?:catches|caught)\\b"
+        replacements:
+          - "lungs stall"
+          - "air locks in my throat"
+          - "I forget how breathing works"
+          - "something catches behind my ribs"
+          - "the air just stops"
+      - regex: "\\bbreath\\s+(?:hitches|hitched)\\b"
+        replacements:
+          - "my inhale snags"
+          - "air trips on the way in"
+          - "my breathing stutters"
+      - regex: "\\bhold(?:s|ing)?\\s+(?:my|her|his|their)\\s+breath\\b"
+        replacements:
+          - "go still"
+          - "everything in me pauses"
+          - "press my lips together"
+          - "my body locks up"
+          - "freeze mid-motion"
+      - regex: "\\blet(?:s|ting)?\\s+out\\s+a\\s+breath\\b"
+        replacements:
+          - "deflate slightly"
+          - "release the tension in my shoulders"
+          - "feel my chest unlock"
+          - "exhale through my teeth"
+      - regex: "\\b(?:take|took|taking)\\s+a\\s+deep\\s+breath\\b"
+        replacements:
+          - "draw in air slowly"
+          - "steady myself"
+          - "fill my lungs deliberately"
+          - "pause to breathe"
+          - "let the air settle in my chest"
+      - regex: "\\bexhale(?:s|d)?\\s+(?:slowly|sharply|deeply)\\b"
+        replacements:
+          - "push the air out"
+          - "breathe through it"
+          - "let the tension leak from my lungs"
     threshold: 15
 
   physiological_gastric:
     label: "Stomach churning/dropping"
+    keep_first: 2
     patterns:
-      - "\\bstomach\\s+(?:churns?|churned|drops?|dropped|flips?|flipped|twists?|twisted|knots?|knotted)\\b"
-      - "\\bgut\\s+(?:twists?|twisted|clenches?|clenched|tightens?|tightened)\\b"
-      - "\\bnausea\\s+(?:rises?|rising|washes?|prickles?)\\b"
+      - regex: "\\bstomach\\s+(?:churns?|churned)\\b"
+        replacements:
+          - "something sinks in my belly"
+          - "nausea prickles at my throat"
+          - "my gut twists sideways"
+          - "a cold weight settles low"
+      - regex: "\\bstomach\\s+(?:drops?|dropped)\\b"
+        replacements:
+          - "the floor tilts under me"
+          - "gravity does something wrong"
+          - "everything inside me plummets"
+          - "the world lurches"
+      - regex: "\\bstomach\\s+(?:flips?|flipped)\\b"
+        replacements:
+          - "something turns over inside me"
+          - "my insides do a slow roll"
+          - "vertigo brushes the back of my neck"
+      - regex: "\\bstomach\\s+(?:twists?|twisted)\\b"
+        replacements:
+          - "something wrings itself tight inside me"
+          - "my core clenches"
+          - "a slow coil tightens below my ribs"
+      - regex: "\\bstomach\\s+(?:knots?|knotted)\\b"
+        replacements:
+          - "something tangles inside my abdomen"
+          - "a fist forms below my ribs"
+          - "tension balls up inside me"
+      - regex: "\\bgut\\s+(?:twists?|twisted)\\b"
+        replacements:
+          - "something wrenches low"
+          - "my insides contort"
+          - "a cramp of dread tightens"
+      - regex: "\\bgut\\s+(?:clenches?|clenched)\\b"
+        replacements:
+          - "everything tenses below my ribs"
+          - "my core seizes"
+      - regex: "\\bgut\\s+(?:tightens?|tightened)\\b"
+        replacements:
+          - "pressure builds in my abdomen"
+          - "something constricts inside"
+      - regex: "\\bnausea\\s+(?:rises?|rising)\\b"
+        replacements:
+          - "acid climbs my throat"
+          - "bile edges upward"
+          - "something sour pushes up"
+      - regex: "\\bnausea\\s+(?:washes?)\\b"
+        replacements:
+          - "a wave of sickness rolls through"
+          - "dizziness swells"
+      - regex: "\\bnausea\\s+(?:prickles?)\\b"
+        replacements:
+          - "queasiness needles at me"
+          - "something unsettled stirs"
     threshold: 8
 
   physiological_throat:
     label: "Swallowing hard / lump in throat"
+    keep_first: 2
     patterns:
-      - "\\b(?:swallow|swallowed|swallowing)\\s+hard\\b"
-      - "\\blump\\s+in\\s+(?:my|her|his|their)\\s+throat\\b"
-      - "\\bthroat\\s+(?:tightens?|tightened|constricts?|constricted)\\b"
+      - regex: "\\b(?:swallow|swallowed|swallowing)\\s+hard\\b"
+        replacements:
+          - "my throat clicks"
+          - "I push past the knot"
+          - "my mouth goes dry"
+          - "I work my jaw"
+          - "force down the tightness"
+      - regex: "\\blump\\s+in\\s+(?:my|her|his|their)\\s+throat\\b"
+        replacements:
+          - "something wedged behind my tongue"
+          - "pressure building below my voice"
+          - "my throat narrowing"
+          - "words stuck sideways"
+      - regex: "\\bthroat\\s+(?:tightens?|tightened)\\b"
+        replacements:
+          - "my airway narrows"
+          - "pressure closes around my neck"
+          - "something cinches below my jaw"
+      - regex: "\\bthroat\\s+(?:constricts?|constricted)\\b"
+        replacements:
+          - "my windpipe shrinks"
+          - "the passage narrows to a pinhole"
+          - "air has to fight its way through"
     threshold: 8
 
   physiological_tremor:
     label: "Hands trembling/shaking"
+    keep_first: 2
     patterns:
-      - "\\bhands?\\s+(?:tremble|trembles|trembled|trembling|shake|shakes|shook|shaking)\\b"
-      - "\\bfingers?\\s+(?:tremble|trembles|trembled|trembling)\\b"
+      - regex: "\\bhands?\\s+(?:tremble|trembles|trembled|trembling)\\b"
+        replacements:
+          - "fingers won't stay still"
+          - "I press my palms flat against my thighs"
+          - "I curl my hands into fists"
+          - "I grip the nearest surface"
+          - "my fingers twitch"
+      - regex: "\\bhands?\\s+(?:shake|shakes|shook|shaking)\\b"
+        replacements:
+          - "I jam my hands into my pockets"
+          - "I lace my fingers together to hold them still"
+          - "my grip falters"
+          - "I clench and unclench"
+      - regex: "\\bfingers?\\s+(?:tremble|trembles|trembled|trembling)\\b"
+        replacements:
+          - "my fingertips vibrate"
+          - "I can't hold them steady"
+          - "a fine tremor runs to my nails"
     threshold: 8
 
   tension_bridge:
     label: "Tension/air between us"
+    keep_first: 2
     patterns:
-      - "\\bthe\\s+air\\s+between\\s+us\\b"
-      - "\\btension\\s+(?:hangs?|hung|hanging|crackles?|crackling|simmers?)\\b"
-      - "\\bsilence\\s+(?:stretches?|stretched|hangs?|hung)\\b"
+      - regex: "\\bthe\\s+air\\s+between\\s+us\\b"
+        replacements:
+          - "the space between us"
+          - "the silence between us"
+          - "what hung unspoken"
+          - "the charged stillness"
+          - "this narrow gap"
+      - regex: "\\btension\\s+(?:hangs?|hung|hanging)\\b"
+        replacements:
+          - "the unspoken hovers"
+          - "everything unsaid presses down"
+          - "the weight of it sits between us"
+      - regex: "\\btension\\s+(?:crackles?|crackling)\\b"
+        replacements:
+          - "something electric passes between us"
+          - "the air pops with static"
+          - "friction builds in the silence"
+      - regex: "\\btension\\s+(?:simmers?)\\b"
+        replacements:
+          - "something slow-burns beneath the surface"
+          - "heat gathers in the quiet"
+      - regex: "\\bsilence\\s+(?:stretches?|stretched)\\b"
+        replacements:
+          - "the quiet lengthens"
+          - "neither of us fills the gap"
+          - "seconds stack up without words"
+      - regex: "\\bsilence\\s+(?:hangs?|hung)\\b"
+        replacements:
+          - "quiet settles like dust"
+          - "the absence of sound takes on weight"
+          - "words dry up between us"
     threshold: 10
 
   dialogue_crutch:
     label: "We need to talk / I need to say"
+    keep_first: 1
     patterns:
-      - "\\bwe\\s+need\\s+to\\s+talk\\b"
-      - "\\bthere's\\s+something\\s+I\\s+need\\s+to\\s+(?:say|tell)\\b"
+      - regex: "\\bwe\\s+need\\s+to\\s+talk\\b"
+        replacements:
+          - "there's something I need to say"
+          - "can we—just, sit for a minute"
+          - "don't walk away yet"
+          - "hold on"
+          - "wait"
+      - regex: "\\bthere's\\s+something\\s+I\\s+need\\s+to\\s+(?:say|tell)\\b"
+        replacements:
+          - "listen—"
+          - "I owe you the truth"
+          - "this can't wait"
+          - "before you go—"
     threshold: 6
 
   whisper_default:
     label: "Barely above a whisper"
+    keep_first: 2
     patterns:
-      - "\\bbarely\\s+above\\s+a\\s+whisper\\b"
-      - "\\bvoice\\s+barely\\s+above\\b"
-      - "\\bvoice\\s+(?:drops?|dropped|dropping)\\s+to\\s+a\\s+whisper\\b"
+      - regex: "\\bbarely\\s+above\\s+a\\s+whisper\\b"
+        replacements:
+          - "so quiet I almost missed it"
+          - "almost inaudible"
+          - "half-swallowed"
+          - "thin as smoke"
+      - regex: "\\bvoice\\s+barely\\s+above\\b"
+        replacements:
+          - "voice so low it was nearly"
+          - "voice reduced to"
+          - "voice thinned to"
+      - regex: "\\bvoice\\s+(?:drops?|dropped|dropping)\\s+to\\s+a\\s+whisper\\b"
+        replacements:
+          - "voice sinks low"
+          - "voice fades to almost nothing"
+          - "voice goes quiet—really quiet"
     threshold: 8
 
   ocular_reaction:
     label: "Eyes widening / tears pricking"
+    keep_first: 3
     patterns:
-      - "\\beyes?\\s+(?:widen|widened|widening|narrow|narrowed|narrowing)\\b"
-      - "\\btears?\\s+(?:prick|pricked|pricking|sting|stinging|well|welled|welling)\\b"
-      - "\\bvision\\s+(?:blurs?|blurred|blurring)\\b"
+      - regex: "\\beyes?\\s+(?:widen|widened|widening)\\b"
+        replacements:
+          - "I blink twice, fast"
+          - "my focus sharpens"
+          - "the room snaps into clarity"
+          - "I look at him—really look"
+          - "surprise registers on my face"
+      - regex: "\\beyes?\\s+(?:narrow|narrowed|narrowing)\\b"
+        replacements:
+          - "my gaze sharpens"
+          - "I squint slightly"
+          - "something calculating crosses my face"
+          - "I study him harder"
+      - regex: "\\btears?\\s+(?:prick|pricked|pricking)\\b"
+        replacements:
+          - "heat builds behind my eyes"
+          - "my vision goes soft at the edges"
+          - "I blink against the sting"
+          - "my eyelashes feel damp"
+      - regex: "\\btears?\\s+(?:sting|stinging)\\b"
+        replacements:
+          - "a burn creeps into my eyes"
+          - "pressure gathers behind my lids"
+          - "something hot presses at my eyes"
+      - regex: "\\btears?\\s+(?:well|welled|welling)\\b"
+        replacements:
+          - "moisture pools along my lower lids"
+          - "my eyes fill before I can stop them"
+          - "wetness gathers without permission"
+          - "I feel them coming and can't stop it"
+      - regex: "\\bvision\\s+(?:blurs?|blurred|blurring)\\b"
+        replacements:
+          - "the room goes soft"
+          - "edges dissolve"
+          - "everything swims for a second"
+          - "I blink hard to reset"
     threshold: 10

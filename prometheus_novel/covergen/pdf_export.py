@@ -45,12 +45,12 @@ def export_print_pdf(
     # Save image to temp JPEG (smaller than PNG for PDF embedding)
     tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
     tmp_path = Path(tmp.name)
+    tmp.close()  # Close before PIL writes (required on Windows)
     try:
         # Ensure RGB for JPEG
         if cover_image.mode != "RGB":
             cover_image = cover_image.convert("RGB")
         cover_image.save(tmp_path, format="JPEG", quality=95, dpi=(dpi, dpi))
-        tmp.close()
 
         pdf.image(str(tmp_path), x=0, y=0, w=width_mm, h=height_mm)
         pdf.output(str(output_path))

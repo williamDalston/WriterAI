@@ -262,7 +262,7 @@ async def run_planning_smoke(project_path: Path = None, model: str = "qwen2.5:14
 
     failed_stages = [s for s, info in results.items() if info["status"] == "FAILED"]
     return {
-        "completed_stages": len([s for s, info in results.items() if info["status"] == "COMPLETED"]),
+        "completed_stages": len([s for s, info in results.items() if info["status"] == "OK"]),
         "failed_stages": failed_stages,
         "json_issues": json_issues,
     }

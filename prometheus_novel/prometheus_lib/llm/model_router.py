@@ -78,7 +78,7 @@ class LLMModelRouter:
         if not model_key:
             raise ValueError(f"No model configured for stage: {stage_name}")
 
-        primary_model_name = self.config.model_defaults.get(model_key)
+        primary_model_name = getattr(self.config.model_defaults, model_key, None) if hasattr(self.config.model_defaults, '__dataclass_fields__') or hasattr(self.config.model_defaults, 'model_fields') else self.config.model_defaults.get(model_key) if isinstance(self.config.model_defaults, dict) else None
         if not primary_model_name:
             raise ValueError(f"Model key '{model_key}' not found in model_defaults.")
 

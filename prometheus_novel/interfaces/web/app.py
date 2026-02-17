@@ -283,7 +283,7 @@ async def start_generation(project_name: str, background_tasks: BackgroundTasks)
         raise HTTPException(status_code=404, detail="Project not found")
 
     # Start generation in background
-    generation_id = f"{project_name}_{asyncio.get_event_loop().time()}"
+    generation_id = f"{project_name}_{asyncio.get_running_loop().time()}"
     app_state.active_generations[generation_id] = {
         "project": project_name,
         "status": "running",
@@ -342,7 +342,7 @@ async def save_idea(request: Request):
         "content": data.get("content", ""),
         "source": data.get("source", "web"),
         "tags": data.get("tags", []),
-        "created_at": str(asyncio.get_event_loop().time())
+        "created_at": str(asyncio.get_running_loop().time())
     }
     app_state.ideas.append(idea)
     logger.info(f"Saved idea #{idea['id']}")
@@ -365,13 +365,18 @@ async def get_settings():
 
 @app.post("/api/v2/settings")
 async def update_settings(request: Request):
-    """Update settings."""
+    """Update settings. Only allows updating known, non-sensitive keys."""
+    SENSITIVE_KEYS = {"openai_api_key", "anthropic_api_key", "gemini_api_key", "google_tts_key"}
     data = await request.json()
+    updated = []
     for key, value in data.items():
         if key in app_state.settings:
+            if key in SENSITIVE_KEYS and isinstance(value, str) and len(value) < 10:
+                continue  # Reject suspiciously short API key overwrites
             app_state.settings[key] = value
-    logger.info("Settings updated")
-    return {"status": "updated"}
+            updated.append(key)
+    logger.info(f"Settings updated: {updated}")
+    return {"status": "updated", "keys": updated}
 
 
 @app.post("/api/v2/seed")
@@ -392,9 +397,14 @@ async def create_project_from_seed(request: Request, background_tasks: Backgroun
     title = seed_data.get("title") or seed_data.get("idea", "untitled")[:30]
     project_name = title.lower().replace(" ", "-").replace("'", "")
     project_name = re.sub(r'[^a-z0-9-]', '', project_name)
+    if not project_name:
+        raise HTTPException(status_code=400, detail="Could not derive valid project name from title")
 
-    # Create project directory
-    project_dir = PROJECT_ROOT / "data" / "projects" / project_name
+    # Create project directory with path traversal guard
+    projects_dir = PROJECT_ROOT / "data" / "projects"
+    project_dir = (projects_dir / project_name).resolve()
+    if not str(project_dir).startswith(str(projects_dir.resolve())):
+        raise HTTPException(status_code=400, detail="Invalid project name")
     project_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / "drafts").mkdir(exist_ok=True)
     (project_dir / "output").mkdir(exist_ok=True)
@@ -577,7 +587,8 @@ async def run_generation(project_name: str, generation_id: str):
 
         # Register callbacks for progress updates
         async def on_stage_start(stage_name, index):
-            progress = int((index / 12) * 100)
+            total_stages = len(orchestrator.STAGES) if hasattr(orchestrator, 'STAGES') else 24
+            progress = min(int((index / total_stages) * 100), 100)
             app_state.active_generations[generation_id].update({
                 "current_stage": stage_name,
                 "progress": progress
@@ -633,15 +644,20 @@ async def run_generation(project_name: str, generation_id: str):
 
     except Exception as e:
         logger.error(f"Generation failed: {e}", exc_info=True)
+        safe_error = type(e).__name__ + ": " + str(e)[:100] if str(e) else type(e).__name__
+        # Sanitize: strip internal paths and keys
+        import re as _re
+        safe_error = _re.sub(r'[A-Za-z]:\\[^\s"\']+', '[path]', safe_error)
+        safe_error = _re.sub(r'sk-[a-zA-Z0-9]{10,}', '[key]', safe_error)
         app_state.active_generations[generation_id].update({
             "status": "failed",
-            "error": str(e)
+            "error": safe_error
         })
         await manager.broadcast({
             "type": "generation_error",
             "generation_id": generation_id,
             "project": project_name,
-            "error": str(e)
+            "error": safe_error
         })
 
 

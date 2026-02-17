@@ -24,7 +24,8 @@ try:
     import yaml
 except ImportError:
     print("Installing PyYAML...")
-    os.system(f"{sys.executable} -m pip install pyyaml")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "pyyaml"])
     import yaml
 
 from prometheus_lib.utils.logging_config import setup_logging
@@ -166,19 +167,24 @@ def cmd_new(args):
 
     else:
         # Command line arguments
-        name = args.name or args.title.lower().replace(" ", "-") if args.title else "untitled"
+        name = args.name or (args.title.lower().replace(" ", "-") if args.title else "untitled")
         title = args.title or name.replace("-", " ").title()
         genre = args.genre or "literary"
         synopsis = args.synopsis or ""
 
-    # Validate
+    # Sanitize and validate
+    import re as _re
+    name = _re.sub(r'[^a-z0-9_-]', '', name.lower())
     if not name:
-        print_error("Project name is required")
+        print_error("Project name is required (must contain alphanumeric characters)")
         return 1
 
-    # Create project directory
+    # Create project directory with path traversal guard
     projects_dir = PROJECT_ROOT / "data" / "projects"
-    project_dir = projects_dir / name
+    project_dir = (projects_dir / name).resolve()
+    if not str(project_dir).startswith(str(projects_dir.resolve())):
+        print_error("Invalid project name (path traversal detected)")
+        return 1
     project_dir.mkdir(parents=True, exist_ok=True)
 
     # Create subdirectories
@@ -676,7 +682,7 @@ def main():
 
     # serve command
     serve_parser = subparsers.add_parser("serve", help="Start web server")
-    serve_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    serve_parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
     serve_parser.add_argument("--port", type=int, default=8080, help="Port to bind to")
 
     # seed command - flexible story input

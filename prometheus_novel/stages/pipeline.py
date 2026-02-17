@@ -30,7 +30,7 @@ from quality.phrase_miner import mine_hot_phrases, write_auto_yaml, load_phrase_
 from quality.phrase_suppressor import suppress_phrases
 from quality.dialogue_trimmer import process_scenes as trim_dialogue_scenes
 from quality.emotion_diversifier import process_scenes as diversify_emotion_scenes
-from quality.cliche_clusters import detect_clusters
+from quality.cliche_clusters import detect_clusters, repair_clusters
 
 logger = logging.getLogger(__name__)
 
@@ -6133,6 +6133,7 @@ RULES:
         Centralizes the generate → validate → retry → postprocess pipeline.
         Returns (processed_content: str, tokens_used: int).
         """
+        scene_meta = dict(scene_meta) if scene_meta else {}
         # Inject format contract as system prompt (stage can override)
         # Uses per-run nonce sentinel to avoid cross-run collisions
         kwargs.setdefault('system_prompt', self._format_contract)
@@ -9705,8 +9706,19 @@ OUTPUT the text with only problematic sentences fixed:"""
             logger.warning(f"Emotion diversification failed (non-blocking): {e}")
             report["emotion_diversification"] = {"error": str(e)}
 
-        # --- 5. Cliche cluster detection (report only, no modification) ---
+        # --- 5. Cliche cluster repair + detection ---
         try:
+            # Repair first: replace excess cliche occurrences with alternatives
+            texts, cluster_repair_report = repair_clusters(texts, only_flagged=True)
+            report["cliche_cluster_repair"] = cluster_repair_report
+            if cluster_repair_report["total_replaced"] > 0:
+                logger.info(
+                    "Cliche cluster repair: %d replacements across %d clusters",
+                    cluster_repair_report["total_replaced"],
+                    cluster_repair_report["clusters_repaired"],
+                )
+
+            # Then detect what remains (for the report)
             cluster_report = detect_clusters(texts)
             report["cliche_clusters"] = {
                 "flagged": cluster_report["flagged_count"],
@@ -9719,11 +9731,11 @@ OUTPUT the text with only problematic sentences fixed:"""
             }
             if cluster_report["flagged_count"] > 0:
                 logger.warning(
-                    "Cliche clusters flagged: %s",
+                    "Cliche clusters still flagged after repair: %s",
                     ", ".join(cluster_report["flagged_names"]),
                 )
         except Exception as e:
-            logger.warning(f"Cliche cluster detection failed (non-blocking): {e}")
+            logger.warning(f"Cliche cluster repair/detection failed (non-blocking): {e}")
             report["cliche_clusters"] = {"error": str(e)}
 
         # --- Write modified texts back to scenes ---

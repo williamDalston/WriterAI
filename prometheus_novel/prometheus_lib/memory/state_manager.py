@@ -2,11 +2,11 @@
 import asyncio
 import time
 from typing import Dict, Any, List, Optional
-from prometheus_lib.models.novel_state import PrometheusState
-from prometheus_lib.models.outline_schemas import NovelOutline
-from prometheus_lib.memory.vector_store import VectorStore
-from prometheus_lib.llm.model_router import LLMModelRouter
-from prometheus_lib.utils.error_handling import LLMGenerationError
+from ..models.novel_state import PrometheusState
+from ..models.outline_schemas import NovelOutline
+from .vector_store import VectorStore
+from ..llm.model_router import LLMModelRouter
+from ..utils.error_handling import LLMGenerationError
 import logging
 
 logger = logging.getLogger(__name__)

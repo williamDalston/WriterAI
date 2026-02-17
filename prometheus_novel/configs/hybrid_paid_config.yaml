@@ -5,8 +5,8 @@
 
 model_defaults:
   api_model: gpt-4o-mini
-  critic_model: claude-3-haiku
-  fallback_model: gemini-1.5-flash
+  critic_model: claude-haiku-4-5-20251001
+  fallback_model: gemini-2.0-flash
 
 model_tuning:
   stage_temperatures:

@@ -64,7 +64,7 @@ class BookOpsEngine:
     config: Dict[str, Any]
     scenes: Optional[List[Dict]] = None
     client: Any = None  # BaseLLMClient
-    output_dir: Path = None
+    output_dir: Optional[Path] = None
 
     _missing_fields: List[str] = field(default_factory=list)
     _generated_docs: List[str] = field(default_factory=list)
@@ -212,8 +212,11 @@ class BookOpsEngine:
     async def _generate_positioning(self):
         """01_positioning.md — hook, blurb, taglines, tropes, keywords, promise."""
         genre = self.config.get("genre", "fiction")
-        tropes = self.config.get("strategic_guidance", {}).get("tropes", "")
-        market = self.config.get("strategic_guidance", {}).get("market_positioning", "")
+        strat = self.config.get("strategic_guidance", {})
+        if not isinstance(strat, dict):
+            strat = {}
+        tropes = strat.get("tropes", "")
+        market = strat.get("market_positioning", "")
 
         content = await self._generate(
             system_prompt="You are a book marketing strategist. Generate positioning assets. "

@@ -6,11 +6,14 @@ for dual-POV novels. Follows the BookOpsEngine pattern.
 
 import json
 import logging
+import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+_SSML_TAG_RE = re.compile(r'<[^>]+>')
 
 import yaml
 
@@ -48,7 +51,7 @@ class AudiobookEngine:
     scenes: List[Dict[str, Any]]
     audiobook_config: Dict[str, Any]
     tts_client: Optional[TTSClient] = None
-    output_dir: Path = None
+    output_dir: Optional[Path] = None
 
     # Progress tracking
     _generated_files: List[str] = field(default_factory=list)
@@ -207,7 +210,7 @@ class AudiobookEngine:
                         pitch=self.audiobook_config["pitch"],
                     )
                     all_audio_chunks.append(audio_bytes)
-                    self._total_chars += len(chunk)
+                    self._total_chars += len(_SSML_TAG_RE.sub('', chunk))
         else:
             # Single voice — process entire chapter at once
             voice = self._resolve_voice(scenes[0])
@@ -221,7 +224,7 @@ class AudiobookEngine:
                     pitch=self.audiobook_config["pitch"],
                 )
                 all_audio_chunks.append(audio_bytes)
-                self._total_chars += len(chunk)
+                self._total_chars += len(_SSML_TAG_RE.sub('', chunk))
 
         # Concatenate + post-process
         combined = concatenate_chunks(all_audio_chunks)

@@ -1,8 +1,11 @@
-"""Cliche cluster detector — category-based repetition detection.
+"""Cliche cluster detector + repair — category-based repetition handling.
 
 Unlike the phrase miner (exact n-gram matching), this detects semantic
 families of tropes via regex pattern groups. Catches formulaic writing
 even when surface phrasing varies across models.
+
+The repair pass replaces excess occurrences (beyond keep_first) with
+rotating alternatives from the YAML config, preserving capitalization.
 """
 
 import logging
@@ -14,6 +17,8 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "configs" / "cliche_clusters.yaml"
+
 
 def load_cluster_config(config_path: Path) -> Dict[str, Any]:
     """Load cliche cluster definitions from YAML."""
@@ -22,6 +27,32 @@ def load_cluster_config(config_path: Path) -> Dict[str, Any]:
         return {"clusters": {}}
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {"clusters": {}}
+
+
+def _compile_patterns(cluster_def: Dict[str, Any]) -> List[Tuple[re.Pattern, List[str]]]:
+    """Compile regex patterns from a cluster definition.
+
+    Returns list of (compiled_regex, replacements) tuples.
+    Handles both old format (patterns as strings) and new format
+    (patterns as dicts with regex + replacements).
+    """
+    compiled = []
+    for p in cluster_def.get("patterns", []):
+        if isinstance(p, str):
+            # Old format: pattern string only, no replacements
+            try:
+                compiled.append((re.compile(p, re.IGNORECASE), []))
+            except re.error as e:
+                logger.warning("Invalid regex: %s — %s", p, e)
+        elif isinstance(p, dict):
+            # New format: {regex: ..., replacements: [...]}
+            regex_str = p.get("regex", "")
+            replacements = p.get("replacements", [])
+            try:
+                compiled.append((re.compile(regex_str, re.IGNORECASE), replacements))
+            except re.error as e:
+                logger.warning("Invalid regex: %s — %s", regex_str, e)
+    return compiled
 
 
 def detect_clusters(
@@ -40,9 +71,7 @@ def detect_clusters(
         Report with per-cluster counts, flagged clusters, and details.
     """
     if clusters_dict is None:
-        if config_path is None:
-            config_path = Path(__file__).parent.parent / "configs" / "cliche_clusters.yaml"
-        data = load_cluster_config(config_path)
+        data = load_cluster_config(config_path or _DEFAULT_CONFIG_PATH)
     else:
         data = clusters_dict
 
@@ -51,15 +80,8 @@ def detect_clusters(
 
     for cluster_name, cluster_def in clusters.items():
         label = cluster_def.get("label", cluster_name)
-        patterns = cluster_def.get("patterns", [])
         threshold = cluster_def.get("threshold", 10)
-
-        compiled = []
-        for p in patterns:
-            try:
-                compiled.append(re.compile(p, re.IGNORECASE))
-            except re.error as e:
-                logger.warning("Invalid regex in cluster '%s': %s — %s", cluster_name, p, e)
+        compiled = _compile_patterns(cluster_def)
 
         total_hits = 0
         scene_hits = 0
@@ -68,12 +90,11 @@ def detect_clusters(
 
         for scene in scenes:
             scene_count = 0
-            for regex in compiled:
-                matches = regex.findall(scene)
+            for regex, _ in compiled:
+                matches = list(regex.finditer(scene))
                 scene_count += len(matches)
                 if matches and len(examples) < 3:
-                    # Find the full sentence containing the match
-                    for m in regex.finditer(scene):
+                    for m in matches:
                         start = max(0, scene.rfind(".", 0, m.start()) + 1)
                         end = scene.find(".", m.end())
                         if end == -1:
@@ -106,3 +127,122 @@ def detect_clusters(
         "total_clusters": len(results),
         "flagged_names": list(flagged_clusters.keys()),
     }
+
+
+def repair_clusters(
+    scenes: List[str],
+    config_path: Optional[Path] = None,
+    clusters_dict: Optional[Dict[str, Any]] = None,
+    only_flagged: bool = True,
+) -> Tuple[List[str], Dict[str, Any]]:
+    """Repair cliche clusters by replacing excess occurrences with alternatives.
+
+    For each cluster, the first `keep_first` occurrences (across the entire
+    manuscript, in scene order) are left untouched. Subsequent occurrences
+    are replaced with rotating alternatives from the config.
+
+    Args:
+        scenes: List of scene texts in order.
+        config_path: Path to cliche_clusters.yaml.
+        clusters_dict: Pre-loaded cluster config (overrides config_path).
+        only_flagged: If True, only repair clusters that exceed their threshold.
+
+    Returns:
+        Tuple of (modified_scenes, report_dict).
+    """
+    if clusters_dict is None:
+        data = load_cluster_config(config_path or _DEFAULT_CONFIG_PATH)
+    else:
+        data = clusters_dict
+
+    clusters = data.get("clusters", {})
+
+    # First pass: detect to know which clusters are flagged
+    if only_flagged:
+        detection = detect_clusters(scenes, clusters_dict=data)
+        flagged_names = set(detection["flagged_names"])
+    else:
+        flagged_names = set(clusters.keys())
+
+    modified = list(scenes)
+    report: Dict[str, Dict[str, Any]] = {}
+
+    for cluster_name, cluster_def in clusters.items():
+        if cluster_name not in flagged_names:
+            continue
+
+        keep_first = cluster_def.get("keep_first", 2)
+        compiled = _compile_patterns(cluster_def)
+
+        # Track occurrences per-pattern across the full manuscript
+        pattern_occurrence: Dict[int, int] = {}  # pattern_index -> count
+        pattern_replacement_idx: Dict[int, int] = {}  # pattern_index -> next replacement index
+        cluster_replaced = 0
+        cluster_found = 0
+
+        for scene_idx in range(len(modified)):
+            text = modified[scene_idx]
+            any_changed = False
+
+            for pat_idx, (regex, replacements) in enumerate(compiled):
+                if pat_idx not in pattern_occurrence:
+                    pattern_occurrence[pat_idx] = 0
+                    pattern_replacement_idx[pat_idx] = 0
+
+                matches = list(regex.finditer(text))
+                if not matches:
+                    continue
+
+                cluster_found += len(matches)
+
+                # Process in reverse to preserve offsets
+                for match in reversed(matches):
+                    pattern_occurrence[pat_idx] += 1
+                    # Sum all pattern occurrences for this cluster to determine keep_first
+                    total_cluster_occ = sum(pattern_occurrence.values())
+
+                    if total_cluster_occ <= keep_first:
+                        continue  # Keep this one
+
+                    if not replacements:
+                        continue  # No alternatives available
+
+                    # Get next replacement (rotating)
+                    ridx = pattern_replacement_idx[pat_idx]
+                    repl = replacements[ridx % len(replacements)]
+                    pattern_replacement_idx[pat_idx] = ridx + 1
+
+                    # Preserve capitalization of first character
+                    original = match.group()
+                    if original[0].isupper():
+                        repl = repl[0].upper() + repl[1:]
+
+                    text = text[: match.start()] + repl + text[match.end() :]
+                    cluster_replaced += 1
+                    any_changed = True
+
+            if any_changed:
+                modified[scene_idx] = text
+
+        if cluster_found > 0:
+            report[cluster_name] = {
+                "label": cluster_def.get("label", cluster_name),
+                "found": cluster_found,
+                "kept": min(keep_first, cluster_found),
+                "replaced": cluster_replaced,
+            }
+            if cluster_replaced > 0:
+                logger.info(
+                    "Cluster '%s': %d found, %d kept, %d replaced",
+                    cluster_name, cluster_found,
+                    min(keep_first, cluster_found), cluster_replaced,
+                )
+
+    total_replaced = sum(r["replaced"] for r in report.values())
+    summary = {
+        "clusters_repaired": len([r for r in report.values() if r["replaced"] > 0]),
+        "total_replaced": total_replaced,
+        "per_cluster": report,
+    }
+
+    return modified, summary
