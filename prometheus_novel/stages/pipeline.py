@@ -37,6 +37,7 @@ from quality.delta_report import compute_pass_delta, build_delta_report
 from quality.ceiling import CeilingRules, CeilingTracker
 from quality.policy import load_policy as _load_quality_policy_legacy, is_pass_enabled
 from policy import load_policy as load_central_policy, Policy
+from prometheus_lib.utils.error_handling import CreditsExhaustedError
 from quality.loop_guard import check_replacement_loops
 
 logger = logging.getLogger(__name__)
@@ -325,7 +326,8 @@ STRUCTURE_GATE_STOP_SEQUENCES = [
 STRUCTURE_GATE_SYSTEM_PROMPT = """You are a story structure analyst. You output ONLY valid JSON.
 No markdown. No commentary. No explanation. Just the JSON object."""
 
-# Categories for structure gate scoring (0-5 each, 25 total)
+# Base categories for structure gate scoring (0-5 each)
+# Genre-specific extras from config.enhancements.structure_gate.genre_categories
 STRUCTURE_CATEGORIES = ["structure", "tension", "emotional_beat", "dialogue_realism", "scene_turn"]
 
 # ── Category fill-in templates ──────────────────────────────────────────────
@@ -445,6 +447,40 @@ CATEGORY_FILL_INS: Dict[str, Dict[str, Any]] = {
             "last_para_has_new_info_or_choice",
             "final_sentence_is_action_or_dialogue",
             "no_summary_words_in_last_sentence",
+        ],
+    },
+    "intimacy_beat": {
+        "description": "romantic/emotional beat lands, physical and emotional escalation coherent",
+        "common_deficits": [
+            "Intimacy beat feels rushed or skipped",
+            "Physical and emotional escalation don't align",
+            "Consent or boundary unclear",
+        ],
+        "directives": [
+            "Add clear emotional shift before physical escalation.",
+            "Ensure consent and boundaries are shown, not assumed.",
+            "Make the beat distinct from previous intimacy in the manuscript.",
+        ],
+        "success_criteria": [
+            "Emotional readiness precedes physical escalation.",
+            "At least one explicit consent or boundary beat.",
+        ],
+    },
+    "clue_placement": {
+        "description": "clues or red herrings present, fair-play visibility",
+        "common_deficits": [
+            "Key info withheld unfairly",
+            "Clue buried in dense prose",
+            "Reader cannot participate in solving",
+        ],
+        "directives": [
+            "Surface at least one clue the reader can notice.",
+            "Ensure fair-play: clue exists before revelation.",
+            "Balance misdirection with genuine puzzle elements.",
+        ],
+        "success_criteria": [
+            "One concrete clue visible to reader.",
+            "Clue placement allows participation.",
         ],
     },
 }
@@ -1343,7 +1379,8 @@ def _enforce_first_person_pov(text: str, protagonist_name: str = "",
     return text
 
 
-def _repair_pov_context_errors(text: str, protagonist_gender: str = "") -> str:
+def _repair_pov_context_errors(text: str, protagonist_gender: str = "",
+                               character_genders: dict = None) -> str:
     """Fix contextual POV corruption where third-person subject + first-person possessive clash.
 
     The #1 defect in qwen2.5:14b output: when Ana (third person) does something,
@@ -1355,13 +1392,21 @@ def _repair_pov_context_errors(text: str, protagonist_gender: str = "") -> str:
     3. "She rolled my eyes" -> "She rolled her eyes"
     4. "I smiled warmly, gazing at me" -> "She smiled warmly, gazing at me"
     5. "I turned to face me" -> "She turned to face me"
+
+    Args:
+        character_genders: Optional dict mapping character first names (lowered)
+            to 'male'/'female'. When provided, named-character patterns use the
+            actual character's gender instead of assuming opposite-of-protagonist.
     """
     if not text:
         return text
 
     gender = protagonist_gender.lower().strip()
+    # Normalize character_genders keys to lowercase
+    _char_genders = {k.lower(): v.lower() for k, v in (character_genders or {}).items()}
 
     # Determine the OTHER character's pronouns (the non-narrator)
+    # Default: opposite of protagonist (legacy behavior)
     if gender == "male":
         other_subj = "she"
         other_subj_cap = "She"
@@ -1374,6 +1419,17 @@ def _repair_pov_context_errors(text: str, protagonist_gender: str = "") -> str:
         other_poss_cap = "His"
     else:
         return text  # Can't fix without knowing gender
+
+    def _poss_for_name(name: str) -> str:
+        """Get possessive pronoun for a named character using gender lookup."""
+        name_lower = name.lower().strip()
+        char_gender = _char_genders.get(name_lower, "")
+        if char_gender == "female":
+            return "her"
+        elif char_gender == "male":
+            return "his"
+        # Fallback to opposite-of-protagonist (legacy)
+        return other_poss
 
     # Body/attribute nouns that get misattributed
     body_attrs = (r'voice|eyes|face|lips|head|hair|gaze|smile|expression|'
@@ -1399,12 +1455,12 @@ def _repair_pov_context_errors(text: str, protagonist_gender: str = "") -> str:
         flags=re.IGNORECASE
     )
 
-    # === PATTERN 2: "[Name] [dialogue_verb], my [body_attr]" -> "her [body_attr]" ===
+    # === PATTERN 2: "[Name] [dialogue_verb], my [body_attr]" -> "her/his [body_attr]" ===
     # Catches: "Ana said, my voice soft and clear"
     # We match any capitalized word + dialogue verb + comma + "my [body]"
     text = re.sub(
         rf'(\b[A-Z][a-z]+)\s+({dialogue_verbs})(\s*,\s*)my\s+({body_attrs})\b',
-        lambda m: f'{m.group(1)} {m.group(2)}{m.group(3)}{other_poss} {m.group(4)}',
+        lambda m: f'{m.group(1)} {m.group(2)}{m.group(3)}{_poss_for_name(m.group(1))} {m.group(4)}',
         text,
         flags=re.IGNORECASE
     )
@@ -1419,6 +1475,27 @@ def _repair_pov_context_errors(text: str, protagonist_gender: str = "") -> str:
         rf'({other_subj_cap})\s+({self_action_verbs})\s+my\s+({body_attrs})\b',
         lambda m: f'{m.group(1)} {m.group(2)} {other_poss} {m.group(3)}',
         text
+    )
+
+    # === PATTERN 3b: "[Name] [self-action verb] my [body_attr]" -> "her/his [body_attr]" ===
+    # Catches: "Gianna narrows my eyes", "Sofia tilted my head"
+    # (comma-less form not caught by Pattern 2)
+    text = re.sub(
+        rf'(\b[A-Z][a-z]+)\s+({self_action_verbs})\s+my\s+({body_attrs})\b',
+        lambda m: f'{m.group(1)} {m.group(2)} {_poss_for_name(m.group(1))} {m.group(3)}',
+        text
+    )
+
+    # === PATTERN 3c: "[Name] [any verb] my [body_attr]" without comma ===
+    # Catches: "Sofia speaks my voice soft", "Marco lifts my chin"
+    # Broader than 3b: any verb followed by "my [body]" when subject is a named char
+    all_verbs = (dialogue_verbs + r'|' + self_action_verbs +
+                 r'|speaks|lifts|drops|raises|lowers|touches|cups|grabs|presses|strokes')
+    text = re.sub(
+        rf'(\b[A-Z][a-z]+)\s+({all_verbs})\s+my\s+({body_attrs})\b',
+        lambda m: f'{m.group(1)} {m.group(2)} {_poss_for_name(m.group(1))} {m.group(3)}',
+        text,
+        flags=re.IGNORECASE
     )
 
     # === PATTERN 4: "I [verb], [gerund] at/to me" -> "She [verb], [gerund] at/to me" ===
@@ -1990,6 +2067,50 @@ def _detect_semantic_duplicates(text: str, threshold: float = 0.90) -> str:
         # (3 original + 3 restarted). Short scenes don't restart.
         return text
 
+    # --- Pass 0: Single-paragraph bigram loop detector ---
+    # Catches Ch.24-style loops: same paragraph restated 6x with minor word swaps.
+    # For each paragraph from index 3+, compute bigram set; if >70% overlap
+    # with any non-adjacent earlier paragraph, mark as duplicate.
+    para_bigrams = []
+    for p in paragraphs:
+        words = p.lower().split()
+        bigrams = set(zip(words, words[1:])) if len(words) > 1 else set()
+        para_bigrams.append(bigrams)
+
+    dup_indices = set()
+    for j in range(3, len(paragraphs)):
+        if not para_bigrams[j] or len(para_bigrams[j]) < 5:
+            continue
+        for k in range(j - 1):
+            if abs(j - k) <= 1:  # Skip adjacent (normal continuation)
+                continue
+            if not para_bigrams[k] or len(para_bigrams[k]) < 5:
+                continue
+            overlap = len(para_bigrams[j] & para_bigrams[k])
+            similarity = overlap / min(len(para_bigrams[j]), len(para_bigrams[k]))
+            if similarity > 0.70:
+                dup_indices.add(j)
+                logger.info(
+                    f"Pass 0 loop dedup: paragraph {j} is {similarity:.0%} "
+                    f"bigram-similar to paragraph {k}, marking as duplicate"
+                )
+                break  # One match is enough
+
+    if dup_indices:
+        kept = [p for i, p in enumerate(paragraphs) if i not in dup_indices]
+        removed = len(dup_indices)
+        logger.info(
+            f"Pass 0 loop dedup: removed {removed} duplicate paragraphs "
+            f"({len(kept)}/{len(paragraphs)} kept)"
+        )
+        if len(kept) >= 3:
+            # Enough content remains; rebuild without sentinel (content is still valid)
+            text = '\n\n'.join(kept)
+            # Re-parse for Pass 1/2
+            paragraphs = [p.strip() for p in text.split('\n\n') if p.strip() and len(p.strip()) > 100]
+            if len(paragraphs) < 6:
+                return text
+
     # --- Pass 1: Exact/near-exact paragraph hash matching ---
     # A restart typically reproduces 2+ consecutive paragraphs from earlier.
     # Look for consecutive duplicate runs.
@@ -2181,7 +2302,8 @@ def _postprocess_scene(text: str, protagonist_name: str = "",
                        setting_language: str = "",
                        protagonist_gender: str = "",
                        foreign_whitelist: list = None,
-                       policy: 'Policy | None' = None) -> str:
+                       policy: 'Policy | None' = None,
+                       character_genders: dict = None) -> str:
     """Master post-processor: applies all code-level quality enforcement.
 
     Called after _clean_scene_content on every creative stage output.
@@ -2197,7 +2319,7 @@ def _postprocess_scene(text: str, protagonist_name: str = "",
     # ORDERING INVARIANT: F3b (repair) MUST run after F3 (enforce).
     # F3 may create patterns like "She whispered, my voice" that F3b fixes.
     # If this order is ever changed, POV corruption will be reintroduced silently.
-    text = _repair_pov_context_errors(text, protagonist_gender)
+    text = _repair_pov_context_errors(text, protagonist_gender, character_genders)
     text = _strip_emotional_summaries(text)
     text = _limit_tic_frequency(text)
     if setting_language:
@@ -2724,6 +2846,14 @@ ISSUE_SPECIFIC_FEEDBACK = {
         "no CJK characters. If you must reference a foreign word, italicize it and translate. "
         "Rewrite the entire scene in English."
     ),
+    "pov_pronoun_confusion": (
+        "YOUR ERROR: You wrote '[character name] ... my [body part]' — mixing third-person "
+        "subject with first-person possessive. When another character acts, their body parts "
+        "are THEIRS, not 'my'. WRONG: 'Sofia speaks, my voice soft' — should be 'her voice'. "
+        "WRONG: 'Gianna narrows my eyes' — should be 'her eyes'. "
+        "RULE: 'my' = ONLY the narrator's body. Other characters' body parts = her/his/their. "
+        "Rewrite the scene with correct pronoun attribution."
+    ),
 }
 
 # Stages that generate prose (not JSON/analysis) — get format contract + stop sequences
@@ -2809,6 +2939,9 @@ class PipelineState:
     # Quality meters report (deterministic, non-LLM)
     quality_meter_report: Optional[Dict[str, Any]] = None
 
+    # Outline diversity report (from validate_outline_diversity)
+    outline_diversity_report: Optional[Dict[str, Any]] = None
+
     def calculate_targets(self):
         """Calculate word count targets based on target_length and genre."""
         length_map = {
@@ -2889,6 +3022,7 @@ class PipelineState:
             "total_cost_usd": self.total_cost_usd,
             "artifact_metrics": self.artifact_metrics,
             "quality_meter_report": self.quality_meter_report,
+            "outline_diversity_report": self.outline_diversity_report,
             "_quality_iterations": getattr(self, '_quality_iterations', 0),
             "_prev_audit_snapshot": getattr(self, '_prev_audit_snapshot', None),
             "_continuity_fixed_indices": getattr(self, '_continuity_fixed_indices', []),
@@ -2971,7 +3105,8 @@ class PipelineState:
                 "scenes_retried": 0,
                 "per_stage": {},
             }),
-            quality_meter_report=data.get("quality_meter_report")
+            quality_meter_report=data.get("quality_meter_report"),
+            outline_diversity_report=data.get("outline_diversity_report"),
         )
         state._quality_iterations = data.get("_quality_iterations", 0)
         state._prev_audit_snapshot = data.get("_prev_audit_snapshot")
@@ -3311,6 +3446,33 @@ class PipelineOrchestrator:
         except Exception as e:
             logger.debug(f"Failed to write run_status.json: {e}")
 
+    def _write_pause_reason(self, stage_name: str, error: Exception):
+        """Write pause_reason.json when pipeline halts due to credits or similar."""
+        if not self.state or not self.state.project_path:
+            return
+        try:
+            provider = getattr(error, "provider", "unknown")
+            output_dir = Path(self.state.project_path) / "output"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            pause = {
+                "status": "paused",
+                "reason": "credits_exhausted",
+                "provider": provider,
+                "stage": stage_name,
+                "completed_stages": list(self.state.completed_stages),
+                "scene_count": len(self.state.scenes) if self.state.scenes else 0,
+                "total_cost_usd": round(self.state.total_cost_usd, 4),
+                "timestamp": datetime.now().isoformat(),
+                "error": str(error)[:500],
+                "next_action": "Refill credits or change model_defaults, then rerun with --resume",
+            }
+            pause_path = output_dir / "pause_reason.json"
+            with open(pause_path, "w", encoding="utf-8") as f:
+                json.dump(pause, f, indent=2)
+            logger.info("Wrote %s", pause_path)
+        except Exception as e:
+            logger.debug(f"Failed to write pause_reason.json: {e}")
+
     async def _canary_scene_check(self):
         """Pre-flight model check: send a tiny prose prompt and verify clean output.
 
@@ -3492,10 +3654,20 @@ class PipelineOrchestrator:
             self._defense_mode = "protect"
         logger.info(f"Defense mode: {self._defense_mode}")
 
+        # Provenance: log active model config so every run proves it was real
+        md = self.state.config.get("model_defaults", {})
+        logger.info(
+            "RUN_CONFIG: api_model=%s | critic_model=%s | fallback=%s | budget=$%s | mock_fallback=disabled",
+            md.get("api_model", "?"), md.get("critic_model", "?"),
+            md.get("fallback_model", "?"), self.state.config.get("budget_usd", 0),
+        )
+
         stages_to_run = stages or self.STAGES
 
-        # When resuming, skip already-completed stages based on checkpoint data
-        if resume and self.state.completed_stages:
+        # When resuming, skip already-completed stages based on checkpoint data.
+        # Exception: when user explicitly requested a stage subset (--stage or --start-stage),
+        # always start at 0 so those stages run regardless of completed_stages.
+        if resume and self.state.completed_stages and (stages is None or stages == self.STAGES):
             start_index = 0
             for i, stage_name in enumerate(stages_to_run):
                 if stage_name not in self.state.completed_stages:
@@ -3506,7 +3678,7 @@ class PipelineOrchestrator:
             logger.info(f"Resuming from stage {start_index} ({stages_to_run[start_index] if start_index < len(stages_to_run) else 'done'}), "
                        f"{len(self.state.completed_stages)} stages already completed")
         else:
-            start_index = self.state.current_stage if resume else 0
+            start_index = 0
 
         # Build reverse lookup: stage_name -> parallel group
         parallel_lookup = {}
@@ -3535,7 +3707,8 @@ class PipelineOrchestrator:
                 stage_name = stages_to_run[i]
 
                 # Skip stages already completed (safety check for parallel group overlap)
-                if stage_name in self.state.completed_stages:
+                # Exception: when user explicitly requested a single stage (--stage X), always run it
+                if len(stages_to_run) > 1 and stage_name in self.state.completed_stages:
                     i += 1
                     continue
 
@@ -3602,7 +3775,37 @@ class PipelineOrchestrator:
                     self.state.save()
                     self._write_run_status(stage_name, result)
 
+                except CreditsExhaustedError as cee:
+                    logger.critical(
+                        "CREDITS_EXHAUSTED: %s provider out of credits during stage '%s'. "
+                        "Pipeline paused. Refill credits and rerun with --resume.",
+                        cee.provider, stage_name,
+                    )
+                    self.state.save()
+                    self._write_pause_reason(stage_name, cee)
+                    self._write_run_status(stage_name)
+                    _log_incident(stage_name, "credits_exhausted", str(cee)[:200], severity="critical")
+                    break
+
                     await self._emit("on_stage_complete", stage_name, result)
+
+                    # Human-in-the-loop: pause for review if stage is in gates
+                    review_gates = (self.state.config or {}).get("enhancements", {}).get("human_review_gates") or []
+                    if result.status == StageStatus.COMPLETED and stage_name in review_gates:
+                        output_dir = self.state.project_path / "output" if getattr(self.state, "project_path", None) else None
+                        if output_dir:
+                            output_dir.mkdir(parents=True, exist_ok=True)
+                            review_file = output_dir / "review_requested.json"
+                            with open(review_file, "w", encoding="utf-8") as f:
+                                json.dump({"stage": stage_name, "status": "awaiting_review"}, f, indent=2)
+                            logger.warning(
+                                "HUMAN_REVIEW: Pausing after %s. Review output, then press Enter to continue.",
+                                stage_name,
+                            )
+                            try:
+                                input("Press Enter when review complete to continue... ")
+                            except EOFError:
+                                pass
 
                     if result.status == StageStatus.FAILED:
                         consecutive_failures += 1
@@ -3946,6 +4149,12 @@ class PipelineOrchestrator:
                 tokens_used=tokens,
                 cost_usd=tokens * 0.00001  # Rough estimate
             )
+
+        except CreditsExhaustedError:
+            # Re-raise so the main run loop can write pause_reason.json
+            if scenes_snapshot is not None:
+                self.state.scenes = scenes_snapshot
+            raise
 
         except Exception as e:
             import traceback
@@ -5143,7 +5352,199 @@ Respond with a JSON object: {{"chapters": [{{"chapter": {miss_ch}, "chapter_titl
                     f"missing_entities={drift.get('missing_entities', [])}"
                 )
 
+        # --- Outline diversity validation ---
+        od_mode = "warn"
+        od_cfg = {}
+        if self.policy and hasattr(self.policy, "outline_diversity"):
+            od_pol = self.policy.outline_diversity
+            od_mode = getattr(od_pol, "mode", "warn")
+            od_cfg = {
+                "window": getattr(od_pol, "window", 5),
+                "adjacent_threshold": getattr(od_pol, "adjacent_threshold", 0.80),
+                "window_threshold": getattr(od_pol, "window_threshold", 0.70),
+                "max_same_function_ratio": getattr(od_pol, "max_same_function_ratio", 0.45),
+            }
+        if od_mode != "off" and all_chapters:
+            try:
+                from quality.outline_diversity import validate_outline_diversity, format_diversity_report
+                od_report = validate_outline_diversity(all_chapters, **od_cfg)
+                if not od_report["pass"]:
+                    report_text = format_diversity_report(od_report)
+                    if od_mode == "strict":
+                        max_regen = getattr(od_pol, "max_regen_attempts", 2) if self.policy and hasattr(self.policy, "outline_diversity") else 2
+                        logger.warning("OUTLINE DIVERSITY FAILED (strict mode, %d regen attempts available):\n%s", max_regen, report_text)
+                        # Strict regen: ask LLM to revise flagged scenes
+                        for regen_attempt in range(max_regen):
+                            flagged = self._build_diversity_repair_prompt(od_report)
+                            if not flagged:
+                                break
+                            try:
+                                repair_client = self.get_client_for_stage("master_outline")
+                                repair_resp = await repair_client.generate(
+                                    flagged,
+                                    system_prompt=(
+                                        "You are a story architect. Revise ONLY the flagged scenes to increase "
+                                        "narrative diversity. Change their function, emotional mode, location, "
+                                        "or interaction type as suggested. Return the revised scenes as a JSON array "
+                                        "of objects with the SAME keys as the input scenes. Do NOT change scene IDs."
+                                    ),
+                                    temperature=0.7,
+                                )
+                                if repair_resp and repair_resp.content:
+                                    total_tokens += getattr(repair_resp, "total_tokens", 0)
+                                    revised = extract_json_robust(repair_resp.content, expect_array=True)
+                                    if isinstance(revised, list) and revised:
+                                        self._apply_diversity_patches(all_chapters, revised)
+                                        self.state.master_outline = all_chapters
+                                        od_report = validate_outline_diversity(all_chapters, **od_cfg)
+                                        if od_report["pass"]:
+                                            logger.info("Outline diversity: PASS after regen attempt %d", regen_attempt + 1)
+                                            break
+                                        logger.info("Outline diversity: still failing after regen attempt %d", regen_attempt + 1)
+                            except Exception as re_err:
+                                logger.debug("Outline diversity regen attempt %d failed: %s", regen_attempt + 1, re_err)
+                                break
+                        self.state.outline_diversity_report = od_report
+                    else:
+                        logger.warning("OUTLINE DIVERSITY warnings:\n%s", report_text)
+                        self.state.outline_diversity_report = od_report
+                else:
+                    logger.info("Outline diversity: PASS (%d scenes)", od_report["total_scenes"])
+                    self.state.outline_diversity_report = od_report
+            except Exception as e:
+                logger.debug("Outline diversity check failed (non-blocking): %s", e)
+
         return self.state.master_outline, total_tokens
+
+    # --- Outline diversity repair helpers ---
+
+    def _build_diversity_repair_prompt(self, od_report: dict) -> str:
+        """Build LLM prompt from outline diversity violations.
+
+        Extracts flagged scene IDs, pulls the original scene data from the
+        current master_outline, and formats a repair request with concrete
+        fix suggestions.
+
+        Returns empty string if no actionable violations exist.
+        """
+        violations = od_report.get("violations", [])
+        if not violations:
+            return ""
+
+        # Collect unique scene IDs that need revision
+        flagged_ids: set = set()
+        for v in violations:
+            if v.get("severity") == "low":
+                continue  # Only fix high/medium
+            for key in ("scene_a", "scene_b"):
+                sid = v.get(key, "")
+                if sid:
+                    flagged_ids.add(sid)
+            # FUNCTION_MONOTONY / EMOTIONAL_MONOTONY don't have scene_a/b
+            # but their fix is global — skip per-scene repair for those
+
+        if not flagged_ids:
+            return ""
+
+        # Pull scene data from current outline
+        scene_map: dict = {}
+        for chapter in (self.state.master_outline or []):
+            if not isinstance(chapter, dict):
+                continue
+            ch_num = int(chapter.get("chapter", 0))
+            for scene in chapter.get("scenes", []):
+                if not isinstance(scene, dict):
+                    continue
+                sc_num = int(scene.get("scene", scene.get("scene_number", 0)))
+                sid = f"ch{ch_num}_s{sc_num}"
+                if sid in flagged_ids:
+                    scene_map[sid] = scene
+
+        if not scene_map:
+            return ""
+
+        # Build violation summary
+        violation_lines = []
+        for v in violations:
+            if v.get("severity") == "low":
+                continue
+            vtype = v["type"]
+            if vtype in ("ADJACENT_DUPLICATE", "WINDOW_DUPLICATE"):
+                violation_lines.append(
+                    f"- {vtype}: {v['scene_a']} and {v['scene_b']} are too similar "
+                    f"(similarity {v.get('similarity', '?')}). "
+                    f"Shared axes: {', '.join(v.get('shared_axes', []))}. "
+                    f"Fix: {v.get('suggestion', '')}"
+                )
+            elif vtype == "FUNCTION_MONOTONY":
+                violation_lines.append(
+                    f"- {vtype}: {v['function']} appears in {v['count']}/{v['total']} scenes. "
+                    f"Fix: {v.get('suggestion', '')}"
+                )
+            elif vtype == "EMOTIONAL_MONOTONY":
+                violation_lines.append(
+                    f"- {vtype}: '{v['mode']}' appears in {v['count']}/{v['total']} scenes. "
+                    f"Fix: {v.get('suggestion', '')}"
+                )
+
+        # Build prompt
+        import json as _json
+        scenes_json = _json.dumps(list(scene_map.values()), indent=2)
+        prompt = (
+            "The following scenes have been flagged for poor narrative diversity.\n\n"
+            "VIOLATIONS:\n" + "\n".join(violation_lines) + "\n\n"
+            "FLAGGED SCENES (JSON):\n" + scenes_json + "\n\n"
+            "Revise ONLY these scenes to fix the violations. Keep the same scene IDs, "
+            "chapter numbers, and scene numbers. Change purpose, central_conflict, "
+            "emotional_arc, location, or outcome as needed to increase diversity. "
+            "Return the revised scenes as a JSON array."
+        )
+        return prompt
+
+    def _apply_diversity_patches(self, all_chapters: list, revised: list) -> None:
+        """Merge revised scenes back into the outline in-place by scene ID.
+
+        Matches each revised scene to the original via chapter + scene number,
+        then updates the scene dict in-place (preserving any keys the LLM
+        didn't return).
+        """
+        # Build lookup: (chapter, scene_number) → revised scene dict
+        patch_map: dict = {}
+        for rs in revised:
+            if not isinstance(rs, dict):
+                continue
+            ch = rs.get("chapter")
+            sc = rs.get("scene", rs.get("scene_number"))
+            if ch is not None and sc is not None:
+                patch_map[(int(ch), int(sc))] = rs
+
+        if not patch_map:
+            logger.debug("No valid patches found in revised scenes")
+            return
+
+        patched = 0
+        for chapter in all_chapters:
+            if not isinstance(chapter, dict):
+                continue
+            ch_num = int(chapter.get("chapter", 0))
+            for scene in chapter.get("scenes", []):
+                if not isinstance(scene, dict):
+                    continue
+                sc_num = int(scene.get("scene", scene.get("scene_number", 0)))
+                key = (ch_num, sc_num)
+                if key in patch_map:
+                    patch = patch_map[key]
+                    # Update mutable fields, preserve scene identity
+                    for field in (
+                        "purpose", "central_conflict", "character_scene_goal",
+                        "outcome", "emotional_arc", "opening_hook",
+                        "differentiator", "location", "scene_name",
+                    ):
+                        if field in patch:
+                            scene[field] = patch[field]
+                    patched += 1
+
+        logger.info("Applied %d diversity patches to outline", patched)
 
     def _scene_name_fuzzy_match(self, a: str, b: str) -> bool:
         """True if two scene names are too similar (duplicate risk)."""
@@ -5626,6 +6027,39 @@ Return JSON with:
             return "female"
         return ""
 
+    def _build_character_genders(self) -> dict:
+        """Build a {first_name_lower: 'male'/'female'} dict for all known characters.
+
+        Used by _repair_pov_context_errors() so named-character patterns use
+        the actual character's gender instead of assuming opposite-of-protagonist.
+        Cached on the instance after first call (characters don't change mid-run).
+        """
+        if hasattr(self, '_cached_char_genders'):
+            return self._cached_char_genders
+        genders = {}
+        # From state.characters (populated by character_profiles stage)
+        for char in (self.state.characters or []) if self.state else []:
+            if not isinstance(char, dict):
+                continue
+            name = (char.get("name") or "").strip()
+            if not name:
+                continue
+            first = name.split()[0].lower()
+            gender = self._get_character_gender(name)
+            if gender:
+                genders[first] = gender
+        # From config protagonist / other_characters as fallback
+        if self.state and self.state.config:
+            protag = (self.state.config.get("protagonist") or "").strip()
+            if protag:
+                first = protag.split()[0].lower()
+                if first not in genders:
+                    g = self._get_protagonist_gender()
+                    if g:
+                        genders[first] = g
+        self._cached_char_genders = genders
+        return genders
+
     @staticmethod
     def _infer_gender_from_pronouns(text: str) -> str:
         """Fallback gender inference from pronoun frequency in raw text.
@@ -5831,6 +6265,8 @@ RULES:
         """
         # Pass raw text for pronoun-based fallback gender inference
         pov_name, pov_gender = self._get_pov_info(pov_character, scene_text=text)
+        # Build character_genders dict for accurate pronoun repair
+        char_genders = self._build_character_genders()
         return _postprocess_scene(
             text,
             pov_name,
@@ -5838,6 +6274,7 @@ RULES:
             pov_gender,
             self._get_foreign_whitelist(),
             policy=self.policy,
+            character_genders=char_genders,
         )
 
     # ========================================================================
@@ -5990,6 +6427,66 @@ RULES:
                 ))
                 if third_person_refs >= 3:
                     issues["pov_drift"] = True
+
+            # POV pronoun confusion: [Non-POV name] [verb] my [body_attr]
+            # Catches: "Sofia speaks, my voice..." / "Gianna narrows my eyes"
+            _body_attrs = (r'voice|eyes|face|lips|head|hair|gaze|smile|expression|'
+                          r'brow|chin|jaw|cheek|shoulder|shoulders|hand|hands|'
+                          r'fingers|arm|arms|breath|chest|throat|neck|mouth')
+            # Get character names (excluding protagonist)
+            _char_names = set()
+            for char in (self.state.characters or []):
+                if isinstance(char, dict):
+                    name = (char.get("name") or "").split()[0]
+                    if name and name.lower() != (protagonist_name or "").lower():
+                        _char_names.add(re.escape(name))
+            # Also extract from other_characters config
+            other_chars_str = self.state.config.get("other_characters", "")
+            for m in re.findall(r'\b([A-Z][a-z]{2,})\b', str(other_chars_str)):
+                if m.lower() != (protagonist_name or "").lower():
+                    _char_names.add(re.escape(m))
+
+            if _char_names:
+                names_alt = "|".join(_char_names)
+                # Pattern: [Name] [verb/comma] my [body_attr]
+                pov_confusion_hits = len(re.findall(
+                    rf'\b(?:{names_alt})\b[^.!?]{{0,30}}\bmy\s+(?:{_body_attrs})\b',
+                    text, re.IGNORECASE
+                ))
+                if pov_confusion_hits >= 2:
+                    issues["pov_pronoun_confusion"] = True
+                    logger.warning(
+                        f"POV pronoun confusion: {pov_confusion_hits} instances of "
+                        f"[character name] ... my [body part]"
+                    )
+
+        # Therapy-speak detector: dialogue that sounds like a therapy session
+        if word_count >= 100:
+            _THERAPY_PATTERNS = [
+                r'(?i)\bi appreciate you sharing\b',
+                r'(?i)\bi hear what you\'?re saying\b',
+                r'(?i)\bthat must be (?:really |so )?hard\b',
+                r'(?i)\bi need you to understand\b',
+                r'(?i)\bi want to be honest with you\b',
+                r'(?i)\bthank you for being vulnerable\b',
+                r'(?i)\bi\'?m processing\b',
+                r'(?i)\bwe should talk about what happened\b',
+                r'(?i)\bi want you to know that i\b',
+                r'(?i)\bit\'?s okay to feel\b',
+            ]
+            therapy_hits = sum(1 for pat in _THERAPY_PATTERNS if re.search(pat, text))
+            if therapy_hits >= 3:
+                issues["therapy_speak"] = True
+                logger.warning(f"Therapy-speak detected: {therapy_hits} therapeutic dialogue patterns")
+
+        # Emotional summary ending detector: check last paragraph for bow-tie markers
+        if word_count >= 100:
+            _paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+            if _paragraphs:
+                _last_para = _paragraphs[-1].lower()
+                _bow_tie_hits = sum(1 for m in self._BOW_TIE_MARKERS if m in _last_para)
+                if _bow_tie_hits >= 1:
+                    issues["emotional_summary_ending"] = True
 
         # Prompt echo/leak detector: FORMAT_CONTRACT fragments in prose
         _PROMPT_LEAK_FINGERPRINTS = [
@@ -6255,12 +6752,20 @@ RULES:
         total_tokens = response.input_tokens + response.output_tokens
         self._budget_tracker["generation_tokens"] += response.input_tokens + response.output_tokens
 
+        # Truncation detection: warn if response hit max_tokens limit
+        if response.finish_reason == "length":
+            logger.warning(
+                "TRUNCATION DETECTED in %s (scene %s): finish_reason='length'. "
+                "Response may be incomplete (%d output tokens). Consider raising max_tokens.",
+                stage_name, scene_meta.get("scene_id", "?"), response.output_tokens,
+            )
+
         # Run critic gate on raw output
         validation = self._validate_scene_output(response.content, scene_meta)
         self._record_artifact_metrics(stage_name, scene_meta or {}, validation)
 
         # If critic gate fails on fixable issues, retry once with issue-specific feedback
-        fixable_issues = {"preamble", "truncation_marker", "alternate_version", "analysis_commentary", "prompt_leak", "language_drift"}
+        fixable_issues = {"preamble", "truncation_marker", "alternate_version", "analysis_commentary", "prompt_leak", "language_drift", "pov_pronoun_confusion"}
         detected = set(validation.get("issues", {}).keys())
 
         # Budget guard: check retry budget before attempting
@@ -6306,6 +6811,10 @@ RULES:
                     score -= 30
                 if issues.get("pov_drift"):
                     score -= 20
+                if issues.get("pov_pronoun_confusion"):
+                    score -= 25
+                if issues.get("emotional_summary_ending"):
+                    score -= 15
                 # Quality bonuses
                 wc = val.get("word_count", 0)
                 if wc >= 200:
@@ -6728,31 +7237,106 @@ RULES:
 
         return "\n".join(lines)
 
+    def _build_entity_anchor(self, scene_info: dict, chapter: dict, pov_char: str) -> str:
+        """Build a compact MANDATORY FACTS block for entity continuity.
+
+        Extracts hard facts from character profiles and config that the LLM must
+        not contradict: character names, relationships, critical backstory (deaths,
+        family members), and high_concept entities.
+
+        Placed at TOP of scene prompt so the LLM sees it before any creative
+        instructions. Prevents entity drift (e.g., Marco's brother having 7
+        different names across chapters).
+        """
+        lines = ["=== MANDATORY FACTS (DO NOT CONTRADICT) ==="]
+        config = self.state.config
+
+        # Protagonist facts
+        protagonist = config.get("protagonist", "")
+        if protagonist:
+            # Take first 150 chars — enough for name, age, key traits
+            lines.append(f"PROTAGONIST: {protagonist[:150].strip()}")
+
+        # Antagonist facts
+        antagonist = config.get("antagonist", "")
+        if antagonist:
+            lines.append(f"ANTAGONIST/CONFLICT: {antagonist[:150].strip()}")
+
+        # Other characters — extract name + one-line role
+        other_chars = config.get("other_characters", "")
+        if other_chars:
+            # Parse character entries (usually separated by newlines or periods)
+            char_entries = re.split(r'\n|(?<=[.!])\s+(?=[A-Z])', str(other_chars))
+            for entry in char_entries[:6]:
+                entry = entry.strip()
+                if entry and len(entry) > 10:
+                    # Take name + first descriptor (up to 100 chars)
+                    lines.append(f"- {entry[:100].strip()}")
+
+        # High concept entities (extracted during fingerprinting)
+        fingerprint = getattr(self.state, 'high_concept_fingerprint', None)
+        if fingerprint and isinstance(fingerprint, dict):
+            entities = fingerprint.get('entities', [])
+            if entities:
+                lines.append(f"KEY ENTITIES: {', '.join(entities[:10])}")
+
+        # Character profiles — extract only names and key relationships
+        characters = self.state.characters or []
+        for char in characters[:8]:
+            if not isinstance(char, dict):
+                continue
+            name = char.get("name", "")
+            role = char.get("role", "")
+            backstory = char.get("backstory", "")
+            # Extract death/family facts from backstory (critical continuity)
+            death_facts = []
+            if backstory:
+                for pattern in [r"(?:brother|sister|sibling|son|daughter|mother|father|wife|husband)[^.]*(?:died|death|killed|lost|passed)[^.]*\.",
+                                r"(?:died|death|killed|lost|passed)[^.]*(?:brother|sister|sibling|son|daughter|mother|father|wife|husband)[^.]*\."]:
+                    matches = re.findall(pattern, backstory, re.IGNORECASE)
+                    death_facts.extend(m.strip() for m in matches[:2])
+
+            if name and (role or death_facts):
+                fact_line = f"- {name}"
+                if role:
+                    fact_line += f" ({role})"
+                if death_facts:
+                    fact_line += f" — KEY FACT: {death_facts[0][:80]}"
+                lines.append(fact_line)
+
+        if len(lines) <= 1:
+            return ""  # No facts to anchor
+
+        lines.append("These facts are IMMUTABLE. Never invent alternate names, change relationships, or contradict backstory.")
+        return "\n".join(lines)
+
     def _get_used_details_tracker(self, scenes: List[Dict]) -> str:
         """Extract repeated sensory details, physical tics, and catchphrases
         from previously written scenes so the next scene can avoid them.
 
-        Scans the last 10 scenes for phrases that appear 2+ times across scenes.
-        Returns a DO NOT REUSE list.
+        Two-tier: (1) Last 20 scenes - repeated phrases. (2) Global hot list -
+        top N phrases across entire manuscript (catches long-range repetition).
+        Config: enhancements.used_details_global_hot.enabled, top_n (default 10).
         """
         if not scenes or len(scenes) < 2:
             return ""
 
-        # Scan last 10 scenes for repeated short phrases (3-6 word ngrams)
-        recent = scenes[-10:] if len(scenes) >= 10 else scenes
-        phrase_counts: Dict[str, int] = {}
+        cfg = (self.state.config or {}).get("enhancements", {}).get("used_details_global_hot", {})
+        use_global = cfg.get("enabled", True)
+        global_top_n = int(cfg.get("top_n", 10))
 
+        # Tier 1: Last 20 scenes (existing logic)
+        recent = scenes[-20:] if len(scenes) >= 20 else scenes
+        phrase_counts: Dict[str, int] = {}
         for s in recent:
             if not isinstance(s, dict):
                 continue
             content = s.get("content", "").lower()
             words = content.split()
-            # Extract 3-6 word phrases
-            scene_phrases = set()  # dedupe within single scene
+            scene_phrases = set()
             for n in range(3, 7):
                 for i in range(len(words) - n + 1):
                     phrase = " ".join(words[i:i+n])
-                    # Skip very common phrases
                     if any(skip in phrase for skip in ["i was", "it was", "he was", "she was",
                                                        "i had", "the way", "in the", "of the",
                                                        "at the", "on the", "to the"]):
@@ -6761,20 +7345,52 @@ RULES:
             for phrase in scene_phrases:
                 phrase_counts[phrase] = phrase_counts.get(phrase, 0) + 1
 
-        # Find phrases appearing in 2+ different scenes
         repeated = sorted(
             [(p, c) for p, c in phrase_counts.items() if c >= 2],
             key=lambda x: -x[1]
-        )[:15]  # Top 15 most repeated
+        )[:30]
 
-        if not repeated:
+        # Tier 2: Global hot list across entire manuscript (catches scene 5 phrase in scene 80)
+        global_phrases: List[Tuple[str, int]] = []
+        if use_global and len(scenes) > 20:
+            global_counts: Dict[str, int] = {}
+            for s in scenes:
+                if not isinstance(s, dict):
+                    continue
+                content = s.get("content", "").lower()
+                words = content.split()
+                scene_phrases = set()
+                for n in range(3, 6):  # Slightly shorter for global
+                    for i in range(len(words) - n + 1):
+                        phrase = " ".join(words[i:i+n])
+                        if any(skip in phrase for skip in ["i was", "it was", "in the", "of the"]):
+                            continue
+                        scene_phrases.add(phrase)
+                for phrase in scene_phrases:
+                    global_counts[phrase] = global_counts.get(phrase, 0) + 1
+            global_phrases = sorted(
+                [(p, c) for p, c in global_counts.items() if c >= 3],
+                key=lambda x: -x[1]
+            )[:global_top_n]
+
+        if not repeated and not global_phrases:
             return ""
 
         lines = ["=== ALREADY-USED DETAILS (DO NOT REUSE) ===",
                  "These phrases/details appeared in multiple previous scenes.",
                  "INVENT FRESH alternatives. Do NOT repeat these:"]
+        seen = set()
         for phrase, count in repeated:
-            lines.append(f'- "{phrase}" (used {count}x)')
+            if phrase not in seen:
+                lines.append(f'- "{phrase}" (used {count}x)')
+                seen.add(phrase)
+        if global_phrases:
+            lines.append("")
+            lines.append("GLOBAL HOT (avoid across entire manuscript):")
+            for phrase, count in global_phrases:
+                if phrase not in seen:
+                    lines.append(f'- "{phrase}" (used {count}x)')
+                    seen.add(phrase)
 
         return "\n".join(lines)
 
@@ -6831,7 +7447,124 @@ RULES:
         client = self.get_client_for_stage("scene_drafting")
         config = self.state.config
 
+        # Budget guard: estimate cost before drafting, warn if exceeds config.budget_usd
+        try:
+            bg_cfg = config.get("enhancements", {}).get("budget_guard", {})
+            if bg_cfg.get("enabled", True) and bg_cfg.get("warn_if_exceed", True):
+                scene_count = sum(
+                    len([s for s in (ch.get("scenes") or []) if isinstance(s, dict)])
+                    for ch in (self.state.master_outline or []) if isinstance(ch, dict)
+                )
+                budget_usd = float(config.get("budget_usd", 0) or 0)
+                if scene_count > 0 and budget_usd > 0:
+                    tokens_cfg = bg_cfg.get("tokens_per_scene") or [5000, 1200]
+                    inp, out = (tokens_cfg[:2] + [5000, 1200])[:2]
+                    est_in = scene_count * inp
+                    est_out = scene_count * out
+                    model_name = getattr(client, "model_name", "gpt-4o-mini")
+                    from prometheus_lib.llm.clients import is_ollama_model
+                    if is_ollama_model(model_name):
+                        est_cost = 0.0
+                    else:
+                        est_cost = (est_in / 1e6 * 0.50) + (est_out / 1e6 * 1.50)
+                    current = getattr(self.state, "total_cost_usd", 0) or 0
+                    if current + est_cost > budget_usd:
+                        logger.warning(
+                            "BUDGET_GUARD: scene_drafting estimated ~$%.2f (%.0f scenes × ~%dk tokens) "
+                            "would exceed budget $%.2f (current: $%.2f). Proceeding; consider reducing scenes or budget.",
+                            est_cost, scene_count, (inp + out) / 1000, budget_usd, current
+                        )
+        except Exception as e:
+            logger.debug("Budget guard check failed (non-blocking): %s", e)
+
+        # --- Character profile completeness check ---
+        pc_mode = "warn"
+        if self.policy and hasattr(self.policy, "profile_completeness"):
+            pc_pol = self.policy.profile_completeness
+            pc_mode = getattr(pc_pol, "mode", "warn")
+            pc_min = getattr(pc_pol, "min_score", 0.70)
+            pc_major = getattr(pc_pol, "major_role_threshold", 0.80)
+            pc_auto = getattr(pc_pol, "auto_patch", True)
+        else:
+            pc_min, pc_major, pc_auto = 0.70, 0.80, True
+        if pc_mode != "off" and self.state.characters:
+            try:
+                from quality.profile_completeness import check_all_profiles, format_completeness_report, build_patch_prompt
+                pc_report = check_all_profiles(
+                    self.state.characters,
+                    min_score=pc_min,
+                    major_role_threshold=pc_major,
+                )
+                if not pc_report["pass"]:
+                    report_text = format_completeness_report(pc_report)
+                    if pc_mode == "strict" and pc_auto:
+                        logger.warning("PROFILE COMPLETENESS FAILED — auto-patching:\n%s", report_text)
+                        # Auto-patch: for each incomplete character, ask LLM to fill gaps
+                        for char_result in pc_report.get("characters", []):
+                            if char_result["pass"]:
+                                continue
+                            char_name = char_result["name"]
+                            missing = char_result.get("missing_fields", [])
+                            if not missing:
+                                continue
+                            # Find the character dict
+                            for ch_idx, ch in enumerate(self.state.characters):
+                                if not isinstance(ch, dict):
+                                    continue
+                                if (ch.get("name") or "").strip() == char_name:
+                                    patch_prompt = build_patch_prompt(ch, missing)
+                                    try:
+                                        patch_client = self.get_client_for_stage("character_profiles")
+                                        patch_resp = await patch_client.generate(
+                                            patch_prompt,
+                                            system_prompt="You are a character development assistant. Return ONLY a JSON object with the requested fields filled in. No commentary.",
+                                            temperature=0.5,
+                                        )
+                                        if patch_resp and patch_resp.content:
+                                            patch_data = extract_json_robust(patch_resp.content, expect_array=False)
+                                            if isinstance(patch_data, dict):
+                                                # Merge patch into character (don't overwrite existing)
+                                                for k, v in patch_data.items():
+                                                    if v and not ch.get(k):
+                                                        ch[k] = v
+                                                    elif isinstance(v, dict) and isinstance(ch.get(k), dict):
+                                                        for sk, sv in v.items():
+                                                            if sv and not ch[k].get(sk):
+                                                                ch[k][sk] = sv
+                                                logger.info("Patched character '%s': %s", char_name, list(patch_data.keys()))
+                                    except Exception as pe:
+                                        logger.debug("Auto-patch failed for '%s': %s", char_name, pe)
+                                    break
+                    else:
+                        logger.warning("PROFILE COMPLETENESS warnings:\n%s", report_text)
+                else:
+                    logger.info("Profile completeness: PASS (%d characters)", pc_report["total_characters"])
+            except Exception as e:
+                logger.debug("Profile completeness check failed (non-blocking): %s", e)
+
         _world_bible_json = json.dumps(self.state.world_bible, indent=2) if self.state.world_bible else ''
+
+        # Load hot phrases from previous run (feedback loop: miner → drafting)
+        _hot_phrase_avoid: list = []
+        try:
+            configs_dir = Path(__file__).resolve().parent.parent / "configs"
+            auto_yaml_path = configs_dir / "hot_phrases.auto.yaml"
+            if auto_yaml_path.exists():
+                with open(auto_yaml_path, "r", encoding="utf-8") as _hf:
+                    _hp_data = yaml.safe_load(_hf) or {}
+                _hp_limit = 15
+                if self.policy and hasattr(self.policy, "quality_polish"):
+                    qm = getattr(self.policy.quality_polish, "quality_meters", None)
+                    if qm is not None:
+                        _hp_limit = getattr(qm, "max_hot_phrases_feedback", 15)
+                for entry in (_hp_data.get("phrases") or [])[:_hp_limit]:
+                    phrase = entry.get("phrase", "")
+                    if phrase and entry.get("severity") == "high":
+                        _hot_phrase_avoid.append(phrase)
+                if _hot_phrase_avoid:
+                    logger.info("Hot phrase feedback: %d phrases loaded from previous run", len(_hot_phrase_avoid))
+        except Exception as e:
+            logger.debug("Could not load hot phrases for feedback: %s", e)
 
         # Extract key config elements for drafting
         writing_style = config.get("writing_style", "")
@@ -6867,6 +7600,29 @@ RULES:
 
                 # Get rolling context from previous scenes
                 previous_context = self._get_previous_scenes_context(scenes)
+
+                # Scene function enforcement: classify previous scene to prevent repetition
+                prev_function_block = ""
+                if scenes:
+                    prev_scene = scenes[-1]
+                    if isinstance(prev_scene, dict):
+                        prev_content = prev_scene.get("content", "")
+                        prev_purpose = prev_scene.get("purpose", "")
+                        if prev_content:
+                            try:
+                                from quality.quiet_killers import classify_scene_function
+                                prev_func = classify_scene_function(prev_content, prev_purpose)
+                                # Get last 2 sentences of previous scene for context
+                                prev_sentences = re.split(r'[.!?]+', prev_content.strip())
+                                prev_sentences = [s.strip() for s in prev_sentences if s.strip()]
+                                prev_tail = '. '.join(prev_sentences[-2:]) + '.' if prev_sentences else ""
+                                prev_function_block = f"""
+=== PREVIOUS SCENE FUNCTION: {prev_func} ===
+Previous scene ended with: "{prev_tail[:150]}"
+THIS SCENE MUST DO SOMETHING DIFFERENT. If the previous scene was {prev_func}, this scene needs a different narrative function.
+Do NOT repeat: vow to talk later, reflect on complexity, almost-kiss-then-interrupted, or generic emotional processing."""
+                            except ImportError:
+                                pass
 
                 # Extract comprehensive scene attributes
                 scene_name = scene_info.get('scene_name', f'Scene {scene_num}')
@@ -6915,9 +7671,10 @@ RULES:
                 # Few-shot style injection: 1-2 random paragraphs from style_samples (mimicry > adjectives)
                 style_ref_block = ""
                 style_samples = config.get("style_samples") or []
-                if isinstance(style_samples, list) and style_samples:
+                if style_samples:
                     flat = []
-                    for s in style_samples:
+                    samples = style_samples if isinstance(style_samples, list) else [style_samples]
+                    for s in samples:
                         if isinstance(s, str) and s.strip():
                             flat.extend([p.strip() for p in s.split("\n\n") if p.strip()])
                     if flat:
@@ -6968,7 +7725,10 @@ Balance action with internal reaction. Maintain or escalate — do not deflate m
                 chapter_openings_block = self._get_chapter_openings_to_avoid(scenes, chapter_num)
 
                 # Build forbidden phrases from policy (centralizes what was hardcoded)
-                _style_avoid = self.policy.lexicon.style_avoid if self.policy else []
+                _style_avoid = list(self.policy.lexicon.style_avoid) if self.policy else []
+                # Merge hot phrases from previous run (feedback loop)
+                if _hot_phrase_avoid:
+                    _style_avoid.extend(p for p in _hot_phrase_avoid if p not in _style_avoid)
                 if _style_avoid:
                     _style_avoid_lines = '- NEVER use: "' + '", "'.join(_style_avoid) + '"'
                 else:
@@ -6994,9 +7754,14 @@ Open with immediate engagement (action or dialogue). No slow atmospheric preambl
 Hook in the first 100 words.
 """
 
+                # Build entity anchor (mandatory facts at top of prompt)
+                entity_anchor = self._build_entity_anchor(scene_info, chapter, pov_char)
+
                 prompt = f"""Write Chapter {chapter_num}, Scene {scene_num}: "{scene_name}"
 POSITION: Scene {scene_position + 1} of {total_scenes_in_chapter} in this chapter.
 YOU ARE {pov_char.upper()}. You are writing AS {pov_char}, in first person. "I" = {pov_char}.
+
+{entity_anchor}
 
 === MASTER CRAFT PRINCIPLES ===
 1. SHOW vs TELL:
@@ -7053,6 +7818,20 @@ INFLUENCES TO CHANNEL: {influences}
 - NEVER open with weather, atmosphere, or description—open with ACTION or DIALOGUE
 - NEVER loop: if you made a point, advance; do not restate it
 - NEVER dump backstory in a block. Weave or imply; reveal through conflict or dialogue.
+- NEVER write dialogue floating in a void ("white room"): every exchange needs at least one grounding
+  detail — a surface they touch, a smell, a background sound — within the first 3 dialogue lines.
+- NEVER end a scene with an emotional summary or "bow-tie" that restates the scene's meaning.
+  End on action, unresolved dialogue, a sensory image, or an unanswered question.
+  BAD: "And in that moment, I knew everything had changed between us."
+  GOOD: "The door clicked shut. I stared at the scratch on the latch."
+- NEVER write 3+ consecutive paragraphs of exposition, backstory, or internal monologue without
+  interruption by action, dialogue, or sensory stimulus. Break up thought blocks.
+- NEVER write therapy-speak dialogue. Characters are NOT in a therapy session.
+  BANNED: "I appreciate you sharing that", "I hear what you're saying", "That must be hard",
+  "I need you to understand", "Thank you for being vulnerable", "I'm processing", "We should talk about what happened".
+  Characters express emotion through BEHAVIOR (silence, deflection, humor, action), not therapeutic language.
+
+{prev_function_block}
 
 === SCENE DIFFERENTIATION (critical) ===
 When outline beats are similar, the AI repeats itself. THIS SCENE MUST BE DISTINCT:
@@ -7248,6 +8027,38 @@ Write the complete scene as {pov_char} ("I"):"""
         total_tokens += micro_tokens
 
         self.state.scenes = scenes
+
+        # Canonical facts ledger (lite) — per-scene continuity log
+        try:
+            from continuity.facts_ledger import build_facts_ledger, write_facts_ledger
+            cfg = config.get("enhancements", {}).get("facts_ledger", {})
+            if cfg.get("enabled", True):
+                ledger = build_facts_ledger(
+                    scenes,
+                    characters=self.state.characters or [],
+                    config=config,
+                )
+                proj = getattr(self.state, "project_path", None)
+                if proj and Path(proj).exists() and "skipped" not in ledger:
+                    write_facts_ledger(ledger, Path(proj) / "output")
+        except Exception as e:
+            logger.debug("Facts ledger failed (non-blocking): %s", e)
+
+        # --- Cross-scene entity consistency check ---
+        try:
+            from quality.entity_tracker import check_entity_consistency, format_entity_report
+            ec_report = check_entity_consistency(scenes)
+            if not ec_report["pass"]:
+                report_text = format_entity_report(ec_report)
+                logger.warning("ENTITY CONSISTENCY issues found:\n%s", report_text)
+            else:
+                logger.info(
+                    "Entity consistency: PASS (%d entities, %d pairs)",
+                    ec_report["entity_count"], ec_report["pair_count"],
+                )
+        except Exception as e:
+            logger.debug("Entity consistency check failed (non-blocking): %s", e)
+
         return scenes, total_tokens
 
     # ========================================================================
@@ -7677,6 +8488,17 @@ that contain the listed phrases. Everything else stays EXACTLY as written."""
         "nothing would ever be the same", "everything had changed",
         "nothing would be the same", "would never be the same",
         "in that moment", "she knew", "he knew", "i knew",
+        # Production audit additions (Run 8: 55+ scenes had these endings)
+        "ready to face whatever", "one step at a time",
+        "whatever comes next", "a new beginning",
+        "somehow that was enough", "for now that was enough",
+        "and that was enough", "that would have to be enough",
+        "something had shifted", "something between us had changed",
+        "the first step toward", "maybe that was all",
+        "and for the first time", "for the first time in",
+        "perhaps that was", "and somehow i knew",
+        "whatever tomorrow brought", "whatever happened next",
+        "the world felt different", "everything felt different",
     ]
 
     async def _micro_scene_turn_repair(self, client, content: str, scene: dict,
@@ -8019,7 +8841,8 @@ Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
         criteria: list[str] = []
         patch_targets: list[str] = []
 
-        weak_cats = [c for c in STRUCTURE_CATEGORIES if scores.get(c, 0) < 3]
+        cats = list(scores.keys()) if scores else list(STRUCTURE_CATEGORIES)
+        weak_cats = [c for c in cats if scores.get(c, 0) < 3]
 
         for cat in weak_cats:
             fill = CATEGORY_FILL_INS.get(cat, {})
@@ -8048,6 +8871,10 @@ Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
                 patch_targets.append("dialogue exchanges")
             elif cat == "scene_turn":
                 patch_targets.append("final beat / closing paragraphs")
+            elif cat == "intimacy_beat":
+                patch_targets.append("intimacy/emotional escalation passages")
+            elif cat == "clue_placement":
+                patch_targets.append("clue or revelation passages")
 
         # Append LLM-generated fixes that aren't already covered
         for f in (llm_fixes or [])[:4]:
@@ -8116,10 +8943,11 @@ Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
         or [FIX THIS] so the model knows exactly what to touch. Preserves
         80%+ wording and proves compliance via success criteria.
         """
-        weak_cats = [c for c in STRUCTURE_CATEGORIES if scores.get(c, 0) < 3]
+        cats = list(scores.keys()) if scores else list(STRUCTURE_CATEGORIES)
+        weak_cats = [c for c in cats if scores.get(c, 0) < 3]
         score_lines = "\n".join(
             f"  * {cat}: {scores.get(cat, 0)}/5{' **WEAK**' if cat in weak_cats else ''}"
-            for cat in STRUCTURE_CATEGORIES
+            for cat in cats
         )
         directive_lines = "\n".join(
             f"{i+1}. {d}" for i, d in enumerate(repair_info["directives"])
@@ -8167,11 +8995,27 @@ SUCCESS CRITERIA (must be detectable on re-read):
 
 Now output the revised scene."""
 
+    def _get_structure_categories(self) -> List[str]:
+        """Base categories + genre-specific extras from config."""
+        base = list(STRUCTURE_CATEGORIES)
+        cfg = (self.state.config or {}).get("enhancements", {}).get("structure_gate", {})
+        genre_map = cfg.get("genre_categories") or {}
+        genre = ((self.state.config or {}).get("genre") or "").lower()
+        for key, extras in genre_map.items():
+            if key in genre or genre in key:
+                if isinstance(extras, list):
+                    for e in extras:
+                        if e and e not in base:
+                            base.append(e)
+                break
+        return base
+
     async def _stage_structure_gate(self) -> tuple:
         """Quality escalation gate: score → diagnose → repair → rescore.
 
-        For each scene, scores 5 categories (0-5 each, 25 total):
+        For each scene, scores structure categories (0-5 each). Base:
           structure, tension, emotional_beat, dialogue_realism, scene_turn
+        Genre-specific extras from enhancements.structure_gate.genre_categories.
 
         Enhanced scoring outputs per-category fail_reasons, repair_directives,
         and patch_targets for targeted repairs with explicit success criteria.
@@ -8201,11 +9045,13 @@ Now output the revised scene."""
 
         total_tokens = 0
         target_words = self.state.words_per_scene or 750
+        categories = self._get_structure_categories()
 
-        # Pull configurable thresholds
+        # Pull configurable thresholds (scale pass_total if genre adds categories)
         max_iterations = int(self._get_threshold("structure_gate_max_iterations"))
-        pass_total = int(self._get_threshold("structure_gate_pass_total"))
+        base_pass_total = int(self._get_threshold("structure_gate_pass_total"))
         pass_min = int(self._get_threshold("structure_gate_pass_min"))
+        pass_total = int(base_pass_total * len(categories) / max(1, len(STRUCTURE_CATEGORIES)))
         diminishing_threshold = int(self._get_threshold("structure_gate_diminishing_threshold"))
 
         # Track results for logging/debugging
@@ -8239,11 +9085,14 @@ Now output the revised scene."""
             # --- SCORING PASS ---
             still_failing = []
             for idx in sorted(failing_indices):
+                if idx >= len(self.state.scenes):
+                    logger.warning("structure_gate scoring: idx %d out of range (%d scenes), skipping", idx, len(self.state.scenes))
+                    continue
                 scene = self.state.scenes[idx]
                 chapter = scene.get("chapter", 0)
                 scene_num = scene.get("scene_number", 0)
                 content = scene.get("content", "")
-                outline = self._get_outline_for_scene(chapter, scene_num)
+                outline = self._get_outline_for_scene(chapter, scene_num) or {}
 
                 # Build compact outline meta for scoring prompt
                 meta = {
@@ -8279,20 +9128,30 @@ OPENING VARIETY CHECK (this is the first scene of Ch{chapter}):
 If this scene's opening echoes the syntax/structure of those openings, penalize "structure" and include in fail_reasons.
 """
 
+                # Build dynamic schema and rubric from categories (base + genre extras)
+                scores_schema = ", ".join(f'"{c}": 0' for c in categories)
+                fail_schema = ", ".join(f'"{c}": ["..."]' for c in categories)
+                rubric_lines = {
+                    "structure": "clear goal stated early, concrete obstacle, tactic progression, coherent beginning/middle/end",
+                    "tension": "active conflict or pressure, explicit stakes/consequences, uncertainty, escalation over scene",
+                    "emotional_beat": "clear internal shift from one posture to another, shown through behavior change, matches intended arc",
+                    "dialogue_realism": "subtext present, evasion/deflection, distinct voices, not exposition dumps",
+                    "scene_turn": "ending changes stakes/knowledge/relationships, next action is forced, no summary endings",
+                    "intimacy_beat": "romantic/emotional beat lands, physical and emotional escalation coherent, consent clear",
+                    "clue_placement": "clues or red herrings present, fair-play visibility, reader can participate",
+                }
+                rubric_block = "\n".join(f"- {c}: {rubric_lines.get(c, 'genre-specific criteria')}" for c in categories)
+
                 # Enhanced scoring prompt: requests fail_reasons, repair_directives, patch_targets
                 scoring_prompt = f"""Evaluate this scene's narrative structure.
 
 OUTPUT ONLY JSON with this exact schema:
-{{"scores": {{"structure": 0, "tension": 0, "emotional_beat": 0, "dialogue_realism": 0, "scene_turn": 0}}, "fail_reasons": {{"structure": ["..."], "tension": ["..."]}}, "repair_directives": ["max 4 imperatives"], "patch_targets": ["opening paragraphs", "final beat"], "reasons": ["max 4 short bullets"], "fixes": ["max 4 concrete fix directives"]}}
+{{"scores": {{{scores_schema}}}, "fail_reasons": {{{fail_schema}}}, "repair_directives": ["max 4 imperatives"], "patch_targets": ["opening paragraphs", "final beat"], "reasons": ["max 4 short bullets"], "fixes": ["max 4 concrete fix directives"]}}
 
 Only include fail_reasons for categories scoring below 3. Each fail_reason should be 1 sentence explaining WHAT is missing.
 
 Rubric (0-5 each, 5 is best):
-- structure: clear goal stated early, concrete obstacle, tactic progression, coherent beginning/middle/end
-- tension: active conflict or pressure, explicit stakes/consequences, uncertainty, escalation over scene
-- emotional_beat: clear internal shift from one posture to another, shown through behavior change, matches intended arc
-- dialogue_realism: subtext present, evasion/deflection, distinct voices, not exposition dumps
-- scene_turn: ending changes stakes/knowledge/relationships, next action is forced, no summary endings
+{rubric_block}
 {opening_variety_note}
 Target length: ~{target_words} words.
 
@@ -8329,7 +9188,7 @@ JSON:"""
 
                     # Normalize scores: ensure all categories present and in 0-5
                     scores = {}
-                    for cat in STRUCTURE_CATEGORIES:
+                    for cat in categories:
                         v = scores_raw.get(cat)
                         if isinstance(v, (int, float)) and 0 <= v <= 5:
                             scores[cat] = int(v)
@@ -8380,11 +9239,14 @@ JSON:"""
                 break
 
             for idx, scores, fixes, fail_reasons, llm_directives in still_failing:
+                if idx >= len(self.state.scenes):
+                    logger.warning("structure_gate repair: idx %d out of range (%d scenes), skipping", idx, len(self.state.scenes))
+                    continue
                 scene = self.state.scenes[idx]
                 chapter = scene.get("chapter", 0)
                 scene_num = scene.get("scene_number", 0)
                 content = scene.get("content", "")
-                outline = self._get_outline_for_scene(chapter, scene_num)
+                outline = self._get_outline_for_scene(chapter, scene_num) or {}
 
                 meta = {
                     "scene_name": outline.get("scene_name", ""),
@@ -10192,11 +11054,19 @@ OUTPUT the text with only problematic sentences fixed:"""
         outline = self.state.master_outline or []
         characters = self.state.characters or []
 
+        # Pass genre-tuned thresholds from policy to meters
+        meter_config = None
+        if self.policy and hasattr(self.policy, "quality_polish"):
+            qm = getattr(self.policy.quality_polish, "quality_meters", None)
+            if qm is not None:
+                meter_config = qm.model_dump() if hasattr(qm, "model_dump") else qm.dict()
+
         try:
             meter_report = run_all_meters(
                 scenes=scenes,
                 outline=outline,
                 characters=characters,
+                meter_config=meter_config,
             )
         except Exception as e:
             logger.warning(f"Quality meters failed (non-blocking): {e}")
@@ -10213,19 +11083,61 @@ OUTPUT the text with only problematic sentences fixed:"""
             self.state.quality_contract_report = qc_report
 
             # Write quality_contract.json to output dir
-            project_path = Path(self.state.config.get("_project_path", ""))
-            if project_path.exists():
-                output_dir = project_path / "output"
+            pp = getattr(self.state, "project_path", None) or Path(self.state.config.get("_project_path", ""))
+            if pp and Path(pp).exists():
+                output_dir = Path(pp) / "output"
                 output_dir.mkdir(parents=True, exist_ok=True)
                 qc_path = output_dir / "quality_contract.json"
                 export = {
                     "contracts": qc_report.get("contracts", []),
                     "opening_move_history": qc_report.get("opening_move_history", []),
                     "opening_move_violations": qc_report.get("opening_move_violations", []),
+                    "batch_warnings": qc_report.get("batch_warnings", []),
                 }
                 with open(qc_path, "w", encoding="utf-8") as f:
                     json.dump(export, f, indent=2, ensure_ascii=False)
                 logger.info("Quality Contract written to %s", qc_path)
+
+                # Write quality_scorecard.json
+                sc_data = meter_report.get("scorecard", {})
+                if sc_data and "error" not in sc_data:
+                    try:
+                        sc_path = output_dir / "quality_scorecard.json"
+                        with open(sc_path, "w", encoding="utf-8") as f:
+                            json.dump(sc_data, f, indent=2, ensure_ascii=False)
+                        logger.info("Quality Scorecard written to %s", sc_path)
+                    except Exception as e:
+                        logger.warning("Failed to write quality_scorecard.json: %s", e)
+
+                    # Scorecard regression snapshot (run-to-run diff)
+                    try:
+                        from quality.scorecard_diff import store_and_diff
+                        reg_cfg = None
+                        w_cfg = None
+                        if meter_config and isinstance(meter_config, dict):
+                            sr = meter_config.get("scorecard_regression")
+                            if isinstance(sr, dict):
+                                reg_cfg = sr
+                            sw = meter_config.get("scorecard_weights")
+                            if isinstance(sw, dict):
+                                w_cfg = sw
+                        diff_result = store_and_diff(
+                            output_dir=output_dir,
+                            scorecard=sc_data,
+                            regression_cfg=reg_cfg,
+                            weights_cfg=w_cfg,
+                            model=self.state.config.get("model_defaults", {}).get("model", ""),
+                            scene_count=len(scenes),
+                        )
+                        if diff_result.get("enabled") is not False:
+                            meter_report["scorecard_diff"] = diff_result
+                            if diff_result.get("overall", {}).get("regression"):
+                                logger.warning(
+                                    "SCORECARD REGRESSION detected: score dropped by %s",
+                                    diff_result["overall"].get("score_delta"),
+                                )
+                    except Exception as e:
+                        logger.debug("Scorecard regression snapshot failed (non-blocking): %s", e)
 
             warnings_count = sum(len(c.get("warnings", [])) for c in qc_report.get("contracts", []))
             if warnings_count > 0:
@@ -10233,6 +11145,33 @@ OUTPUT the text with only problematic sentences fixed:"""
         except Exception as e:
             logger.warning(f"Quality Contract failed (non-blocking): {e}")
             meter_report["quality_contract"] = {"error": str(e)}
+
+        # Craft scorecard (deterministic metrics — runs independently)
+        project_path = getattr(self.state, "project_path", None) or Path(self.state.config.get("_project_path", ""))
+        if project_path and Path(project_path).exists():
+            try:
+                from quality.craft_scorecard import compute_craft_scorecard
+                craft_cfg = self.state.config.get("enhancements", {}).get("craft_scorecard", {})
+                if craft_cfg.get("enabled", True):
+                    craft_data = compute_craft_scorecard(scenes, self.state.config)
+                    if "skipped" not in craft_data:
+                        output_dir = Path(project_path) / "output"
+                        output_dir.mkdir(parents=True, exist_ok=True)
+                        craft_path = output_dir / "craft_scorecard.json"
+                        with open(craft_path, "w", encoding="utf-8") as f:
+                            json.dump(craft_data, f, indent=2, ensure_ascii=False)
+                        logger.info("Craft Scorecard written to %s", craft_path)
+                        meter_report["craft_scorecard"] = craft_data
+                        # Regression snapshot: runs/<run_id>/ + scorecard_diff.json
+                        try:
+                            from quality.regression_snapshot import save_regression_snapshot
+                            diff = save_regression_snapshot(craft_data, output_dir, self.state.config)
+                            if diff:
+                                meter_report["scorecard_diff"] = diff
+                        except Exception as e:
+                            logger.debug("Regression snapshot failed (non-blocking): %s", e)
+            except Exception as e:
+                logger.warning("Craft scorecard failed (non-blocking): %s", e)
 
         # Store in state for run_report
         self.state.quality_meter_report = meter_report
@@ -10861,34 +11800,43 @@ Respond with JSON:
             "policy_version": self.policy.policy_version,
         }
         # Quality dashboard: % scenes flagged by each defense mechanism
-        if self.state.scenes:
-            total_sc = len(self.state.scenes)
-            # Scene-level metrics live on scene dicts, not artifact_metrics
-            flagged_dedup = sum(
-                1 for sc in self.state.scenes
-                if isinstance(sc, dict) and sc.get("retried")
-            )
-            flagged_gate = sum(
-                1 for sc in self.state.scenes
-                if isinstance(sc, dict) and sc.get("structure_repair_iteration", 0) > 0
-            )
-            avg_repair_delta = 0.0
-            repair_deltas = []
-            for sc in self.state.scenes:
-                if not isinstance(sc, dict):
-                    continue
-                history = sc.get("structure_scores_history", [])
-                if len(history) >= 2:
-                    repair_deltas.append(sum(history[-1].values()) - sum(history[0].values()))
-            if repair_deltas:
-                avg_repair_delta = sum(repair_deltas) / len(repair_deltas)
+        try:
+            if self.state.scenes:
+                total_sc = len(self.state.scenes)
+                # Scene-level metrics live on scene dicts, not artifact_metrics
+                flagged_dedup = sum(
+                    1 for sc in self.state.scenes
+                    if isinstance(sc, dict) and sc.get("retried")
+                )
+                flagged_gate = sum(
+                    1 for sc in self.state.scenes
+                    if isinstance(sc, dict) and sc.get("structure_repair_iteration", 0) > 0
+                )
+                avg_repair_delta = 0.0
+                repair_deltas = []
+                for sc in self.state.scenes:
+                    if not isinstance(sc, dict):
+                        continue
+                    history = sc.get("structure_scores_history", [])
+                    if len(history) >= 2:
+                        try:
+                            last_sum = sum(v for v in history[-1].values() if isinstance(v, (int, float)))
+                            first_sum = sum(v for v in history[0].values() if isinstance(v, (int, float)))
+                            repair_deltas.append(last_sum - first_sum)
+                        except (TypeError, AttributeError):
+                            pass  # Skip malformed history entries
+                if repair_deltas:
+                    avg_repair_delta = sum(repair_deltas) / len(repair_deltas)
 
-            run_report["quality_dashboard"] = {
-                "pct_scenes_flagged_semantic_dedup": round(flagged_dedup / total_sc * 100, 1) if total_sc else 0,
-                "pct_scenes_repaired_structure_gate": round(flagged_gate / total_sc * 100, 1) if total_sc else 0,
-                "avg_score_delta_per_repair": round(avg_repair_delta, 2),
-                "total_scenes": total_sc,
-            }
+                run_report["quality_dashboard"] = {
+                    "pct_scenes_flagged_semantic_dedup": round(flagged_dedup / total_sc * 100, 1) if total_sc else 0,
+                    "pct_scenes_repaired_structure_gate": round(flagged_gate / total_sc * 100, 1) if total_sc else 0,
+                    "avg_score_delta_per_repair": round(avg_repair_delta, 2),
+                    "total_scenes": total_sc,
+                }
+        except Exception as e:
+            logger.warning(f"Quality dashboard computation failed (non-blocking): {e}")
+            run_report["quality_dashboard"] = {"error": str(e)}
 
         # Add high concept info if available
         if self.state.high_concept_fingerprint:
@@ -10897,6 +11845,8 @@ Respond with JSON:
             run_report["quality_polish"] = self.state.quality_polish_report
         if hasattr(self.state, 'quality_meter_report') and self.state.quality_meter_report:
             run_report["quality_meters"] = self.state.quality_meter_report
+        if hasattr(self.state, 'outline_diversity_report') and self.state.outline_diversity_report:
+            run_report["outline_diversity"] = self.state.outline_diversity_report
         if metrics_delta:
             run_report["metrics_delta"] = metrics_delta
 

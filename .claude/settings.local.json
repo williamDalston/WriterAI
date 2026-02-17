@@ -30,7 +30,8 @@
       "Bash(xxd:*)",
       "Bash(curl.exe:*)",
       "Bash(tee:*)",
-      "Bash(set:*)"
+      "Bash(set:*)",
+      "Bash(python3:*)"
     ]
   }
 }

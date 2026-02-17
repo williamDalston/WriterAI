@@ -173,10 +173,10 @@ def _check_causality(paragraphs: List[str]) -> List[str]:
         # Connector without prior reference
         if _CONNECTOR_STARTS.match(para):
             prev_words = set(prev_text.lower().split())
-            para_words = set(para_lower.split())
+            para_word_list = para_lower.split()[:15]  # first 15 words as list
             # Check for noun/pronoun overlap with prior
             anchors_in_para = set(_ANCHOR_WORDS.findall(para))
-            if not prev_text or (not any(w in prev_words for w in para_words[:15])):
+            if not prev_text or (not any(w in prev_words for w in para_word_list)):
                 warnings.append(
                     f"CAUSALITY: paragraph {i+1} starts with connector but may not reference prior beat"
                 )
@@ -247,9 +247,10 @@ def _check_dialogue_line_economy(
 ) -> Tuple[float, int, List[str]]:
     """Short-line ratio and expository risk for high-tension scenes."""
     warnings = []
-    # Extract quoted dialogue lines
+    # Extract quoted dialogue lines (double quotes + smart quotes only;
+    # single quotes match contractions like don't/can't, so skip them)
     lines = re.findall(r'"([^"]+)"', content)
-    lines.extend(re.findall(r"'([^']+)'", content))
+    lines.extend(re.findall(r'[\u201c]([^\u201d]+)[\u201d]', content))
     if not lines:
         return 1.0, 0, []
 
@@ -379,6 +380,8 @@ def run_quality_contract(
             continue
         content = scene.get("content", "")
         scene_id = scene.get("scene_id") or _derive_scene_id(scene, idx)
+        ch = int(scene.get("chapter", 0))
+        sc = int(scene.get("scene_number") or scene.get("scene", 0))
         tension_level = _get_tension_level(scene, outline)
 
         paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
@@ -431,9 +434,38 @@ def run_quality_contract(
         except Exception as e:
             logger.debug("Quiet killers check failed (non-blocking): %s", e)
 
+        # Tension curve compliance: flag sharp drops between adjacent scenes
+        if idx > 0 and outline:
+            prev_tension = _get_tension_level((scenes or [])[idx - 1], outline)
+            if prev_tension >= 7 and tension_level <= 3:
+                all_warnings.append(
+                    f"TENSION_COLLAPSE: scene drops from {prev_tension} to {tension_level}—consider smoother transition"
+                )
+
+        # Ch1 first 250-word hook: must have dialogue, action, or concrete question
+        if ch == 1 and sc == 1 and content:
+            first_250 = " ".join(content.split()[:250])
+            has_dialogue = '"' in first_250 or '\u201c' in first_250
+            has_action = bool(re.search(
+                r"\b(grabbed|walked|ran|reached|pushed|turned|stepped|stood|threw)\b",
+                first_250, re.IGNORECASE,
+            ))
+            has_question = "?" in first_250
+            if not (has_dialogue or has_action or has_question) and len(first_250.split()) >= 100:
+                all_warnings.append(
+                    "CH1_HOOK_WEAK: first 250 words lack dialogue, action, or question—hook readers earlier"
+                )
+
+        # Scene function classification (F2)
+        scene_func = "UNKNOWN"
+        try:
+            from quality.quiet_killers import classify_scene_function, _get_purpose_from_outline
+            purpose_text = _get_purpose_from_outline(scene, outline or [])
+            scene_func = classify_scene_function(content, purpose_text)
+        except (ImportError, Exception):
+            pass
+
         # Opening move (for chapter-openers)
-        ch = int(scene.get("chapter", 0))
-        sc = int(scene.get("scene_number") or scene.get("scene", 0))
         opening_move = _classify_opening_move(content)
         if sc == 1:
             opening_move_history.append({"chapter": ch, "scene_id": scene_id, "move": opening_move})
@@ -448,19 +480,22 @@ def run_quality_contract(
             "scene_id": scene_id,
             "tension_level": tension_level,
             "opening_move": opening_move,
+            "scene_function": scene_func,
             "edits": report_edits,
             "warnings": all_warnings,
         })
 
-    # Batch quiet killers: emo_flatline, scene_redundancy, chapter_variety
+    # Batch quiet killers: emo_flatline, scene_redundancy (v2), chapter_variety, cross-scene continuity
     try:
         from quality.quiet_killers import (
             check_emo_flatline,
-            check_scene_function_redundancy,
+            check_function_redundancy_v2,
             check_chapter_variety,
+            check_cross_scene_continuity,
         )
         emo_w = check_emo_flatline(scenes or [])
-        red_w = check_scene_function_redundancy(scenes or [], outline or [])
+        red_w = check_function_redundancy_v2(scenes or [], outline or [])
+        cross_w = check_cross_scene_continuity(scenes or [])
         # Build chapter dicts with scenes for chapter_variety
         ch_map: Dict[int, list] = {}
         for s in (scenes or []):
@@ -472,15 +507,13 @@ def run_quality_contract(
             ch_variety_w.extend(
                 check_chapter_variety([{"chapter": ch_num, "scenes": ch_scenes}])
             )
-        # Merge batch warnings into first contract (or append to all)
-        for w in emo_w + red_w + ch_variety_w:
-            if contracts:
-                contracts[0].setdefault("warnings", []).append(w)
+        batch_warnings = emo_w + red_w + cross_w + ch_variety_w
     except (ImportError, Exception):
-        pass
+        batch_warnings = []
 
     return {
         "contracts": contracts,
         "opening_move_history": opening_move_history,
         "opening_move_violations": opening_move_violations,
+        "batch_warnings": batch_warnings,
     }

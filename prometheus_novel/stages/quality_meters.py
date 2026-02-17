@@ -335,8 +335,21 @@ def _extract_dialogue_by_character(
             elif speaker_ref in char_names:
                 dialogue_by_char[char_names[speaker_ref]].append(dialogue_text)
             elif speaker_ref in ("she", "he", "they"):
-                # Try to attribute based on context (best effort)
-                pass
+                # Resolve pronoun by scanning preceding context for character names
+                match_start = match.start()
+                lookback = content[max(0, match_start - 300):match_start].lower()
+                best_char = None
+                best_pos = -1
+                for cname_lower, cname in char_names.items():
+                    # Skip POV character (they'd use "I", not pronoun)
+                    if cname_lower in pov or pov in cname_lower:
+                        continue
+                    pos = lookback.rfind(cname_lower)
+                    if pos > best_pos:
+                        best_pos = pos
+                        best_char = cname
+                if best_char:
+                    dialogue_by_char[best_char].append(dialogue_text)
 
     return dict(dialogue_by_char)
 
@@ -650,8 +663,16 @@ def run_all_meters(
     scenes: List[Dict],
     outline: List[Dict],
     characters: List[Dict],
+    meter_config: Optional[Dict] = None,
 ) -> Dict:
-    """Run all meters including scene_id integrity. Return combined report.
+    """Run all meters including scene_id integrity and scorecard. Return combined report.
+
+    Args:
+        scenes: List of scene dicts.
+        outline: Master outline.
+        characters: Character dicts.
+        meter_config: Optional dict from policy.quality_polish.quality_meters
+            (genre-tuned thresholds). Falls back to defaults when None.
 
     Returns:
         {
@@ -661,27 +682,58 @@ def run_all_meters(
             "voice": {...},
             "scene_similarity": {...},
             "voice_sub": {...},
+            "scorecard": {...},
             "all_pass": bool,
         }
     """
+    cfg = meter_config or {}
+
     integrity = scene_id_integrity_check(scenes) if scenes else {
         "pass": True, "note": "No scenes to check"
     }
-    rep = repetition_meter(scenes) if scenes else {
+    rep = repetition_meter(
+        scenes,
+        local_window=cfg.get("repetition_local_window", 10),
+    ) if scenes else {
         "pass": True, "note": "No scenes to check"
     }
     dedup = scene_name_dedup_meter(outline) if outline else {
         "pass": True, "note": "No outline to check"
     }
-    voice = voice_distinctiveness_meter(scenes, characters) if scenes else {
+    voice = voice_distinctiveness_meter(
+        scenes, characters,
+        overlap_threshold=cfg.get("voice_overlap_threshold", 0.55),
+    ) if scenes else {
         "pass": True, "note": "No scenes to check"
     }
-    sim = scene_body_similarity_meter(scenes) if scenes and len(scenes) >= 2 else {
+    sim = scene_body_similarity_meter(
+        scenes,
+        similarity_threshold=cfg.get("scene_similarity_threshold", 0.50),
+    ) if scenes and len(scenes) >= 2 else {
         "pass": True, "note": "Need 2+ scenes for similarity check"
     }
-    vsub = voice_sub_metrics(scenes, characters) if scenes else {
+    vsub = voice_sub_metrics(
+        scenes, characters,
+        catchphrase_dominance_threshold=cfg.get("catchphrase_dominance_threshold", 0.40),
+        min_rhythm_variance=cfg.get("min_rhythm_variance", 3.0),
+    ) if scenes else {
         "pass": True, "note": "No scenes to check"
     }
+
+    # Quality Scorecard (F1)
+    try:
+        from quality.quiet_killers import _EMO_KEYWORDS, _WEAK_VERBS, _classify_ending
+        from quality.scorecard import run_scorecard
+        scorecard = run_scorecard(
+            scenes=scenes,
+            emo_keywords=_EMO_KEYWORDS,
+            weak_verbs=_WEAK_VERBS,
+            classify_ending_fn=_classify_ending,
+            thresholds=cfg,
+        ) if scenes else {"pass": True, "note": "No scenes to check"}
+    except Exception as e:
+        logger.warning("Quality Scorecard failed (non-blocking): %s", e)
+        scorecard = {"pass": True, "error": str(e)}
 
     return {
         "scene_id_integrity": integrity,
@@ -690,10 +742,12 @@ def run_all_meters(
         "voice": voice,
         "scene_similarity": sim,
         "voice_sub": vsub,
+        "scorecard": scorecard,
         "all_pass": (
             integrity.get("pass", True) and rep.get("pass", True) and
             dedup.get("pass", True) and voice.get("pass", True) and
-            sim.get("pass", True) and vsub.get("pass", True)
+            sim.get("pass", True) and vsub.get("pass", True) and
+            scorecard.get("pass", True)
         ),
     }
 
@@ -796,6 +850,34 @@ def print_meter_report(report: Dict) -> None:
         print(f"      Rhythm flags: {len(vsub['rhythm_flags'])} characters monotone")
     if vsub.get("note"):
         print(f"      Note: {vsub['note']}")
+
+    # Quality Scorecard
+    sc = report.get("scorecard", {})
+    status = "PASS" if sc.get("pass") else "FAIL"
+    print(f"\n  [6] Quality Scorecard: {status}")
+    if "lexical_diversity" in sc:
+        ld = sc["lexical_diversity"]
+        print(f"      Lexical diversity:   {ld.get('manuscript_avg', 0):.3f} (threshold 0.40)")
+    if "dialogue_density_variance" in sc:
+        dd = sc["dialogue_density_variance"]
+        print(f"      Dialogue density:    mean={dd.get('mean', 0):.3f}, variance={dd.get('variance', 0):.4f}")
+    if "emotional_mode_diversity" in sc:
+        em = sc["emotional_mode_diversity"]
+        print(f"      Emotional entropy:   {em.get('entropy', 0):.2f}/{em.get('max_entropy', 0):.2f}")
+        if em.get("mode_counts"):
+            modes = ", ".join(f"{k}={v}" for k, v in sorted(em["mode_counts"].items(), key=lambda x: -x[1])[:4])
+            print(f"      Mode distribution:   {modes}")
+    if "verb_specificity_index" in sc:
+        vs = sc["verb_specificity_index"]
+        print(f"      Verb specificity:    {vs.get('manuscript_avg', 0):.3f} (threshold 0.30)")
+    if "scene_ending_distribution" in sc:
+        se = sc["scene_ending_distribution"]
+        print(f"      Ending evenness:     {se.get('evenness_score', 0):.3f} (threshold 0.40)")
+        if se.get("ending_counts"):
+            endings = ", ".join(f"{k}={v}" for k, v in se["ending_counts"].items())
+            print(f"      Ending types:        {endings}")
+    if sc.get("note"):
+        print(f"      Note: {sc['note']}")
 
     # Overall
     overall = "PASS" if report.get("all_pass") else "FAIL"

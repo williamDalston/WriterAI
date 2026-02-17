@@ -92,6 +92,25 @@ def resolve_config(
     if "project_name" not in resolved:
         resolved["project_name"] = project_path.name
 
+    # Optional config validation (enhancements.config_validation)
+    val_cfg = resolved.get("enhancements", {}).get("config_validation", {})
+    if val_cfg.get("enabled", True):
+        try:
+            from configs.schema_validator import validate_config
+            mode = str(val_cfg.get("mode", "warn")).lower()
+            passed, issues = validate_config(resolved, mode=mode)
+            for issue in issues:
+                if issue.startswith("ERROR"):
+                    import logging
+                    logging.getLogger("config_validator").error(issue)
+                elif issue.startswith("WARN"):
+                    import logging
+                    logging.getLogger("config_validator").warning(issue)
+            if not passed and mode == "strict":
+                raise ValueError("Config validation failed. Fix errors and retry.")
+        except ImportError:
+            pass
+
     return resolved
 
 

@@ -61,6 +61,12 @@ pytest -m slow
 pytest -m "not smoke and not slow"
 ```
 
+## Quality System
+
+* **[QUALITY_SYSTEM_OVERVIEW.md](QUALITY_SYSTEM_OVERVIEW.md)** — State of quality infrastructure, what regeneration changes, required artifacts, hard vs soft gates.
+* **[QUALITY_RUNBOOK.md](QUALITY_RUNBOOK.md)** — Triage rules: what to do when TENSION_COLLAPSE, CH1_HOOK_WEAK, facts drift, hot phrases, or budget warns.
+* **[WRITING_RULES_GAP_ANALYSIS.md](WRITING_RULES_GAP_ANALYSIS.md)** — Built-in rules, gaps, recommendations, governance maturity.
+
 ## Architecture & Defense Layers
 
 * **[DEFENSE_ARCHITECTURE.md](DEFENSE_ARCHITECTURE.md)** — Defense layers, problem→defense mapping, artifact metrics, config reference, and improvement inference guide.

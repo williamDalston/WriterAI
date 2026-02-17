@@ -106,6 +106,16 @@ strategic_guidance:
     connection, external threats emerge, stakes rise. Act 3 (75%-100%): Crisis, black
     moment, choice, climax, resolution.
 
+    SCENE FUNCTION BALANCE (critical for romance pacing):
+    - Target mix: BOND 25-30%, FRICTION/CONFLICT 25-30%, PLOT/external 15-20%,
+      REVEAL 10-15%, CRISIS/RESOLUTION 10-15%. If BOND > 35%, pacing suffers.
+    - Oscillate: Bond -> Friction -> Bond -> Disruption -> Bond -> Crisis -> Resolution.
+      Never let two pure BOND scenes sit back-to-back unless the second has new info,
+      higher stakes, or a decision that changes trajectory.
+    - Put the divorce-papers reveal exactly at midpoint. Space bond scenes (arrival,
+      pre-midpoint, pre-climax). Convert early bonding settings to FRICTION when
+      possible—same location, disagreement or external pressure instead of vulnerability.
+
     '
   tropes: 'Forced proximity, one-night-stand-to-lovers, enemies-to-lovers (lite),
     he-falls-first (but she fell first and is in denial), grumpy-sunshine (she''s
@@ -160,6 +170,14 @@ writing_style: 'First person, Lena''s POV. Sharp, witty internal voice that crac
   Physical awareness of Marco rendered in precise, specific detail (not generic).
 
   '
+
+# Paid-run gates (budget guard, human review, scorecard from policy)
+enhancements:
+  budget_guard:
+    enabled: true
+    warn_if_exceed: true
+  human_review_gates:
+    - master_outline
 
 cover:
   author_name: "Lena Castillo"

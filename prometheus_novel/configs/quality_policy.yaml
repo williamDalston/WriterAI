@@ -1,10 +1,23 @@
-# Quality polish policy — genre presets + ceiling rules.
+# Quality polish policy — genre presets + ceiling rules + meter thresholds.
 # Project-level overrides go in project config.yaml under `quality_policy:`.
 
 default_preset: romance
 
 presets:
   romance:
+    outline_diversity:
+      mode: warn
+      window: 5
+      adjacent_threshold: 0.80
+      window_threshold: 0.70
+      # BOND > 35% makes pacing flat; target 25-30%
+      max_same_function_ratio: 0.35
+      max_regen_attempts: 2
+    profile_completeness:
+      mode: warn
+      min_score: 0.70
+      major_role_threshold: 0.80
+      auto_patch: true
     ceiling:
       max_edits_per_scene: 15
       max_edits_per_1k_words: 8.0
@@ -23,6 +36,39 @@ presets:
     cliche_clusters:
       only_flagged: true
       enabled: true
+    quality_meters:
+      voice_overlap_threshold: 0.55
+      lexical_diversity_min: 0.40
+      dialogue_variance_min: 0.01
+      emotional_entropy_min: 1.5
+      verb_specificity_min: 0.30
+      ending_evenness_min: 0.40
+      max_hot_phrases_feedback: 15
+      scorecard_weights:
+        mode: weighted
+        pass_score: 0.70
+        lexical_diversity:
+          weight: 0.15
+          action_on_fail: warn
+        dialogue_density:
+          weight: 0.20
+          action_on_fail: warn
+        emotional_diversity:
+          weight: 0.25
+          action_on_fail: warn
+        verb_specificity:
+          weight: 0.15
+          action_on_fail: warn
+        scene_endings:
+          weight: 0.25
+          action_on_fail: fail
+      scorecard_regression:
+        enabled: true
+        compare_to: last_successful
+        regression_threshold: 0.05
+        warn_on_regression: true
+        fail_on_regression: false
+        max_history: 50
     enabled_passes:
       - phrase_mining
       - phrase_suppression
@@ -31,6 +77,19 @@ presets:
       - cliche_repair
 
   thriller:
+    outline_diversity:
+      mode: warn
+      window: 5
+      adjacent_threshold: 0.85
+      window_threshold: 0.75
+      # Thrillers tolerate more PURSUIT monotony (chase sequences chain)
+      max_same_function_ratio: 0.50
+      max_regen_attempts: 2
+    profile_completeness:
+      mode: warn
+      min_score: 0.65
+      major_role_threshold: 0.75
+      auto_patch: true
     ceiling:
       max_edits_per_scene: 10
       max_edits_per_1k_words: 5.0
@@ -49,6 +108,39 @@ presets:
     cliche_clusters:
       only_flagged: true
       enabled: true
+    quality_meters:
+      voice_overlap_threshold: 0.50
+      lexical_diversity_min: 0.45
+      dialogue_variance_min: 0.015
+      emotional_entropy_min: 1.2
+      verb_specificity_min: 0.35
+      ending_evenness_min: 0.45
+      max_hot_phrases_feedback: 20
+      scorecard_weights:
+        mode: weighted
+        pass_score: 0.70
+        lexical_diversity:
+          weight: 0.15
+          action_on_fail: warn
+        dialogue_density:
+          weight: 0.15
+          action_on_fail: warn
+        emotional_diversity:
+          weight: 0.15
+          action_on_fail: warn
+        verb_specificity:
+          weight: 0.30
+          action_on_fail: fail
+        scene_endings:
+          weight: 0.25
+          action_on_fail: fail
+      scorecard_regression:
+        enabled: true
+        compare_to: last_successful
+        regression_threshold: 0.05
+        warn_on_regression: true
+        fail_on_regression: false
+        max_history: 50
     enabled_passes:
       - phrase_mining
       - phrase_suppression
@@ -56,6 +148,19 @@ presets:
       - cliche_repair
 
   literary:
+    outline_diversity:
+      mode: strict
+      window: 6
+      adjacent_threshold: 0.70
+      window_threshold: 0.60
+      # Literary demands maximum variety
+      max_same_function_ratio: 0.35
+      max_regen_attempts: 3
+    profile_completeness:
+      mode: strict
+      min_score: 0.80
+      major_role_threshold: 0.90
+      auto_patch: true
     ceiling:
       max_edits_per_scene: 8
       max_edits_per_1k_words: 4.0
@@ -75,6 +180,39 @@ presets:
       # Literary: repair even below-threshold clusters
       only_flagged: false
       enabled: true
+    quality_meters:
+      voice_overlap_threshold: 0.45
+      lexical_diversity_min: 0.50
+      dialogue_variance_min: 0.02
+      emotional_entropy_min: 1.8
+      verb_specificity_min: 0.35
+      ending_evenness_min: 0.50
+      max_hot_phrases_feedback: 12
+      scorecard_weights:
+        mode: weighted
+        pass_score: 0.75
+        lexical_diversity:
+          weight: 0.25
+          action_on_fail: fail
+        dialogue_density:
+          weight: 0.15
+          action_on_fail: warn
+        emotional_diversity:
+          weight: 0.30
+          action_on_fail: fail
+        verb_specificity:
+          weight: 0.15
+          action_on_fail: warn
+        scene_endings:
+          weight: 0.15
+          action_on_fail: warn
+      scorecard_regression:
+        enabled: true
+        compare_to: last_successful
+        regression_threshold: 0.05
+        warn_on_regression: true
+        fail_on_regression: false
+        max_history: 50
     enabled_passes:
       - phrase_mining
       - phrase_suppression
@@ -83,6 +221,19 @@ presets:
       - cliche_repair
 
   fantasy:
+    outline_diversity:
+      mode: warn
+      window: 5
+      adjacent_threshold: 0.80
+      window_threshold: 0.70
+      # Fantasy tolerates repeated locations (world-building settings)
+      max_same_function_ratio: 0.45
+      max_regen_attempts: 2
+    profile_completeness:
+      mode: warn
+      min_score: 0.70
+      major_role_threshold: 0.80
+      auto_patch: true
     ceiling:
       max_edits_per_scene: 12
       max_edits_per_1k_words: 6.0
@@ -101,6 +252,39 @@ presets:
     cliche_clusters:
       only_flagged: true
       enabled: true
+    quality_meters:
+      voice_overlap_threshold: 0.55
+      lexical_diversity_min: 0.42
+      dialogue_variance_min: 0.01
+      emotional_entropy_min: 1.5
+      verb_specificity_min: 0.30
+      ending_evenness_min: 0.40
+      max_hot_phrases_feedback: 18
+      scorecard_weights:
+        mode: weighted
+        pass_score: 0.70
+        lexical_diversity:
+          weight: 0.20
+          action_on_fail: warn
+        dialogue_density:
+          weight: 0.15
+          action_on_fail: warn
+        emotional_diversity:
+          weight: 0.25
+          action_on_fail: warn
+        verb_specificity:
+          weight: 0.20
+          action_on_fail: warn
+        scene_endings:
+          weight: 0.20
+          action_on_fail: warn
+      scorecard_regression:
+        enabled: true
+        compare_to: last_successful
+        regression_threshold: 0.05
+        warn_on_regression: true
+        fail_on_regression: false
+        max_history: 50
     enabled_passes:
       - phrase_mining
       - phrase_suppression

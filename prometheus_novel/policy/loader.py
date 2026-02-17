@@ -257,6 +257,19 @@ def load_policy(project_path: Optional[Path] = None) -> Policy:
             base_dict = deep_merge(base_dict, fragment)
             logger.debug("Policy: merged cleanup_patterns.yaml")
 
+    # Layer 2.5: genre-specific outline_diversity / profile_completeness from quality_policy.yaml
+    qp_yaml = _safe_yaml_load(configs_dir / "quality_policy.yaml")
+    if qp_yaml:
+        presets = qp_yaml.get("presets", {})
+        genre_key = qp_yaml.get("default_preset", "romance")
+        genre_preset = presets.get(genre_key, {})
+        _TOP_LEVEL_KEYS = {"outline_diversity", "profile_completeness"}
+        for key in _TOP_LEVEL_KEYS:
+            if key in genre_preset:
+                base_dict = deep_merge(base_dict, {key: genre_preset[key]})
+        if any(k in genre_preset for k in _TOP_LEVEL_KEYS):
+            logger.debug("Policy: merged %s preset from quality_policy.yaml", genre_key)
+
     # Layer 3: project policy.yaml
     if project_path:
         project_dir = Path(project_path)

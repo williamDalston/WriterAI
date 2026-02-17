@@ -20,6 +20,10 @@ import json
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Load .env so API keys are available to LLM clients
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv(usecwd=True))
+
 try:
     import yaml
 except ImportError:
@@ -314,12 +318,20 @@ def cmd_generate(args):
             return 1
 
         stages_to_run = all_stages[start_idx:end_idx + 1]
-        print_info(f"Running stages {start} → {end} ({len(stages_to_run)} stages)")
+        print_info(f"Running stages {start} -> {end} ({len(stages_to_run)} stages)")
 
     else:
         print_info(f"Running full {len(all_stages)}-stage pipeline")
 
-    if args.resume:
+    # When user explicitly requested specific stages, load checkpoint so we have scenes/outline etc.
+    resume = args.resume
+    if not resume and stages_to_run is not None:
+        checkpoint = project_path / "pipeline_state.json"
+        if checkpoint.exists():
+            resume = True
+            print_info("Loading checkpoint (required for stage-range runs)")
+
+    if resume:
         print_info("Resuming from last checkpoint")
 
     # List stages if --list-stages
@@ -333,7 +345,7 @@ def cmd_generate(args):
     print(f"\n{Colors.CYAN}Starting pipeline...{Colors.END}\n")
 
     async def _run():
-        return await orchestrator.run(stages=stages_to_run, resume=args.resume)
+        return await orchestrator.run(stages=stages_to_run, resume=resume)
 
     try:
         final_state = asyncio.run(_run())

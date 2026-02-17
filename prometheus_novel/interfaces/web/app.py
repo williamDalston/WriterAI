@@ -29,6 +29,10 @@ import uvicorn
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Load .env so API keys are available to LLM clients
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv(usecwd=True))
+
 from prometheus_lib.utils.logging_config import setup_logging
 import logging
 

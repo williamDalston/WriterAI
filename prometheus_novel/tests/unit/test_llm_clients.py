@@ -76,29 +76,26 @@ class TestOpenAIClient:
         assert tokens <= len(text)  # tokens should not exceed char count
 
     @pytest.mark.asyncio
-    async def test_mock_response_without_api_key(self):
-        """Test that client returns mock response without API key."""
+    async def test_raises_without_api_key(self):
+        """Test that client raises RuntimeError without API key."""
         with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=True):
             client = OpenAIClient("gpt-4o-mini")
             client.api_key = None
 
-            response = await client.generate("Test prompt")
-
-            assert isinstance(response, LLMResponse)
-            assert "Mock response" in response.content
+            with pytest.raises(RuntimeError, match="OPENAI_API_KEY not set"):
+                await client.generate("Test prompt")
 
     @pytest.mark.asyncio
     async def test_generate_with_system_prompt(self):
         """Test generation with system prompt."""
         client = OpenAIClient("gpt-4o-mini")
-        client.api_key = None  # Force mock mode
+        client.api_key = None  # No key set
 
-        response = await client.generate(
-            "User prompt",
-            system_prompt="You are a helpful assistant."
-        )
-
-        assert isinstance(response, LLMResponse)
+        with pytest.raises(RuntimeError, match="OPENAI_API_KEY not set"):
+            await client.generate(
+                "User prompt",
+                system_prompt="You are a helpful assistant."
+            )
 
 
 class TestGeminiClient:
@@ -130,15 +127,13 @@ class TestAnthropicClient:
         assert client.model_name == "claude-3-5-sonnet-20241022"
 
     @pytest.mark.asyncio
-    async def test_mock_response_without_api_key(self):
-        """Test mock response when API key not set."""
+    async def test_raises_without_api_key(self):
+        """Test that client raises RuntimeError without API key."""
         client = AnthropicClient()
         client.api_key = None
 
-        response = await client.generate("Test prompt")
-
-        assert isinstance(response, LLMResponse)
-        assert "Mock Claude" in response.content
+        with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY not set"):
+            await client.generate("Test prompt")
 
 
 class TestGetClient:

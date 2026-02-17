@@ -89,6 +89,33 @@ _DEFAULT_REPLACEMENTS: Dict[str, List[str]] = {
         "pushing past the lump",
         "dry swallow",
     ],
+    # Production Run 8 additions: high-frequency phrases from 66k-word generation
+    "eyes meet": [
+        "gazes caught",
+        "looks collided",
+        "glances snagged",
+        "eyes found each other",
+    ],
+    "eyes lock": [
+        "gazes held",
+        "stares tangled",
+        "looks caught and held",
+        "neither of us blinked",
+    ],
+    "unspoken understanding": [
+        "tacit agreement",
+        "wordless recognition",
+        "a knowing look",
+        "mutual acknowledgment",
+        "silent accord",
+    ],
+    "resolve and determination": [
+        "conviction",
+        "grit",
+        "stubbornness",
+        "purpose",
+        "certainty",
+    ],
 }
 
 
@@ -124,7 +151,11 @@ def suppress_phrases(
             ceiling.register_scene(i, len(text.split()))
 
     for config in phrase_configs:
-        phrase = config["phrase"]
+        if not isinstance(config, dict):
+            continue
+        phrase = config.get("phrase")
+        if not phrase:
+            continue
         keep_first = config.get("keep_first", 2)
         replacements = config.get("replacements") or bank.get(phrase, [])
 
@@ -159,7 +190,7 @@ def suppress_phrases(
                 replacement_idx += 1
 
                 original = match.group()
-                if original[0].isupper():
+                if repl and original[0].isupper():
                     repl = repl[0].upper() + repl[1:]
 
                 new_text = new_text[: match.start()] + repl + new_text[match.end() :]

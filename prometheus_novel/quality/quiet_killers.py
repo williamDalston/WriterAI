@@ -9,9 +9,11 @@ Checks (warnings):
 5. Filter phrases: I saw/heard/felt/noticed overuse
 6. Emotional temperature monotony: EMO_FLATLINE
 7. Too tidy dialogue: no interrupt/dodge/callback
-8. Scene purpose redundancy
+8. Scene purpose redundancy (v1: prefix match; v2: triple-match classifier)
 9. Chapter structure variety
 10. Final-line punch: SUMMARY/ATMOSPHERE endings
+11. Scene function classification: REVEAL/BOND/CONFLICT/DECISION/AFTERMATH/PURSUIT
+12. Cross-scene continuity: time flow, character presence, location drift
 
 Transforms (applied):
 - Filter removal: "I noticed X" → "X" when redundant
@@ -32,18 +34,46 @@ _TIME_OF_DAY = re.compile(
     re.IGNORECASE,
 )
 _LOCATION_NAMES = re.compile(
-    r"\b(kitchen|hallway|bedroom|office|street|car|restaurant|balcony|courtroom)\b",
+    r"\b(kitchen|hallway|bedroom|office|street|car|restaurant|balcony|courtroom|"
+    r"bathroom|basement|attic|rooftop|garden|alley|warehouse|dock|bridge|"
+    r"hospital|church|library|bar|pub|hotel|lobby|elevator|stairwell|"
+    r"garage|park|forest|woods|cabin|apartment|mansion|prison|cell|"
+    r"station|airport|harbor|pier|marketplace|arena|stadium|theater|"
+    r"classroom|cafeteria|diner|clinic|morgue|chapel|cemetery|"
+    r"parking lot|sidewalk|highway|trail|beach|shore|riverbank|cave)\b",
     re.IGNORECASE,
 )
 _TRANSITION_VERBS = re.compile(
-    r"\b(walked|stepped|drove|moved|went|headed|turned|followed|later|minutes later)\b",
+    r"\b(walked|stepped|drove|moved|went|headed|turned|followed|later|minutes later|"
+    r"ran|rushed|hurried|traveled|crossed|climbed|descended|entered|left|returned|"
+    r"fled|stumbled|sprinted|crept|wandered|rode|sailed|flew|arrived|departed|"
+    r"made (?:my|her|his|their|our) way)\b",
     re.IGNORECASE,
 )
-_OBJECT_HAND = re.compile(
-    r"\b(glass|cup|phone|keys|letter|book)\s+(in my hand|in her hand|in his hand)\b|"
-    r"\b(set down|put down|picked up|grabbed|released)\b",
+# Object possession tracking — detect acquire / release / use events
+_TRACKABLE_OBJECTS = (
+    "glass|cup|mug|phone|keys|letter|book|knife|gun|bag|purse|"
+    "bottle|pen|folder|envelope|photo|photograph|cigarette|umbrella|sword"
+)
+_OBJ_ACQUIRE = re.compile(
+    rf"\b(picked up|grabbed|took|clutched|held|carried|snatched|seized|"
+    rf"reached for|lifted|caught)\b\s+(?:\w+\s+){{0,3}}\b({_TRACKABLE_OBJECTS})\b|"
+    rf"\b({_TRACKABLE_OBJECTS})\b\s+(?:\w+\s+){{0,3}}\b(in (?:my|her|his|their) hand)",
     re.IGNORECASE,
 )
+_OBJ_RELEASE = re.compile(
+    rf"\b(set down|put down|dropped|released|tossed|placed|left|"
+    rf"slid|laid|slammed down|threw)\b\s+(?:\w+\s+){{0,3}}\b({_TRACKABLE_OBJECTS})\b|"
+    rf"\b({_TRACKABLE_OBJECTS})\b\s+(?:\w+\s+){{0,3}}\b(on the|onto the|down on|aside|away)",
+    re.IGNORECASE,
+)
+_OBJ_USE = re.compile(
+    rf"\b(sipped|drank from|checked|read|typed on|scrolled|"
+    rf"turned|unlocked with|aimed|fired|opened|flipped through|"
+    rf"poured from|stirred|dialed|swung)\b\s+(?:\w+\s+){{0,3}}\b({_TRACKABLE_OBJECTS})\b",
+    re.IGNORECASE,
+)
+_OBJ_NAME_RE = re.compile(rf"^({_TRACKABLE_OBJECTS})$", re.IGNORECASE)
 
 # === STAKES TOKENS ===
 _STAKES_PATTERNS = [
@@ -94,17 +124,74 @@ _EMO_KEYWORDS = {
 }
 
 # === FINAL-LINE CLASSIFICATION ===
-_ENDING_ACTION = re.compile(r"\b(grabbed|walked|turned|closed|opened|said|asked)\b.*[.!?]$", re.IGNORECASE)
+_ENDING_ACTION = re.compile(
+    r"\b(grabbed|walked|turned|closed|opened|pulled|pushed|stood|ran|"
+    r"slammed|reached|stepped|drove|left|dropped)\b.*[.!?]$",
+    re.IGNORECASE,
+)
 _ENDING_DIALOGUE = re.compile(r'["\'][^"\']*[.!?]["\']?\s*$', re.MULTILINE)
 _ENDING_REVELATION = re.compile(r"\b(knew|understood|realized)\s+", re.IGNORECASE)
 _ENDING_SUMMARY = re.compile(
-    r"\b(changed|forever|nothing would|everything had|moment that)\b.*[.!?]$",
+    r"\b(changed|forever|nothing would|everything had|moment that|"
+    r"somehow that was enough|for now that was|and that was enough|"
+    r"whatever comes next|whatever happened next|whatever tomorrow|"
+    r"ready to face|one step at a time|a new beginning|"
+    r"something had shifted|something between us|"
+    r"the first step toward|for the first time in|"
+    r"the world felt different|everything felt different)\b.*[.!?]$",
     re.IGNORECASE,
 )
 _ENDING_ATMOSPHERE = re.compile(
     r"\b(sun set|rain fell|silence|darkness|light|wind)\b.*[.!?]$",
     re.IGNORECASE,
 )
+
+# === SCENE FUNCTION CLASSIFICATION (F2) ===
+_SCENE_FUNCTIONS = {
+    "REVEAL": re.compile(
+        r"\b(secret|discovery|truth|learned|found out|confession|unveil|reveal|"
+        r"hidden|uncovered|exposed|admitted|realized the truth)\b",
+        re.IGNORECASE,
+    ),
+    "BOND": re.compile(
+        r"\b(connection|intimacy|trust|together|closer|understanding|bond|"
+        r"vulnerable|opened up|shared|comfort|embrace|forgive)\b",
+        re.IGNORECASE,
+    ),
+    "CONFLICT": re.compile(
+        r"\b(confrontation|argument|opposition|fight|clash|resist|challenge|"
+        r"shouted|accused|betrayed|demanded|refused|defied)\b",
+        re.IGNORECASE,
+    ),
+    "DECISION": re.compile(
+        r"\b(choice|turning point|commitment|chose|decided|resolve|"
+        r"determination|vow|swore|committed|no going back)\b",
+        re.IGNORECASE,
+    ),
+    "AFTERMATH": re.compile(
+        r"\b(processing|regrouping|consequences|aftermath|damage|loss|"
+        r"wreckage|picking up the pieces|fallout|reckoning|mourning)\b",
+        re.IGNORECASE,
+    ),
+    "PURSUIT": re.compile(
+        r"\b(chase|search|journey|hunt|follow|track|pursuit|seek|"
+        r"looking for|racing|running toward|escape|fleeing)\b",
+        re.IGNORECASE,
+    ),
+}
+
+# === CROSS-SCENE CONTINUITY (F3) ===
+_TIME_ORDER = {
+    "dawn": 0, "morning": 1, "noon": 2, "midday": 2,
+    "afternoon": 3, "evening": 4, "dusk": 4,
+    "night": 5, "midnight": 6,
+}
+_TIME_SKIP = re.compile(
+    r"\b(later|next day|next morning|hours passed|time passed|"
+    r"the following|by the time|when .+ woke|days later|that night)\b",
+    re.IGNORECASE,
+)
+_PROPER_NAME = re.compile(r"(?<=[.!?\s])\s*([A-Z][a-z]{2,})")
 
 
 def _classify_ending(sentence: str) -> str:
@@ -131,7 +218,9 @@ def check_continuity_tripwires(content: str) -> List[str]:
     paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
     prev_time = None
     prev_loc = None
-    prev_obj = None
+
+    # Object possession state: object_name -> "HELD" | "RELEASED"
+    obj_state: Dict[str, str] = {}
 
     for i, para in enumerate(paragraphs):
         time_match = _TIME_OF_DAY.search(para)
@@ -148,7 +237,71 @@ def check_continuity_tripwires(content: str) -> List[str]:
         if loc_match:
             prev_loc = loc_match.group(1).lower()
 
+        # Object possession tracking
+        _check_object_possession(para, i, obj_state, warnings)
+
     return warnings
+
+
+def _extract_object_from_match(match: re.Match) -> Optional[str]:
+    """Extract the trackable object name from a regex match."""
+    for g in match.groups():
+        if g and _OBJ_NAME_RE.match(g):
+            return g.lower()
+    return None
+
+
+def _check_object_possession(
+    para: str, para_idx: int,
+    obj_state: Dict[str, str],
+    warnings: List[str],
+) -> None:
+    """Track object acquire/release/use events and flag contradictions.
+
+    Events are processed in TEXT ORDER (by match position) to avoid false
+    positives when a paragraph has "set down X, picked up X, sipped X".
+
+    Flags:
+    - POSSESSION_GHOST: object used after being set down (without re-acquiring)
+    - POSSESSION_DOUBLE_DROP: object released twice without re-acquiring
+    """
+    # Collect all events with their text positions
+    events: List[Tuple[int, str, str]] = []  # (position, event_type, object)
+
+    for m in _OBJ_ACQUIRE.finditer(para):
+        obj = _extract_object_from_match(m)
+        if obj:
+            events.append((m.start(), "acquire", obj))
+
+    for m in _OBJ_RELEASE.finditer(para):
+        obj = _extract_object_from_match(m)
+        if obj:
+            events.append((m.start(), "release", obj))
+
+    for m in _OBJ_USE.finditer(para):
+        obj = _extract_object_from_match(m)
+        if obj:
+            events.append((m.start(), "use", obj))
+
+    # Process in text order (ascending position)
+    events.sort(key=lambda e: e[0])
+
+    for _pos, event_type, obj in events:
+        if event_type == "acquire":
+            obj_state[obj] = "HELD"
+        elif event_type == "release":
+            if obj_state.get(obj) == "RELEASED":
+                warnings.append(
+                    f"POSSESSION_DOUBLE_DROP: paragraph {para_idx + 1} releases "
+                    f"'{obj}' that was already set down"
+                )
+            obj_state[obj] = "RELEASED"
+        elif event_type == "use":
+            if obj_state.get(obj) == "RELEASED":
+                warnings.append(
+                    f"POSSESSION_GHOST: paragraph {para_idx + 1} uses '{obj}' "
+                    f"that was set down earlier (no re-acquire)"
+                )
 
 
 def check_pronoun_clarity(content: str, same_gender_count: int = 2) -> List[str]:
@@ -243,11 +396,18 @@ def check_dialogue_tidy(content: str, tension_level: int) -> List[str]:
     lines = re.findall(r'"([^"]+)"', content)
     if len(lines) < 4:
         return []
-    has_interrupt = any(re.search(r"\b(Wait\.|No\.|Stop\.|What\?)\b", l) for l in lines)
-    has_dodge = any("" in l or "I don't" in l for l in lines)  # Simplified
-    if not has_interrupt:
-        return ["DIALOGUE_TIDY: high-tension dialogue lacks interruption (Wait./No./Stop.)"]
-    return []
+    has_interrupt = any(re.search(r"\b(Wait|No|Stop|What)\s*[.!?]", l) for l in lines)
+    has_dodge = any(
+        re.search(r"\b(I don'?t|doesn'?t matter|none of your|not your|changed? the subject)\b", l, re.IGNORECASE)
+        for l in lines
+    )
+    warnings = []
+    if not has_interrupt and not has_dodge:
+        warnings.append(
+            "DIALOGUE_TIDY: high-tension dialogue lacks interruption or dodge "
+            "(Wait./No./Stop./I don't.../changed the subject)"
+        )
+    return warnings
 
 
 def check_scene_function_redundancy(scenes: List[Dict], outline: List[Dict]) -> List[str]:
@@ -262,7 +422,9 @@ def check_scene_function_redundancy(scenes: List[Dict], outline: List[Dict]) -> 
         for chap in (outline or []):
             if int(chap.get("chapter", 0)) == int(ch):
                 for sc in chap.get("scenes", []):
-                    if sc.get("scene") == scene.get("scene_number"):
+                    outline_sc = sc.get("scene", sc.get("scene_number"))
+                    pip_sc = scene.get("scene_number", scene.get("scene"))
+                    if outline_sc == pip_sc or int(outline_sc or 0) == int(pip_sc or 0):
                         purpose = (sc.get("purpose") or "")[:50]
                         break
         if purpose and prev_purpose and ch == prev_chapter:
@@ -294,6 +456,311 @@ def check_chapter_variety(chapters: List[Dict]) -> List[str]:
         if not (has_short or has_sensory or has_dialogue):
             return ["CHAPTER_VARIETY: chapter lacks short/sharp, sensory, or dialogue-heavy scene"]
     return []
+
+
+# === F2: SCENE FUNCTION CLASSIFIER ===
+
+
+def classify_scene_function(content: str, purpose: str = "") -> str:
+    """Classify scene's narrative function via keyword heuristics.
+
+    Returns one of: REVEAL, BOND, CONFLICT, DECISION, AFTERMATH, PURSUIT, MIXED.
+    Purpose text gets 3x weight (concentrated description).
+    """
+    scores: Dict[str, int] = {}
+    content_lower = content.lower()
+    purpose_lower = purpose.lower()
+    for func, pattern in _SCENE_FUNCTIONS.items():
+        content_hits = len(pattern.findall(content_lower))
+        purpose_hits = len(pattern.findall(purpose_lower)) * 3
+        scores[func] = content_hits + purpose_hits
+
+    if not any(scores.values()):
+        return "MIXED"
+
+    top_func = max(scores, key=scores.get)
+    top_score = scores[top_func]
+    if top_score == 0:
+        return "MIXED"
+
+    # Check for near-ties (within 1 hit)
+    runners_up = [f for f, s in scores.items() if f != top_func and s >= top_score - 1 and s > 0]
+    if runners_up:
+        return "MIXED"
+
+    return top_func
+
+
+def _get_purpose_from_outline(scene: Dict, outline: List[Dict]) -> str:
+    """Extract purpose string from outline matching scene's chapter/scene_number."""
+    ch = scene.get("chapter", 0)
+    for chap in (outline or []):
+        if int(chap.get("chapter", 0)) == int(ch):
+            for sc in chap.get("scenes", []):
+                outline_sc = sc.get("scene", sc.get("scene_number"))
+                pip_sc = scene.get("scene_number", scene.get("scene"))
+                if outline_sc == pip_sc or int(outline_sc or 0) == int(pip_sc or 0):
+                    return sc.get("purpose") or ""
+    return ""
+
+
+def _classify_dominant_emo_mode(content: str) -> Optional[str]:
+    """Classify dominant emotional mode using _EMO_KEYWORDS."""
+    best_mode = None
+    best_count = 0
+    content_lower = content.lower()
+    for mode, pat_str in _EMO_KEYWORDS.items():
+        count = len(re.findall(pat_str, content_lower, re.IGNORECASE))
+        if count > best_count:
+            best_count = count
+            best_mode = mode
+    return best_mode
+
+
+def _get_last_paragraph(content: str) -> str:
+    """Return last non-empty paragraph."""
+    paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
+    return paragraphs[-1] if paragraphs else ""
+
+
+def check_function_redundancy_v2(scenes: List[Dict], outline: List[Dict]) -> List[str]:
+    """Flag adjacent scenes with SAME function + SAME emotional mode + SAME ending type.
+
+    Triple match = genuine redundancy (avoids false positives from single-axis match).
+    Replaces the simpler check_scene_function_redundancy (prefix match only).
+    """
+    warnings = []
+    prev_func = None
+    prev_emo = None
+    prev_ending = None
+    prev_chapter = None
+
+    for idx, scene in enumerate(scenes or []):
+        if not isinstance(scene, dict):
+            continue
+        content = scene.get("content", "")
+        ch = scene.get("chapter", 0)
+
+        purpose = _get_purpose_from_outline(scene, outline)
+        func = classify_scene_function(content, purpose)
+        emo = _classify_dominant_emo_mode(content)
+        last_para = _get_last_paragraph(content)
+        ending = _classify_ending(last_para) if last_para else "UNKNOWN"
+
+        if (ch == prev_chapter and
+                func == prev_func and func != "MIXED" and
+                emo == prev_emo and emo is not None and
+                ending == prev_ending):
+            scene_id = scene.get("scene_id", f"scene_{idx}")
+            warnings.append(
+                f"FUNCTION_REDUNDANCY: {scene_id} matches previous scene "
+                f"(function={func}, emo={emo}, ending={ending})"
+            )
+
+        prev_func = func
+        prev_emo = emo
+        prev_ending = ending
+        prev_chapter = ch
+
+    return warnings
+
+
+# === F3: CROSS-SCENE CONTINUITY TRIPWIRES ===
+
+
+def _check_time_flow(ch_num: int, ch_scenes: List[Tuple[int, Dict]]) -> List[str]:
+    """Flag impossible backwards time jumps in same chapter without time skip."""
+    warnings = []
+    prev_time_val = -1
+    prev_time_label = None
+
+    for idx, scene in ch_scenes:
+        content = scene.get("content", "")
+        times = _TIME_OF_DAY.findall(content)
+        has_time_skip = bool(_TIME_SKIP.search(content))
+
+        if times:
+            last_time = times[-1].lower()
+            time_val = _TIME_ORDER.get(last_time, -1)
+
+            if (prev_time_val >= 0 and time_val >= 0 and
+                    time_val < prev_time_val and not has_time_skip):
+                scene_id = scene.get("scene_id", f"scene_{idx}")
+                warnings.append(
+                    f"CROSS_CONTINUITY_TIME: ch{ch_num} {scene_id} jumps backwards "
+                    f"({prev_time_label} -> {last_time}) without time skip"
+                )
+
+            prev_time_val = time_val
+            prev_time_label = last_time
+
+    return warnings
+
+
+def _check_character_presence(ch_num: int, ch_scenes: List[Tuple[int, Dict]]) -> List[str]:
+    """Flag characters appearing in scene N+1 who weren't in scene N."""
+    warnings = []
+    prev_names: Optional[set] = None
+
+    for i, (idx, scene) in enumerate(ch_scenes):
+        content = scene.get("content", "")
+        all_names = set()
+        for para in content.split("\n\n"):
+            trimmed = para.strip()
+            if not trimmed:
+                continue
+            found = _PROPER_NAME.findall(trimmed)
+            all_names.update(n.lower() for n in found if len(n) >= 3)
+
+        # Also add names from scene metadata
+        scene_chars = scene.get("characters", [])
+        if isinstance(scene_chars, list):
+            for c in scene_chars:
+                if isinstance(c, str) and len(c) >= 3:
+                    all_names.add(c.lower().split()[0])
+
+        if prev_names is not None and i > 0:
+            new_names = all_names - prev_names
+            for name in new_names:
+                count = content.lower().count(name)
+                if count >= 3:
+                    scene_id = scene.get("scene_id", f"scene_{idx}")
+                    warnings.append(
+                        f"CROSS_CONTINUITY_CHAR: ch{ch_num} {scene_id} introduces "
+                        f"'{name}' (x{count}) without presence in previous scene"
+                    )
+
+        prev_names = all_names
+
+    return warnings
+
+
+def _check_location_drift(ch_num: int, ch_scenes: List[Tuple[int, Dict]]) -> List[str]:
+    """Flag adjacent scenes in same chapter with different locations but no transition."""
+    warnings = []
+    prev_location = None
+
+    for idx, scene in ch_scenes:
+        content = scene.get("content", "")
+        location = (scene.get("location") or "").lower().strip()
+
+        if not location:
+            matches = _LOCATION_NAMES.findall(content)
+            if matches:
+                location = matches[0].lower()
+
+        has_transition = bool(_TRANSITION_VERBS.search(content[:500]))
+
+        if (location and prev_location and
+                location != prev_location and
+                not has_transition):
+            scene_id = scene.get("scene_id", f"scene_{idx}")
+            warnings.append(
+                f"CROSS_CONTINUITY_LOC: ch{ch_num} {scene_id} shifts location "
+                f"({prev_location} -> {location}) without transition verb"
+            )
+
+        if location:
+            prev_location = location
+
+    return warnings
+
+
+def _extract_end_of_scene_objects(content: str) -> Dict[str, str]:
+    """Extract object possession state at end of scene.
+
+    Returns dict of {object_name: "HELD"|"RELEASED"}.
+    Events processed in TEXT ORDER per paragraph (same logic as
+    _check_object_possession) to avoid acquire/release ordering bugs.
+    """
+    state: Dict[str, str] = {}
+    paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
+    for para in paragraphs:
+        events: List[Tuple[int, str, str]] = []
+        for m in _OBJ_ACQUIRE.finditer(para):
+            obj = _extract_object_from_match(m)
+            if obj:
+                events.append((m.start(), "acquire", obj))
+        for m in _OBJ_RELEASE.finditer(para):
+            obj = _extract_object_from_match(m)
+            if obj:
+                events.append((m.start(), "release", obj))
+        events.sort(key=lambda e: e[0])
+        for _pos, event_type, obj in events:
+            state[obj] = "HELD" if event_type == "acquire" else "RELEASED"
+    return state
+
+
+def _check_object_continuity(ch_num: int, ch_scenes: List[Tuple[int, Dict]]) -> List[str]:
+    """Flag cross-scene object possession contradictions within a chapter.
+
+    If scene N ends with an object RELEASED, and scene N+1 uses that object
+    without re-acquiring it, flag as CROSS_POSSESSION_GHOST.
+    """
+    warnings = []
+    prev_state: Dict[str, str] = {}
+
+    for idx, scene in ch_scenes:
+        content = scene.get("content", "")
+        if not content:
+            continue
+
+        # Check: does this scene USE objects that previous scene RELEASED?
+        for m in _OBJ_USE.finditer(content):
+            obj = _extract_object_from_match(m)
+            if obj and prev_state.get(obj) == "RELEASED":
+                # Check if this scene re-acquires the object before using it
+                first_use_pos = m.start()
+                pre_text = content[:first_use_pos]
+                reacquired = False
+                for acq_m in _OBJ_ACQUIRE.finditer(pre_text):
+                    acq_obj = _extract_object_from_match(acq_m)
+                    if acq_obj == obj:
+                        reacquired = True
+                        break
+                if not reacquired:
+                    scene_id = scene.get("scene_id", f"scene_{idx}")
+                    warnings.append(
+                        f"CROSS_POSSESSION_GHOST: ch{ch_num} {scene_id} uses "
+                        f"'{obj}' that was set down in previous scene"
+                    )
+
+        # Update state for next scene
+        prev_state = _extract_end_of_scene_objects(content)
+
+    return warnings
+
+
+def check_cross_scene_continuity(scenes: List[Dict]) -> List[str]:
+    """Cross-scene continuity checks within each chapter.
+
+    Checks:
+    1. Time-of-day flow: flag backwards jumps without time skip
+    2. Character presence: flag character appearing without prior introduction
+    3. Location drift: flag location change without transition verb
+    4. Object possession: flag objects used after being released in prior scene
+
+    Returns list of warning strings. Non-blocking.
+    """
+    warnings = []
+
+    # Group scenes by chapter
+    chapters: Dict[int, List[Tuple[int, Dict]]] = {}
+    for idx, scene in enumerate(scenes or []):
+        if not isinstance(scene, dict):
+            continue
+        ch = int(scene.get("chapter", 0))
+        chapters.setdefault(ch, []).append((idx, scene))
+
+    for ch_num, ch_scenes in sorted(chapters.items()):
+        if len(ch_scenes) < 2:
+            continue
+        warnings.extend(_check_time_flow(ch_num, ch_scenes))
+        warnings.extend(_check_character_presence(ch_num, ch_scenes))
+        warnings.extend(_check_location_drift(ch_num, ch_scenes))
+        warnings.extend(_check_object_continuity(ch_num, ch_scenes))
+
+    return warnings
 
 
 def apply_filter_removal(text: str, max_edits: int = 5) -> str:
@@ -344,17 +811,62 @@ def apply_final_line_rewrite(content: str) -> str:
     sentences = re.split(r"([.!?]\s+)", last)
     if not sentences:
         return content
-    last_sent = sentences[-2] + (sentences[-1] if len(sentences) > 1 else "")
+    if len(sentences) < 2:
+        last_sent = sentences[0]
+    else:
+        last_sent = sentences[-2] + sentences[-1]
     classification = _classify_ending(last_sent)
     if classification not in ("SUMMARY", "ATMOSPHERE"):
         return content
-    # Simple fix: use a generic action ending from prior context
+    # POV-agnostic action endings (work in any person)
     action_endings = [
-        "She turned away.",
-        "He left the room.",
-        "I didn't look back.",
-        "The door closed behind him.",
+        "The door clicked shut.",
+        "Silence filled the room.",
+        "Outside, the wind picked up.",
+        "A light went out down the hall.",
+        "The clock on the wall ticked once, twice.",
+        "Somewhere, a door slammed.",
+        "Rain began to fall.",
+        "The last ember died in the grate.",
     ]
     new_ending = random.choice(action_endings)
     kept = "\n\n".join(paragraphs[:-1])
     return kept + "\n\n" + new_ending
+
+
+# === THERAPY-SPEAK CHECKER ===
+
+_THERAPY_PATTERNS = [
+    re.compile(r'\bi appreciate you sharing\b', re.IGNORECASE),
+    re.compile(r"\bi hear what you'?re saying\b", re.IGNORECASE),
+    re.compile(r'\bthat must be (?:really |so )?hard\b', re.IGNORECASE),
+    re.compile(r'\bi need you to understand\b', re.IGNORECASE),
+    re.compile(r'\bi want to be honest with you\b', re.IGNORECASE),
+    re.compile(r'\bthank you for being vulnerable\b', re.IGNORECASE),
+    re.compile(r"\bi'?m processing\b", re.IGNORECASE),
+    re.compile(r'\bwe should talk about what happened\b', re.IGNORECASE),
+    re.compile(r'\bi want you to know that i\b', re.IGNORECASE),
+    re.compile(r"\bit'?s okay to feel\b", re.IGNORECASE),
+]
+
+
+def check_therapy_speak(content: str) -> List[str]:
+    """Flag dialogue that sounds like a therapy session rather than natural conversation.
+
+    Returns list of warning strings. Non-blocking (quality warning only).
+    """
+    warnings = []
+    hits = []
+    for pat in _THERAPY_PATTERNS:
+        matches = pat.findall(content)
+        if matches:
+            hits.extend(matches)
+
+    if len(hits) >= 2:
+        examples = hits[:3]
+        warnings.append(
+            f"THERAPY_SPEAK: {len(hits)} instances of therapeutic dialogue "
+            f"(e.g., {', '.join(repr(h) for h in examples)}). "
+            f"Characters should express emotion through behavior, not clinical language."
+        )
+    return warnings

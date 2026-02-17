@@ -59,7 +59,13 @@ Every pipeline run writes `output/resolved_config.yaml` with:
 
 ---
 
-## 5. Known failure modes and fixes
+## 5. Quality check failures (TENSION_COLLAPSE, CH1_HOOK_WEAK, etc.)
+
+See **[QUALITY_RUNBOOK.md](QUALITY_RUNBOOK.md)** for triage rules: what to do when quality checks fail, which artifacts to inspect, and when the problem is upstream (outline/seed).
+
+---
+
+## 6. Known failure modes and fixes
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
@@ -72,7 +78,7 @@ Every pipeline run writes `output/resolved_config.yaml` with:
 
 ---
 
-## 6. When a run fails: what artifacts to attach
+## 7. When a run fails: what artifacts to attach
 
 For reproducible debugging, attach these when reporting or analyzing a failure:
 
@@ -90,7 +96,7 @@ zip debug-pack.zip output/resolved_config.yaml output/run_report.json config.yam
 
 ---
 
-## 7. CI strategy
+## 8. CI strategy
 
 **Default CI:**
 ```bash
@@ -106,7 +112,7 @@ pytest -m smoke
 
 ---
 
-## 8. What’s still missing (priority order)
+## 9. What's still missing (priority order)
 
 1. **Outline JSON retry/repair** — #1 pipeline-integrity hole; causes missing chapters
 2. **Stable scene IDs** (`ch02_s01`) — deterministic selection, safer dedup, exact reproducibility
@@ -117,7 +123,7 @@ pytest -m smoke
 
 ---
 
-## 9. File locations
+## 10. File locations
 
 | Artifact | Location |
 |----------|----------|

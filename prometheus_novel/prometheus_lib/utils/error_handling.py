@@ -20,6 +20,13 @@ class BudgetExceededError(PrometheusError):
         super().__init__(message)
         logger.critical(f"BudgetExceededError: {message}")
 
+class CreditsExhaustedError(PrometheusError):
+    '''Raised when an API provider rejects calls due to billing/quota limits.'''
+    def __init__(self, provider: str, message: str = "API credits exhausted.", original_exception: Optional[Exception] = None):
+        self.provider = provider
+        super().__init__(message, original_exception)
+        logger.critical(f"CreditsExhaustedError [{provider}]: {message}")
+
 class LLMGenerationError(PrometheusError):
     '''Raised when an LLM generation fails after retries/fallbacks.'''
     def __init__(self, message: str = "LLM generation failed.", original_exception: Optional[Exception] = None):
@@ -51,8 +58,8 @@ def handle_exception(e: Exception):
         logger.exception(f"An unhandled critical error occurred: {e}") # Log full traceback
         # Graceful degradation / notification
         # metrics.increment_error_counter("critical_unhandled_error") # Example metric
-    print(f"
-CRITICAL ERROR: {e.args[0] if isinstance(e, PrometheusError) else 'An unexpected error occurred.'}")
+    msg = e.args[0] if isinstance(e, PrometheusError) else "An unexpected error occurred."
+    print(f"\nCRITICAL ERROR: {msg}")
     # In a production system, you might send alerts, shut down gracefully, etc.
 
 if __name__ == '__main__':

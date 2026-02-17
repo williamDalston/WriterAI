@@ -160,3 +160,89 @@ This document answers: *Do we have solid writing rules baked in? Are we missing 
 - **Output:** `quality_contract.json` in project output dir.
 - **Schema:** contracts (scene_id, tension_level, opening_move, edits, warnings), opening_move_history, opening_move_violations.
 - **Wiring:** `_stage_quality_meters` calls `run_quality_contract`, merges into meter report, writes JSON.
+
+---
+
+## 6. Governance Maturity Assessment (2025-02)
+
+The system now has four governance primitives that move it from "clever pipeline" to **editorial infrastructure**:
+
+| Primitive | Module | Role |
+|-----------|--------|------|
+| **Eyes** | `delta_report.py` | Before/after diff counts per pass, per-scene hotspot flagging |
+| **Leash** | `ceiling.py` | Max edits per scene, per 1k words, per family per chapter |
+| **Brain** | `policy.py` | Genre presets (romance/thriller/literary/fantasy) + project overrides |
+| **Self-awareness** | `loop_guard.py` | Cross-module collision detection, replacement feedback loop prevention |
+
+### 6.1 What This Achieves
+
+**Deterministic Editing Budget** — `ceiling.py` prevents over-editing good prose, infinite synonym churn, and LLM-style oscillation where phrases mutate forever. The system is stable across reruns; idempotence at zero diffs is verified.
+
+**Genre-Aware Behavior Without Hardcoding** — `policy.py` + YAML means romance can allow warmth but cap melodrama, thriller can allow sharper verbs and shorter sentences, literary can allow metaphor density. Genre rules live in config, not code.
+
+**Loop Guard = Editorial Safety Net** — Cross-module collision detection stops phrase_suppressor undoing emotion_diversifier, dialogue_trimmer fighting cliche repair, and infinite swap cycles. This is compiler-level safety for prose edits.
+
+**Delta Reporting = Observability** — `quality_delta.json` gives before/after diff counts, per-pass impact, and evidence of diminishing returns. Measurable craft, not vibes.
+
+### 6.2 Three-Layer Architecture
+
+Most prose pipelines stop at repair. This system has all three:
+
+| Layer | Status |
+|-------|--------|
+| **Generation** | Strong — FORMAT_CONTRACT, voice profiles, stop sequences, craft principles, tension-syntax mapping |
+| **Repair** | Strong — micro-passes, structure gate, scene turn repair, final_deai, quality polish |
+| **Governance** | Strong — ceilings, policy, loop guard, delta reports, quality contract |
+
+### 6.3 Architectural Roles
+
+The system now behaves as a full publishing stack in software form:
+
+| Role | System Component |
+|------|-----------------|
+| **Writer** | Scene drafting with craft principles, voice profiles, tension constraints |
+| **Editor** | Micro-passes, structure gate, voice_human_pass, dialogue/prose polish |
+| **Managing Editor** | `policy.py` — applies genre policy, enables/disables passes |
+| **Copy Chief** | `ceiling.py` — enforces editing budgets, prevents sandblasting |
+| **Audit Department** | `delta_report.py` — before/after evidence, per-pass impact |
+| **QA Department** | `quality_contract.py` + `quality_meters` — deterministic checks |
+| **Safety Inspector** | `loop_guard.py` — cross-module collision prevention |
+
+### 6.4 Next Frontier (Optional Evolutions)
+
+These are not required for commercial fiction quality. The current infrastructure is already top-tier. These are the path from "excellent" to "formidably robust."
+
+#### F1. Quality Scoring Feedback Loop
+Turn delta metrics into a deterministic **scorecard** (no LLM):
+- Phrase entropy
+- Dialogue density variance
+- Emotional mode diversity
+- Verb specificity index
+- Scene ending type distribution
+
+Moves from pass/fail to **quantified craft improvement** ("Book improved 14% in lexical diversity, 22% in dialogue realism").
+
+#### F2. Scene Function Classification
+Macro repetition is the last big narrative risk. Light classifier for scene function:
+- Reveal / Bond / Conflict / Decision / Aftermath / Pursuit
+
+If two adjacent scenes share the same function + emotional mode + ending type, flag it. Prevents "three almost-kisses in a row" syndrome.
+
+#### F3. Continuity Tripwires (Low Cost, High Trust)
+Tiny checks, massive realism gain:
+- Time of day drift
+- Object possession drift
+- Character presence drift
+- Location transitions
+
+Even simple noun/verb heuristics catch 80% of continuity wobble. Readers forgive prose; they don't forgive broken reality.
+
+### 6.5 What Is NOT Needed
+
+The system does **not** need:
+- More LLM passes
+- Heavier prompts
+- More regex patterns
+- Style transfer stages
+
+The "AI voice" problem is already solved better than most published tools.

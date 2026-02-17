@@ -48,3 +48,22 @@ emotional_summarization:
   "a reminder that": ""
   "connection in unexpected places": ""
   "something significant had passed between": ""
+
+# Production Run 8 hot phrases — patterns appearing 5+ times across 81 scenes
+production_hot_phrases:
+  "resolve and determination": "conviction"
+  "determination and resolve": "conviction"
+  "with renewed determination": "with fresh purpose"
+  "eyes meet": "gazes caught"
+  "eyes lock": "gazes snagged"
+  "our eyes met": "our gazes caught"
+  "his eyes searched mine": "he studied my face"
+  "her eyes searched his": "she studied his face"
+  "unspoken understanding": "tacit agreement"
+  "unspoken agreement": "wordless accord"
+  "unspoken promise": "silent vow"
+  "the weight of everything": "all of it pressing down"
+  "the weight of the moment": "the gravity of it"
+  "the air between us": "the charged silence"
+  "the space between us": "the gap that separated us"
+  "something shifted between us": "the dynamic tilted"

@@ -547,10 +547,8 @@ async def expand_seed(seed_data: Dict[str, str], llm_client=None) -> Dict[str, A
         for key, value in seed_data.items()
     ])
 
-    # Identify what needs to be generated (skip editorial fields — author-only)
-    _SKIP_EXPANSION = {'STRATEGIC_GUIDANCE'}
-    missing = [key for key, _, _ in TEMPLATE_SECTIONS
-               if key not in seed_data and key not in _SKIP_EXPANSION]
+    # Identify what needs to be generated (strategic_guidance now expandable with genre-aware prompts)
+    missing = [key for key, _, _ in TEMPLATE_SECTIONS if key not in seed_data]
 
     if not missing:
         print(f"{C.G}All sections provided - no AI expansion needed.{C.E}")
@@ -558,6 +556,19 @@ async def expand_seed(seed_data: Dict[str, str], llm_client=None) -> Dict[str, A
 
     print(f"\n{C.B}Expanding seed with AI...{C.E}")
     print(f"{C.DIM}Generating: {', '.join(missing)}{C.E}\n")
+
+    # Genre-aware hints for STRATEGIC_GUIDANCE when missing
+    genre = (seed_data.get("GENRE") or "").lower()
+    strategic_hint = ""
+    if "STRATEGIC_GUIDANCE" in missing:
+        if "romance" in genre or "rom-com" in genre:
+            strategic_hint = "\nFor STRATEGIC_GUIDANCE include: market_positioning (heat level, tropes), aesthetic_guide, cultural_notes."
+        elif "mystery" in genre or "thriller" in genre:
+            strategic_hint = "\nFor STRATEGIC_GUIDANCE include: pacing_notes, market_positioning (subgenre expectations), dialogue_bank hints."
+        elif "sci-fi" in genre or "fantasy" in genre:
+            strategic_hint = "\nFor STRATEGIC_GUIDANCE include: world_rules consistency, aesthetic_guide, market_positioning."
+        else:
+            strategic_hint = "\nFor STRATEGIC_GUIDANCE include: market_positioning, aesthetic_guide, pacing_notes if relevant."
 
     # Create expansion prompt
     prompt = f"""You are a master storyteller helping to develop a novel concept.
@@ -570,8 +581,10 @@ PROVIDED ELEMENTS:
 
 MISSING SECTIONS TO GENERATE:
 {', '.join(missing)}
+{strategic_hint}
 
 For each missing section, provide rich, specific, usable content.
+For STRATEGIC_GUIDANCE use sub-keys: market_positioning, tropes, pacing_notes, dialogue_bank, aesthetic_guide, cultural_notes.
 Respond in this exact format (one section per block):
 
 SECTION_NAME:

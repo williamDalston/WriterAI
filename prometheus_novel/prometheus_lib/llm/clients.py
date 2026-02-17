@@ -19,6 +19,8 @@ from typing import Any, Dict, Optional, List, AsyncIterator, Callable
 from dataclasses import dataclass, field
 from functools import wraps
 
+from prometheus_lib.utils.error_handling import CreditsExhaustedError
+
 logger = logging.getLogger(__name__)
 
 
@@ -122,6 +124,16 @@ TimeoutError = LLMTimeoutError  # noqa: A001
 class AuthenticationError(LLMError):
     """Invalid API key."""
     pass
+
+
+def _is_credits_error(error_str: str) -> bool:
+    """Detect billing/quota/credits exhaustion from error text."""
+    billing_patterns = [
+        "insufficient_quota", "billing", "exceeded your current quota",
+        "account.*deactivated", "payment", "insufficient funds",
+        "402", "spending limit", "plan limit",
+    ]
+    return any(p in error_str for p in billing_patterns)
 
 
 def with_retry(func: Callable):
@@ -249,9 +261,10 @@ class OpenAIClient(BaseLLMClient):
             return
 
         if not self.api_key:
-            logger.warning("OPENAI_API_KEY not set. Using mock responses.")
-            self._initialized = True
-            return
+            raise RuntimeError(
+                "OPENAI_API_KEY not set. Set it in .env or as an environment variable. "
+                "Refusing to fall back to mock responses for paid model runs."
+            )
 
         try:
             from openai import AsyncOpenAI
@@ -357,7 +370,13 @@ class OpenAIClient(BaseLLMClient):
                 await asyncio.sleep(delay + jitter)
                 delay = min(delay * RETRY_MULTIPLIER, MAX_RETRY_DELAY)
 
-        # All retries exhausted
+        # All retries exhausted — check if this is a billing/quota issue
+        if last_error and _is_credits_error(str(last_error).lower()):
+            raise CreditsExhaustedError(
+                provider="openai",
+                message=f"OpenAI credits/quota exhausted after {MAX_RETRIES + 1} attempts: {last_error}",
+                original_exception=last_error,
+            )
         logger.error(f"OpenAI API failed after {MAX_RETRIES + 1} attempts: {last_error}")
         raise last_error or LLMError("OpenAI max retries exceeded")
 
@@ -770,9 +789,10 @@ class AnthropicClient(BaseLLMClient):
             return
 
         if not self.api_key:
-            logger.warning("ANTHROPIC_API_KEY not set. Using mock responses.")
-            self._initialized = True
-            return
+            raise RuntimeError(
+                "ANTHROPIC_API_KEY not set. Set it in .env or as an environment variable. "
+                "Refusing to fall back to mock responses for paid model runs."
+            )
 
         try:
             from anthropic import AsyncAnthropic
@@ -866,6 +886,13 @@ class AnthropicClient(BaseLLMClient):
                 await asyncio.sleep(delay + jitter)
                 delay = min(delay * RETRY_MULTIPLIER, MAX_RETRY_DELAY)
 
+        # All retries exhausted — check if this is a billing/quota issue
+        if last_error and _is_credits_error(str(last_error).lower()):
+            raise CreditsExhaustedError(
+                provider="anthropic",
+                message=f"Anthropic credits/quota exhausted after {MAX_RETRIES + 1} attempts: {last_error}",
+                original_exception=last_error,
+            )
         logger.error(f"Anthropic API failed after {MAX_RETRIES + 1} attempts: {last_error}")
         raise last_error or LLMError("Anthropic max retries exceeded")
 
