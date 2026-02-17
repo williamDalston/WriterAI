@@ -256,8 +256,8 @@ def cmd_generate(args):
     print_info(f"Budget: ${config.get('budget_usd', 100)}")
 
     # Set up LLM clients (same pattern as web dashboard)
-    from prometheus_novel.prometheus_lib.llm.clients import get_client, is_ollama_model
-    from prometheus_novel.stages.pipeline import PipelineOrchestrator
+    from prometheus_lib.llm.clients import get_client, is_ollama_model
+    from stages.pipeline import PipelineOrchestrator
 
     model_defaults = config.get("model_defaults", {})
     api_model = model_defaults.get("api_model", "qwen2.5:7b")
@@ -470,14 +470,14 @@ def cmd_serve(args):
     print(f"\n  Open: {Colors.CYAN}http://{args.host}:{args.port}{Colors.END}\n")
 
     # Import and run the web app
-    from prometheus_novel.interfaces.web.app import app
+    from interfaces.web.app import app
     import uvicorn
     uvicorn.run(app, host=args.host, port=args.port)
 
 
 def cmd_seed(args):
     """Flexible story seed input."""
-    from prometheus_novel.interfaces.cli.seed import main as seed_main
+    from interfaces.cli.seed import main as seed_main
     # Pass through the args
     import sys
     original_argv = sys.argv
@@ -507,7 +507,7 @@ def cmd_audiobook(args):
     import asyncio
 
     async def _run():
-        from prometheus_novel.audiobook.engine import AudiobookEngine
+        from audiobook.engine import AudiobookEngine
         engine = AudiobookEngine.from_config_path(config_path)
 
         # Cost estimation first
@@ -581,7 +581,7 @@ def cmd_bookops(args):
     import asyncio
 
     async def _run():
-        from prometheus_novel.bookops.engine import BookOpsEngine
+        from bookops.engine import BookOpsEngine
         engine = BookOpsEngine.from_config_path(
             config_path,
             model_override=getattr(args, "model", None),
@@ -617,7 +617,7 @@ def cmd_cover(args):
     import asyncio
 
     async def _run():
-        from prometheus_novel.covergen.engine import CoverEngine
+        from covergen.engine import CoverEngine
         engine = CoverEngine.from_config_path(
             config_path,
             style=getattr(args, "style", None),

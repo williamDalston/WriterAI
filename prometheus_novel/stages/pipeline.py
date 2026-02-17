@@ -3473,6 +3473,66 @@ class PipelineOrchestrator:
         except Exception as e:
             logger.debug(f"Failed to write pause_reason.json: {e}")
 
+    def _display_review_summary(self, stage_name: str):
+        """Print a human-readable summary for review gates so the user knows what to evaluate."""
+        sep = "=" * 70
+        print(f"\n{sep}")
+        print(f"  HUMAN REVIEW GATE  |  Stage: {stage_name}")
+        print(sep)
+
+        if stage_name == "master_outline" and self.state.master_outline:
+            outline = self.state.master_outline
+            total_scenes = sum(len(ch.get("scenes", [])) for ch in outline if isinstance(ch, dict))
+            target = (self.state.config or {}).get("target_length", "?")
+            print(f"\n  Chapters: {len(outline)}   |   Scenes: {total_scenes}   |   Target: {target}")
+            print()
+
+            functions = {}
+            for ch in outline:
+                if not isinstance(ch, dict):
+                    continue
+                ch_num = ch.get("chapter_number", "?")
+                ch_title = ch.get("title", ch.get("chapter_title", "Untitled"))
+                scenes = ch.get("scenes", [])
+                print(f"  Ch {ch_num}: {ch_title} ({len(scenes)} scene{'s' if len(scenes) != 1 else ''})")
+                for sc in scenes:
+                    if not isinstance(sc, dict):
+                        continue
+                    sc_id = sc.get("scene_id", sc.get("scene", "?"))
+                    sc_summary = sc.get("summary", sc.get("description", sc.get("title", "")))
+                    if len(sc_summary) > 100:
+                        sc_summary = sc_summary[:97] + "..."
+                    func = sc.get("function", "")
+                    func_tag = f" [{func}]" if func else ""
+                    print(f"    {sc_id}{func_tag}: {sc_summary}")
+                    if func:
+                        functions[func] = functions.get(func, 0) + 1
+                print()
+
+            if functions and total_scenes > 0:
+                print("  Scene Function Distribution:")
+                for func, count in sorted(functions.items(), key=lambda x: -x[1]):
+                    pct = count / total_scenes * 100
+                    bar = "#" * int(pct / 3)
+                    print(f"    {func:16s}: {count:2d} ({pct:4.1f}%) {bar}")
+                print()
+
+            # Save outline to a reviewable JSON file
+            output_dir = Path(self.state.project_path) / "output" if self.state.project_path else None
+            if output_dir:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                review_path = output_dir / "outline_for_review.json"
+                try:
+                    with open(review_path, "w", encoding="utf-8") as f:
+                        json.dump(outline, f, indent=2, ensure_ascii=False)
+                    print(f"  Full outline JSON: {review_path}")
+                except Exception:
+                    pass
+        else:
+            print(f"\n  Stage '{stage_name}' completed. Review output files before continuing.\n")
+
+        print(sep)
+
     async def _canary_scene_check(self):
         """Pre-flight model check: send a tiny prose prompt and verify clean output.
 
@@ -3775,37 +3835,24 @@ class PipelineOrchestrator:
                     self.state.save()
                     self._write_run_status(stage_name, result)
 
-                except CreditsExhaustedError as cee:
-                    logger.critical(
-                        "CREDITS_EXHAUSTED: %s provider out of credits during stage '%s'. "
-                        "Pipeline paused. Refill credits and rerun with --resume.",
-                        cee.provider, stage_name,
-                    )
-                    self.state.save()
-                    self._write_pause_reason(stage_name, cee)
-                    self._write_run_status(stage_name)
-                    _log_incident(stage_name, "credits_exhausted", str(cee)[:200], severity="critical")
-                    break
-
                     await self._emit("on_stage_complete", stage_name, result)
 
                     # Human-in-the-loop: pause for review if stage is in gates
                     review_gates = (self.state.config or {}).get("enhancements", {}).get("human_review_gates") or []
                     if result.status == StageStatus.COMPLETED and stage_name in review_gates:
+                        self._display_review_summary(stage_name)
                         output_dir = self.state.project_path / "output" if getattr(self.state, "project_path", None) else None
                         if output_dir:
                             output_dir.mkdir(parents=True, exist_ok=True)
                             review_file = output_dir / "review_requested.json"
                             with open(review_file, "w", encoding="utf-8") as f:
                                 json.dump({"stage": stage_name, "status": "awaiting_review"}, f, indent=2)
-                            logger.warning(
-                                "HUMAN_REVIEW: Pausing after %s. Review output, then press Enter to continue.",
-                                stage_name,
-                            )
-                            try:
-                                input("Press Enter when review complete to continue... ")
-                            except EOFError:
-                                pass
+                        try:
+                            input("\nPress Enter to APPROVE and continue, or Ctrl+C to abort... ")
+                        except (EOFError, KeyboardInterrupt):
+                            logger.warning("Human review: user aborted pipeline at %s.", stage_name)
+                            self.state.save()
+                            break
 
                     if result.status == StageStatus.FAILED:
                         consecutive_failures += 1
@@ -3865,6 +3912,18 @@ class PipelineOrchestrator:
                                     self.state.total_cost_usd += p_result.cost_usd
 
                             self.state.save()
+
+                except CreditsExhaustedError as cee:
+                    logger.critical(
+                        "CREDITS_EXHAUSTED: %s provider out of credits during stage '%s'. "
+                        "Pipeline paused. Refill credits and rerun with --resume.",
+                        cee.provider, stage_name,
+                    )
+                    self.state.save()
+                    self._write_pause_reason(stage_name, cee)
+                    self._write_run_status(stage_name)
+                    _log_incident(stage_name, "credits_exhausted", str(cee)[:200], severity="critical")
+                    break
 
                 except Exception as e:
                     logger.error(f"Stage {stage_name} failed: {e}")
