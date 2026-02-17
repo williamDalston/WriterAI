@@ -598,9 +598,54 @@ vs. through action/physical sensation.""",
         if not doc_filter or "08" in (doc_filter or []):
             await self._generate_questions_for_author()
 
+        # Cover generation (optional doc 09, requires Pillow + OPENAI_API_KEY)
+        if not doc_filter or "09" in (doc_filter or []):
+            await self._generate_cover()
+
         # Self-check
         check = await self._self_check()
         return check
+
+    async def _generate_cover(self):
+        """09_cover — Generate book cover artwork (requires Pillow + OPENAI_API_KEY)."""
+        import os
+        if not os.getenv("OPENAI_API_KEY"):
+            logger.info("Skipping cover generation (OPENAI_API_KEY not set)")
+            return
+
+        try:
+            from prometheus_novel.covergen.engine import CoverEngine
+
+            config_path = self.project_path / "config.yaml"
+            if not config_path.exists():
+                logger.warning("Skipping cover: config.yaml not found")
+                return
+
+            engine = CoverEngine.from_config_path(config_path)
+            result = await engine.generate_all()
+
+            summary = "# Cover Generation Report\n\n"
+            summary += "Files generated:\n"
+            for f in result.get("files", []):
+                summary += f"- `covergen/{f}`\n"
+            summary += f"\nCost: ${result.get('cost_usd', 0):.4f}\n"
+            if result.get("errors"):
+                summary += "\nErrors:\n"
+                for err in result["errors"]:
+                    summary += f"- {err}\n"
+
+            self._write_doc("09_cover_report.md", summary)
+            self._generated_docs.append("09_cover_report.md")
+
+        except ImportError as e:
+            logger.info("Skipping cover generation (missing dependency: %s)", e)
+            self._write_doc("09_cover_report.md",
+                "# Cover Generation\n\n"
+                "> Dependencies not installed. Run: `pip install Pillow fpdf2`\n")
+            self._generated_docs.append("09_cover_report.md (skipped)")
+        except Exception as e:
+            logger.error("Cover generation failed: %s", e)
+            self._errors.append(f"09_cover: {e}")
 
     def print_summary(self):
         """Print results to console."""

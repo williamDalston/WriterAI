@@ -76,7 +76,7 @@ setting: 'Amalfi Coast, Italy. A converted 17th-century monastery turned luxury 
   office, a rain-slicked rooftop bar where the original one-night stand happened).
 
   '
-status: completed
+status: seeded
 strategic_guidance:
   aesthetic_guide: 'Visual palette: golden hour light, terracotta and white stone,
     deep blue sea, lemon yellow, bougainvillea purple. Textures: rough stone, cool
@@ -153,3 +153,23 @@ writing_style: 'First person, Lena''s POV. Sharp, witty internal voice that crac
   Physical awareness of Marco rendered in precise, specific detail (not generic).
 
   '
+
+cover:
+  author_name: "Lena Castillo"
+  tagline: "Some fires can't be contained"
+  style: romantic
+  trim_size: "6x9"
+  page_count: 300
+  paper_type: white
+  show_barcode: false
+  author_bio: ""
+  blurb: >
+    A sharp-tongued divorce attorney who stopped believing in love. A devastatingly
+    charming best man she shared one unforgettable night with three years ago. Two
+    weeks of forced proximity on the sun-drenched Amalfi Coast, co-planning a wedding
+    neither of them can escape. As golden afternoons in lemon groves and stolen
+    moments on moonlit balconies tear down her walls, Lena discovers Marco isn't
+    the careless playboy she told herself he was—he's a man haunted by a loss that
+    mirrors her deepest fear. But when a secret from their past threatens to destroy
+    everything, Lena must choose: the safe cynicism that protects her, or the
+    terrifying leap that real love demands.

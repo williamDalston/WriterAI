@@ -43,6 +43,9 @@ class Colors:
     FAIL = '\033[91m'
     END = '\033[0m'
     BOLD = '\033[1m'
+    # Aliases for call sites that use RED/YELLOW
+    RED = FAIL
+    YELLOW = WARNING
 
 
 def print_banner():
@@ -153,7 +156,7 @@ def cmd_new(args):
             print_error(f"File not found: {file_path}")
             return 1
 
-        content = file_path.read_text()
+        content = file_path.read_text(encoding="utf-8")
         # Parse simple format: Title, Genre, Synopsis
         lines = content.strip().split("\n")
         name = lines[0].lower().replace(" ", "-") if lines else "untitled"
@@ -212,7 +215,7 @@ def cmd_new(args):
     }
 
     config_file = project_dir / "config.yaml"
-    with open(config_file, "w") as f:
+    with open(config_file, "w", encoding="utf-8") as f:
         yaml.dump(config, f, default_flow_style=False)
 
     print_success(f"Project created: {project_dir}")
@@ -235,7 +238,7 @@ def cmd_generate(args):
         print_error(f"Config file not found: {config_path}")
         return 1
 
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     print(f"\n{Colors.HEADER}Generating Novel: {config.get('title', 'Untitled')}{Colors.END}\n")
@@ -354,7 +357,7 @@ def cmd_compile(args):
         print_error(f"Config file not found: {config_path}")
         return 1
 
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     output_format = args.format or "html"
@@ -385,7 +388,7 @@ def cmd_compile(args):
     <p>[Novel content would be compiled here]</p>
 </body>
 </html>"""
-        output_file.write_text(html_content)
+        output_file.write_text(html_content, encoding="utf-8")
 
     elif output_format == "markdown":
         md_content = f"""# {config.get('title', 'Untitled')}
@@ -396,7 +399,7 @@ def cmd_compile(args):
 
 [Novel content would be compiled here]
 """
-        output_file.write_text(md_content)
+        output_file.write_text(md_content, encoding="utf-8")
 
     print_success(f"Compiled to: {output_file}")
     return 0
@@ -410,7 +413,7 @@ def cmd_ideas(args):
         # Add new idea
         ideas = []
         if ideas_file.exists():
-            ideas = json.loads(ideas_file.read_text())
+            ideas = json.loads(ideas_file.read_text(encoding="utf-8"))
 
         idea = {
             "id": len(ideas) + 1,
@@ -421,7 +424,7 @@ def cmd_ideas(args):
         ideas.append(idea)
 
         ideas_file.parent.mkdir(parents=True, exist_ok=True)
-        ideas_file.write_text(json.dumps(ideas, indent=2))
+        ideas_file.write_text(json.dumps(ideas, indent=2), encoding="utf-8")
         print_success(f"Idea #{idea['id']} saved")
 
     elif args.list:
@@ -430,7 +433,7 @@ def cmd_ideas(args):
             print_info("No ideas saved yet")
             return 0
 
-        ideas = json.loads(ideas_file.read_text())
+        ideas = json.loads(ideas_file.read_text(encoding="utf-8"))
         print(f"\n{Colors.HEADER}Your Ideas{Colors.END}\n")
         for idea in ideas:
             print(f"  #{idea['id']}: {idea['content'][:60]}...")
@@ -473,6 +476,80 @@ def cmd_seed(args):
     return result
 
 
+def cmd_audiobook(args):
+    """Generate ACX-compliant audiobook MP3s from pipeline scenes."""
+    print_banner()
+    config_path = Path(args.config)
+    if not config_path.exists():
+        print_error(f"Config file not found: {config_path}")
+        return 1
+
+    print(f"\n{Colors.HEADER}Audiobook: Generating ACX-Compliant MP3s{Colors.END}\n")
+
+    import asyncio
+
+    async def _run():
+        from prometheus_novel.audiobook.engine import AudiobookEngine
+        engine = AudiobookEngine.from_config_path(config_path)
+
+        # Cost estimation first
+        cost_info = engine.estimate_cost()
+        print_info(f"Chapters: {cost_info['chapters']}")
+        print_info(f"Characters: {cost_info['estimated_total_chars']:,}")
+        print_info(f"Estimated cost: ${cost_info['estimated_cost_usd']:.2f}")
+        print_info(f"Voice: {engine.audiobook_config['voice_default']}")
+
+        if engine.audiobook_config.get("voice_map"):
+            voice_count = len(engine.audiobook_config["voice_map"])
+            print_info(f"Multi-voice: {voice_count} character voice(s)")
+
+        # Dry run mode
+        if getattr(args, "dry_run", False):
+            print_info("Dry run mode — no audio generated")
+            return {"dry_run": True, **cost_info}
+
+        # Confirm cost (unless --yes flag)
+        if not getattr(args, "yes", False):
+            confirm = input(
+                f"\nProceed with generation? "
+                f"(estimated ${cost_info['estimated_cost_usd']:.2f}) [y/N]: "
+            ).strip().lower()
+            if confirm != "y":
+                print_warning("Aborted by user")
+                return {"aborted": True}
+
+        force = getattr(args, "force", False)
+        chapter_filter = None
+        if hasattr(args, "chapters") and args.chapters:
+            chapter_filter = [int(c) for c in args.chapters]
+
+        result = await engine.generate_all(
+            force=force,
+            chapter_filter=chapter_filter,
+        )
+        engine.print_summary()
+        return result
+
+    try:
+        result = asyncio.run(_run())
+        if result.get("aborted") or result.get("dry_run"):
+            return 0
+        if result.get("errors"):
+            print_warning(f"{len(result['errors'])} error(s) during generation")
+        else:
+            print_success("All audiobook files generated successfully")
+        return 0
+    except FileNotFoundError as e:
+        print_error(str(e))
+        return 1
+    except RuntimeError as e:
+        print_error(str(e))
+        return 1
+    except Exception as e:
+        print_error(f"Audiobook generation failed: {e}")
+        return 1
+
+
 def cmd_bookops(args):
     """Generate BookOps launch assets and revision guidance."""
     print_banner()
@@ -506,6 +583,51 @@ def cmd_bookops(args):
         return 0
     except Exception as e:
         print(f"{Colors.RED}BookOps failed: {e}{Colors.END}")
+        return 1
+
+
+def cmd_cover(args):
+    """Generate book cover artwork for KDP."""
+    print_banner()
+    config_path = Path(args.config)
+    if not config_path.exists():
+        print(f"{Colors.RED}Config file not found: {config_path}{Colors.END}")
+        return 1
+
+    print(f"\n{Colors.HEADER}CoverGen: Generating Book Cover{Colors.END}\n")
+
+    import asyncio
+
+    async def _run():
+        from prometheus_novel.covergen.engine import CoverEngine
+        engine = CoverEngine.from_config_path(
+            config_path,
+            style=getattr(args, "style", None),
+            trim_size=getattr(args, "trim_size", None),
+            page_count=getattr(args, "page_count", None),
+            author_name=getattr(args, "author", None),
+            model_override=getattr(args, "model", None),
+        )
+
+        if getattr(args, "ebook_only", False):
+            result = await engine.generate_ebook_cover()
+        elif getattr(args, "print_only", False):
+            result = await engine.generate_print_cover()
+        else:
+            result = await engine.generate_all()
+
+        engine.print_summary()
+        return result
+
+    try:
+        result = asyncio.run(_run())
+        if result.get("errors"):
+            print(f"{Colors.YELLOW}Some steps had errors — see cover_report.md{Colors.END}")
+        else:
+            print(f"{Colors.GREEN}Cover generation complete.{Colors.END}")
+        return 0
+    except Exception as e:
+        print(f"{Colors.RED}Cover generation failed: {e}{Colors.END}")
         return 1
 
 
@@ -572,6 +694,37 @@ def main():
     bookops_parser.add_argument("--docs", nargs="*", help="Generate specific docs only (e.g., 01 02 05)")
     bookops_parser.add_argument("--force", action="store_true", help="Overwrite existing bookops output")
 
+    # cover command - generate book cover artwork
+    cover_parser = subparsers.add_parser("cover", help="Generate book cover artwork for KDP")
+    cover_parser.add_argument("--config", "-c", required=True, help="Path to project config.yaml")
+    cover_parser.add_argument("--style", "-s",
+        choices=["cinematic", "illustrated", "minimalist", "dark", "romantic", "literary"],
+        help="Visual style preset (default: auto-detect from genre)")
+    cover_parser.add_argument("--trim-size", dest="trim_size",
+        choices=["6x9", "5.5x8.5", "5x8"],
+        help="Print trim size in inches (default: 6x9)")
+    cover_parser.add_argument("--page-count", dest="page_count", type=int,
+        help="Page count for spine width calculation (default: 300)")
+    cover_parser.add_argument("--author", help="Author name for cover")
+    cover_parser.add_argument("--model", "-m", help="Override LLM model for art direction")
+    cover_parser.add_argument("--ebook-only", dest="ebook_only", action="store_true",
+        help="Generate eBook cover only")
+    cover_parser.add_argument("--print-only", dest="print_only", action="store_true",
+        help="Generate print cover only")
+    cover_parser.add_argument("--force", action="store_true",
+        help="Overwrite existing cover files")
+
+    # audiobook command - generate ACX-compliant audiobook MP3s
+    audio_parser = subparsers.add_parser("audiobook", help="Generate ACX-compliant audiobook MP3s")
+    audio_parser.add_argument("--config", "-c", required=True, help="Path to project config.yaml")
+    audio_parser.add_argument("--force", action="store_true", help="Overwrite existing MP3 files")
+    audio_parser.add_argument("--dry-run", dest="dry_run", action="store_true",
+                              help="Estimate cost only, don't generate")
+    audio_parser.add_argument("--yes", "-y", action="store_true",
+                              help="Skip cost confirmation prompt")
+    audio_parser.add_argument("--chapters", nargs="*", type=int,
+                              help="Generate specific chapters only (e.g., --chapters 1 5 12)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -587,6 +740,8 @@ def main():
         "serve": cmd_serve,
         "seed": cmd_seed,
         "bookops": cmd_bookops,
+        "cover": cmd_cover,
+        "audiobook": cmd_audiobook,
     }
 
     handler = commands.get(args.command)

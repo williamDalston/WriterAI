@@ -1,0 +1,27 @@
+# Minimal valid config for smoke tests.
+# Satisfies REQUIRED_CONFIG_FIELDS; smoke tests materialize temp projects from this.
+project_name: smoke-test-project
+title: Smoke Test Novel
+genre: sci-fi
+synopsis: A scientist discovers that her memories were fabricated. She must choose between the comfortable lie and the dangerous truth.
+protagonist: Yuki Tanaka, 32, memory detective. Cold exterior, secretly afraid her past is fake.
+target_length: standard (60k)
+
+antagonist: The Archivist—runs the Memory Exchange, knows her real past.
+setting: Near-future Tokyo. Neon-lit corporate dystopia.
+key_plot_points: |
+  - Opening: Yuki reads a dying man's memory, sees her own face
+  - Midpoint: Discovers she was an assassin, memories wiped
+  - Climax: Confronts the Archivist, must choose which self to be
+
+budget_usd: 0
+model_defaults:
+  local_model: qwen2.5:7b
+  api_model: qwen2.5:7b
+  critic_model: qwen2.5:7b
+  fallback_model: qwen2.5:7b
+stage_model_map:
+  high_concept: api_model
+  beat_sheet: api_model
+  write_scene: api_model
+  self_refine: critic_model

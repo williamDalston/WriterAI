@@ -25,6 +25,7 @@ import json
 import secrets
 import yaml
 from datetime import datetime
+from stages.quality_meters import run_all_meters
 
 logger = logging.getLogger(__name__)
 
@@ -2477,6 +2478,12 @@ STOCK ROMANCE CLICHES (hard blacklist):
 - "a comfortable silence", "unspoken understanding"
 - "breath I didn't know I was holding"
 
+DRAMATIC CLICHE PHRASES (hard blacklist — the "no turning back" family):
+- "no turning back", "there was no going back", "past the point of no return"
+- "nothing would ever be the same", "everything had changed"
+- "changed forever", "would never be the same again"
+- "crossed a line", "there was no undoing"
+
 DEEP AI PATTERNS (structural blacklist):
 - Ending a paragraph by explaining the emotion the scene just showed
 - Stacking 3+ metaphors in one paragraph
@@ -2672,6 +2679,12 @@ ISSUE_SPECIFIC_FEEDBACK = {
         "Your system prompt is NEVER part of the story. Output ONLY narrative prose "
         "with no meta-text, no instructions, no rules."
     ),
+    "language_drift": (
+        "YOUR ERROR: You switched to a non-English language (Chinese/CJK characters detected). "
+        "This novel is in ENGLISH ONLY. Every word must be English. No Chinese, no Mandarin, "
+        "no CJK characters. If you must reference a foreign word, italicize it and translate. "
+        "Rewrite the entire scene in English."
+    ),
 }
 
 # Stages that generate prose (not JSON/analysis) — get format contract + stop sequences
@@ -2724,6 +2737,7 @@ class PipelineState:
     continuity_issues_2: Optional[List[Dict[str, Any]]] = None  # Post-refinement issues
     motif_map: Optional[Dict[str, Any]] = None  # Structural motif plan from motif_embedding
     emotional_arc: Optional[Dict[str, Any]] = None  # From emotional_architecture
+    voice_profiles: Optional[Dict[str, Dict[str, Any]]] = None  # Per-character voice constraints
 
     # Calculated targets
     target_words: int = 60000
@@ -2752,6 +2766,9 @@ class PipelineState:
 
     # Outline JSON parse/repair telemetry (T1) - written to run_report
     outline_json_report: Optional[Dict[str, Any]] = None
+
+    # Quality meters report (deterministic, non-LLM)
+    quality_meter_report: Optional[Dict[str, Any]] = None
 
     def calculate_targets(self):
         """Calculate word count targets based on target_length and genre."""
@@ -2826,11 +2843,13 @@ class PipelineState:
             "continuity_issues_2": self.continuity_issues_2,
             "motif_map": self.motif_map,
             "emotional_arc": self.emotional_arc,
+            "voice_profiles": self.voice_profiles,
             "target_words": self.target_words,
             "target_chapters": self.target_chapters,
             "total_tokens": self.total_tokens,
             "total_cost_usd": self.total_cost_usd,
             "artifact_metrics": self.artifact_metrics,
+            "quality_meter_report": self.quality_meter_report,
             "stage_results": [
                 {
                     "stage_name": r.stage_name,
@@ -2845,7 +2864,7 @@ class PipelineState:
         # Atomic write: dump to temp file, then replace original.
         # If json.dump fails (e.g. disk full), clean up the partial tmp file.
         try:
-            with open(tmp_file, "w") as f:
+            with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump(state_dict, f, indent=2)
             os.replace(str(tmp_file), str(state_file))
         except Exception:
@@ -2863,11 +2882,11 @@ class PipelineState:
         if not state_file.exists():
             return None
 
-        with open(state_file) as f:
+        with open(state_file, encoding="utf-8") as f:
             data = json.load(f)
 
         config_file = project_path / "config.yaml"
-        with open(config_file) as f:
+        with open(config_file, encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
         state = cls(
@@ -2888,6 +2907,7 @@ class PipelineState:
             continuity_issues_2=data.get("continuity_issues_2"),
             motif_map=data.get("motif_map"),
             emotional_arc=data.get("emotional_arc"),
+            voice_profiles=data.get("voice_profiles"),
             target_words=data.get("target_words", 60000),
             target_chapters=data.get("target_chapters", 20),
             total_tokens=data.get("total_tokens", 0),
@@ -2900,7 +2920,8 @@ class PipelineState:
                 "scenes_with_pov_drift": 0,
                 "scenes_retried": 0,
                 "per_stage": {},
-            })
+            }),
+            quality_meter_report=data.get("quality_meter_report")
         )
 
         # Recalculate targets from config if loading
@@ -2956,6 +2977,7 @@ class PipelineOrchestrator:
         # === VALIDATION PHASE ===
         # Safety net: surgical AI tell removal (protects hooks)
         "final_deai",
+        "quality_meters",           # Deterministic quality meters (no LLM, non-blocking)
         "quality_audit",
         "output_validation"
     ]
@@ -2985,6 +3007,7 @@ class PipelineOrchestrator:
         "chapter_hooks": "claude",
         "prose_polish": "claude",
         "final_deai": "gpt",                 # Fast surgical replacement (no creativity needed)
+        "quality_meters": "gpt",             # Deterministic (no LLM call), cheapest placeholder
         "quality_audit": "gemini",           # Long context for full audit
         "output_validation": "gpt"
     }
@@ -3019,6 +3042,7 @@ class PipelineOrchestrator:
         "continuity_fix_2": 0.3,
         "self_refinement": 0.5,
         "final_deai": 0.3,
+        "quality_meters": 0.2,
         "quality_audit": 0.2,
         "output_validation": 0.2
     }
@@ -3121,6 +3145,8 @@ class PipelineOrchestrator:
         "structure_gate_pass_total": 16,        # total score (out of 25) to pass
         "structure_gate_pass_min": 3,           # minimum per-category score to pass
         "structure_gate_diminishing_threshold": 1,  # stop if improvement < this many points
+        "micro_pass_budget_per_scene": 8000,          # max tokens per scene across all micro-passes
+        "micro_pass_budget_total": 80000,             # max total tokens for all micro-passes combined
     }
 
     # Defense modes: observe (log only), protect (default — log + intervene), aggressive (stricter thresholds)
@@ -3154,6 +3180,8 @@ class PipelineOrchestrator:
         "structure_gate_pass_total": (10, 25),
         "structure_gate_pass_min": (1, 5),
         "structure_gate_diminishing_threshold": (0, 5),
+        "micro_pass_budget_per_scene": (2000, 30000),
+        "micro_pass_budget_total": (10000, 500000),
     }
 
     # Aggressive mode multipliers: tighten percentage thresholds by this factor
@@ -3355,7 +3383,7 @@ class PipelineOrchestrator:
         if not config_file.exists():
             raise FileNotFoundError(f"Project config not found: {config_file}")
 
-        with open(config_file) as f:
+        with open(config_file, encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
         # VALIDATE CONFIG before proceeding
@@ -3536,7 +3564,13 @@ class PipelineOrchestrator:
                                 f"{consecutive_failures} consecutive failures",
                                 severity="critical"
                             )
-                        break
+                            break  # Only break on circuit breaker trip
+                        else:
+                            logger.warning(
+                                f"Stage {stage_name} failed ({consecutive_failures}/{CIRCUIT_BREAKER_THRESHOLD} "
+                                f"consecutive failures). Continuing pipeline."
+                            )
+                            continue
 
                     # Handle iteration if quality_audit indicates it's needed
                     if stage_name == "quality_audit" and result.output:
@@ -3623,6 +3657,7 @@ class PipelineOrchestrator:
             "prose_polish": self._stage_prose_polish,
             "chapter_hooks": self._stage_chapter_hooks,
             "final_deai": self._stage_final_deai,
+            "quality_meters": self._stage_quality_meters,
             "quality_audit": self._stage_quality_audit,
             "output_validation": self._stage_output_validation
         }
@@ -4380,7 +4415,8 @@ Respond as JSON with emotional_beats, peaks, troughs, rhythm_check, and transfor
 
             # Store for use in later stages
             self.state.emotional_arc = emotional_map
-            return emotional_map, response.input_tokens + response.output_tokens
+            tokens = ((response.input_tokens or 0) + (response.output_tokens or 0)) if response else 0
+            return emotional_map, tokens
 
         # Mock response
         return {"emotional_beats": [], "peaks": [], "troughs": []}, 50
@@ -4435,7 +4471,13 @@ Respond as a JSON array of character objects."""
             except Exception as e:
                 logger.warning(f"Character profiles JSON parse failed: {e}")
                 self.state.characters = [{"name": "Protagonist", "role": "protagonist"}, {"name": "Antagonist", "role": "antagonist"}]
-            return self.state.characters, (response.input_tokens + response.output_tokens) if response else 0
+
+            # Generate voice profiles (5 fields per character) for dialogue quality
+            tokens_used = (response.input_tokens + response.output_tokens) if response else 0
+            vp_tokens = await self._generate_voice_profiles(client)
+            tokens_used += vp_tokens
+
+            return self.state.characters, tokens_used
 
         # Mock response
         self.state.characters = [
@@ -4443,6 +4485,119 @@ Respond as a JSON array of character objects."""
             {"name": "Antagonist", "role": "antagonist", "arc": "..."}
         ]
         return self.state.characters, 100
+
+    async def _generate_voice_profiles(self, client) -> int:
+        """Generate 5-field voice profiles for each character.
+
+        Produces per-character constraints that dialogue passes (Plan A,
+        scene drafting, dialogue_polish) inject to break monotone rhythm.
+        Fields: sentence_length, signature_words, forbidden_phrases,
+        rhythm_rule, conflict_tell.
+        """
+        if not self.state.characters:
+            return 0
+
+        char_summaries = []
+        for ch in self.state.characters:
+            if not isinstance(ch, dict):
+                continue
+            name = ch.get("name", "Unknown")
+            role = ch.get("role", "")
+            voice = ch.get("voice", ch.get("speech_patterns", ""))
+            personality = ch.get("personality", "")
+            char_summaries.append(
+                f"- {name} ({role}): voice={voice}, personality={personality}"
+            )
+
+        if not char_summaries:
+            return 0
+
+        chars_text = "\n".join(char_summaries)
+
+        prompt = f"""For each character below, create a voice profile with EXACTLY these 5 fields.
+These profiles will be injected into dialogue prompts to ensure each character sounds unique.
+
+=== CHARACTERS ===
+{chars_text}
+
+=== FIELDS (per character) ===
+1. "sentence_length": "short" | "medium" | "long" — their default dialogue rhythm
+2. "signature_words": array of exactly 5 words this character uses often
+3. "forbidden_phrases": array of 3-7 AI-sounding phrases this character would NEVER say
+4. "rhythm_rule": one sentence describing their speech pattern
+5. "conflict_tell": one sentence describing how they behave in confrontation
+
+=== EXAMPLE ===
+{{"Elena": {{"sentence_length": "medium", "signature_words": ["okay", "fine", "listen", "safe", "right"], "forbidden_phrases": ["I couldn't help but", "a sense of", "my mind raced with"], "rhythm_rule": "Starts cautious, ends decisive; interrupts herself when scared.", "conflict_tell": "Deflects with practicality, then snaps with one clean truth."}}}}
+
+Return a JSON object with character names as keys. No commentary."""
+
+        try:
+            response = await client.generate(
+                prompt, max_tokens=2000, temperature=0.5,
+                system_prompt="You are a dialogue coach. Output ONLY valid JSON. No markdown.",
+                stop=PLANNING_STOP_SEQUENCES, timeout=300)
+            tokens = response.input_tokens + response.output_tokens
+
+            profiles = extract_json_robust(response.content, expect_array=False)
+            if isinstance(profiles, dict) and not profiles.get("raw"):
+                self.state.voice_profiles = profiles
+                logger.info(f"Voice profiles generated for {len(profiles)} characters")
+            else:
+                logger.warning("Voice profile generation returned unexpected format")
+                self.state.voice_profiles = {}
+
+            return tokens
+        except Exception as e:
+            logger.warning(f"Voice profile generation failed: {e}")
+            self.state.voice_profiles = {}
+            return 0
+
+    def _format_voice_constraints(self, char_names: list = None) -> str:
+        """Format voice profiles into a prompt-injectable constraint block.
+
+        Args:
+            char_names: If given, only include these characters. Otherwise all.
+
+        Returns:
+            Formatted string for prompt injection, or empty string if no profiles.
+        """
+        if not self.state.voice_profiles:
+            return ""
+
+        profiles = self.state.voice_profiles
+        if char_names:
+            # Match by case-insensitive first name
+            name_lower = {n.lower().split()[0] for n in char_names if n}
+            profiles = {
+                k: v for k, v in profiles.items()
+                if k.lower().split()[0] in name_lower
+            }
+
+        if not profiles:
+            return ""
+
+        lines = ["=== CHARACTER VOICE RULES (FOLLOW STRICTLY) ==="]
+        for name, vp in profiles.items():
+            if not isinstance(vp, dict):
+                continue
+            sl = vp.get("sentence_length", "medium")
+            sw = vp.get("signature_words", [])
+            fp = vp.get("forbidden_phrases", [])
+            rr = vp.get("rhythm_rule", "")
+            ct = vp.get("conflict_tell", "")
+            lines.append(f"{name}:")
+            lines.append(f"  Sentence length: {sl}")
+            if sw:
+                lines.append(f"  Signature words: {', '.join(sw[:5])}")
+            if fp:
+                lines.append(f"  NEVER say: {', '.join(fp[:7])}")
+            if rr:
+                lines.append(f"  Rhythm: {rr}")
+            if ct:
+                lines.append(f"  In conflict: {ct}")
+
+        return "\n".join(lines)
 
     async def _stage_master_outline(self) -> tuple:
         """Create master outline with scene-by-scene breakdown.
@@ -4879,6 +5034,30 @@ Respond with a JSON object: {{"chapters": [{{"chapter": {miss_ch}, "chapter_titl
                         raise ValueError(f"scene_id integrity: {existing} != {expected}")
                 else:
                     sc["scene_id"] = expected
+                # Normalize scene_number to match stamped position so
+                # downstream (drafting, logging, export) is consistent.
+                sc["scene"] = i + 1
+                sc["scene_number"] = i + 1
+
+        # Invariant: after stamping, all three identity fields must agree
+        for ch in all_chapters:
+            if not isinstance(ch, dict):
+                continue
+            ch_num = int(ch.get("chapter", 0))
+            for i, sc in enumerate(ch.get("scenes", [])):
+                if not isinstance(sc, dict):
+                    continue
+                expected_num = i + 1
+                assert sc.get("scene") == expected_num, (
+                    f"scene stamp invariant: ch{ch_num} sc['scene']={sc.get('scene')} != {expected_num}"
+                )
+                assert sc.get("scene_number") == expected_num, (
+                    f"scene stamp invariant: ch{ch_num} sc['scene_number']={sc.get('scene_number')} != {expected_num}"
+                )
+                expected_id = f"ch{ch_num:02d}_s{expected_num:02d}"
+                assert sc.get("scene_id") == expected_id, (
+                    f"scene stamp invariant: {sc.get('scene_id')} != {expected_id}"
+                )
 
         # Deterministic POV normalization: overwrite scene POVs to match
         # the dual-POV chapter rule. This is the safety net — even if the model
@@ -5645,6 +5824,20 @@ RULES:
         if word_count < 50:
             issues["too_short"] = True
 
+        # Language drift guard: Qwen/Ollama models sometimes switch to
+        # Chinese (or other CJK scripts) mid-scene. Detect via absolute count
+        # AND ratio to avoid false positives from quoted signs or names.
+        # Ranges: CJK Unified (U+4E00-9FFF), Hiragana (U+3040-309F),
+        #         Katakana (U+30A0-30FF), Hangul (U+AC00-D7AF)
+        _LANG_DRIFT_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]')
+        drift_hits = len(_LANG_DRIFT_RE.findall(text))
+        alpha_count = sum(1 for c in text if c.isalpha())
+        drift_ratio = drift_hits / max(1, alpha_count)
+        if drift_hits >= 3 and drift_ratio > 0.02:
+            issues["language_drift"] = True
+            logger.warning(f"Language drift detected: {drift_hits} non-Latin chars "
+                          f"({drift_ratio:.1%} of alphabetic content)")
+
         # POV drift check (quick heuristic for first-person stories)
         writing_style = self.state.config.get("writing_style", "").lower()
         if "first person" in writing_style:
@@ -5754,6 +5947,9 @@ RULES:
         if issues.get("prompt_leak"):
             sm["prompt_leak"] = sm.get("prompt_leak", 0) + 1
             metrics["scenes_with_meta_text"] += 1
+        if issues.get("language_drift"):
+            sm["language_drift"] = sm.get("language_drift", 0) + 1
+            metrics["scenes_with_language_drift"] = metrics.get("scenes_with_language_drift", 0) + 1
         if is_retry:
             sm["retried"] += 1
             metrics["scenes_retried"] += 1
@@ -5926,7 +6122,7 @@ RULES:
         self._record_artifact_metrics(stage_name, scene_meta or {}, validation)
 
         # If critic gate fails on fixable issues, retry once with issue-specific feedback
-        fixable_issues = {"preamble", "truncation_marker", "alternate_version", "analysis_commentary", "prompt_leak"}
+        fixable_issues = {"preamble", "truncation_marker", "alternate_version", "analysis_commentary", "prompt_leak", "language_drift"}
         detected = set(validation.get("issues", {}).keys())
 
         # Budget guard: check retry budget before attempting
@@ -6579,6 +6775,10 @@ INFLUENCES TO CHANNEL: {influences}
 === ABSOLUTE RESTRICTIONS (NEVER INCLUDE) ===
 {avoid_list}
 - NEVER use: "couldn't help but", "found myself", "a sense of", "I realized"
+- NEVER use these AI padding phrases: "the weight of", "more than just",
+  "a mix of", "a hint of", "a wave of", "something shifted", "hung in the air",
+  "settled over her/him/them/me", "washed over", "cut through the silence/tension/air",
+  "I couldn't shake"
 - NEVER use stock metaphors: "electricity", "butterflies", "anchor", "storm",
   "walls crumbling", "breath I didn't know I was holding", "heart skipped"
 - NEVER end a paragraph by explaining the emotion it just showed
@@ -6698,6 +6898,8 @@ TENSION LEVEL: {tension_level}/10
 
 {f"=== CULTURAL AUTHENTICITY ==={chr(10)}{cultural_notes}" if cultural_notes else ""}
 
+{self._format_voice_constraints()}
+
 === STORY STATE (what has happened so far — READ THIS CAREFULLY) ===
 {self._build_story_state(scenes, chapter_num, scene_num)}
 
@@ -6790,15 +6992,38 @@ Write the complete scene as {pov_char} ("I"):"""
         Passes run in order:
           1. Semantic dedup tail regeneration (scenes truncated by dedup)
           2. Dialogue drought guard (min 3 dialogue lines)
-          3. AI-tell scrub (remove AI-tell phrases)
-          4. Scene-turn repair (ensure scene ends with a turn)
+          3. Scene-turn repair (ensure scene ends with a turn)
+          4. AI-tell scrub (remove AI-tell phrases)
+          5. Wolf voice seed (italic inner voice)
+        Turn repair runs immediately after dialogue insertion so Plan A
+        patches can contribute to turn detection before later passes.
+
+        Token budget enforcement:
+          - Per-scene cap: skip remaining passes once a scene exhausts its budget
+          - Total cap: stop processing further scenes once total budget is spent
         """
         client = self.get_client_for_stage("scene_drafting")
         if not client:
             return scenes, 0
 
+        per_scene_budget = int(self._get_threshold("micro_pass_budget_per_scene"))
+        # Total budget scales with scene count: per_scene_budget × eligible scenes.
+        # The fixed threshold is a floor (for tiny runs) — whichever is larger wins.
+        eligible_scenes = sum(
+            1 for s in scenes
+            if isinstance(s, dict) and len((s.get("content") or "").strip()) >= 200
+        )
+        total_budget = max(
+            int(self._get_threshold("micro_pass_budget_total")),
+            per_scene_budget * eligible_scenes,
+        )
+        logger.info(f"Micro-pass budget: {total_budget} tokens total "
+                    f"({per_scene_budget}/scene × {eligible_scenes} eligible scenes, "
+                    f"floor={int(self._get_threshold('micro_pass_budget_total'))})")
+
         total_tokens = 0
         updated = []
+        skipped_budget = 0
 
         for scene in scenes:
             content = scene.get("content", "")
@@ -6810,9 +7035,15 @@ Write the complete scene as {pov_char} ("I"):"""
                 updated.append(scene)
                 continue
 
+            # Total budget check: skip remaining scenes entirely
+            if total_tokens >= total_budget:
+                skipped_budget += 1
+                updated.append(scene)
+                continue
+
             scene_tokens = 0
 
-            # Wrap all 4 micro-passes in a per-scene timeout guard (15 min).
+            # Wrap all micro-passes in a per-scene timeout guard (15 min).
             # Belt-and-suspenders: individual generate() calls have 300s timeouts,
             # but asyncio cancellation on Windows can be unreliable.
             try:
@@ -6826,25 +7057,34 @@ Write the complete scene as {pov_char} ("I"):"""
                             client, content, scene, sid, pov)
                         _tokens += t
 
-                    # Pass 2: Dialogue drought guard
-                    content, t = await self._micro_dialogue_drought(
-                        client, content, scene, sid, pov)
-                    _tokens += t
+                    # Pass 2: Dialogue drought guard (JSON insertion patches)
+                    if _tokens < per_scene_budget:
+                        content, t = await self._micro_dialogue_drought(
+                            client, content, scene, sid, pov)
+                        _tokens += t
 
-                    # Pass 3: AI-tell scrub
-                    content, t = await self._micro_ai_tell_scrub(
-                        client, content, scene, sid, pov)
-                    _tokens += t
+                    # Pass 3: Scene-turn repair (runs right after dialogue insertion
+                    # so Plan A patches contribute to turn detection)
+                    if _tokens < per_scene_budget:
+                        content, t = await self._micro_scene_turn_repair(
+                            client, content, scene, sid, pov)
+                        _tokens += t
 
-                    # Pass 4: Scene-turn repair
-                    content, t = await self._micro_scene_turn_repair(
-                        client, content, scene, sid, pov)
-                    _tokens += t
+                    # Pass 4: AI-tell scrub (after turn repair to avoid washing out turns)
+                    if _tokens < per_scene_budget:
+                        content, t = await self._micro_ai_tell_scrub(
+                            client, content, scene, sid, pov)
+                        _tokens += t
 
                     # Pass 5: Wolf voice seed (LAST — after all rewrites to prevent overwrites)
-                    content, t = await self._micro_wolf_voice_seed(
-                        client, content, scene, sid, pov)
-                    _tokens += t
+                    if _tokens < per_scene_budget:
+                        content, t = await self._micro_wolf_voice_seed(
+                            client, content, scene, sid, pov)
+                        _tokens += t
+
+                    if _tokens >= per_scene_budget:
+                        logger.info(f"Micro-pass budget exhausted for {sid}: "
+                                   f"{_tokens}/{per_scene_budget} tokens")
                     return _tokens
 
                 scene_tokens = await asyncio.wait_for(_run_micro_passes(), timeout=900)
@@ -6857,8 +7097,22 @@ Write the complete scene as {pov_char} ("I"):"""
             total_tokens += scene_tokens
             updated.append(scene)
 
+        if skipped_budget > 0:
+            logger.warning(f"Micro-pass total budget reached ({total_tokens}/{total_budget} tokens), "
+                          f"skipped {skipped_budget} scene(s)")
         if total_tokens > 0:
             logger.info(f"Post-draft micro-passes: {total_tokens} tokens across {len(updated)} scenes")
+
+        # Record micro-pass stats in artifact_metrics for run_report visibility
+        micro_stats = self.state.artifact_metrics.setdefault("micro_pass", {
+            "tokens": 0, "scenes_processed": 0, "scenes_skipped_budget": 0,
+            "budget_total": 0, "budget_remaining": 0,
+        })
+        micro_stats["tokens"] += total_tokens
+        micro_stats["scenes_processed"] += len(updated) - skipped_budget
+        micro_stats["scenes_skipped_budget"] += skipped_budget
+        micro_stats["budget_total"] = total_budget
+        micro_stats["budget_remaining"] = max(0, total_budget - total_tokens)
 
         return updated, total_tokens
 
@@ -6916,13 +7170,15 @@ End on action or dialogue, not reflection."""
 
     async def _micro_dialogue_drought(self, client, content: str, scene: dict,
                                        sid: str, pov: str) -> tuple:
-        """Surgically insert dialogue into scenes that lack it.
+        """Insert dialogue into scenes that lack it via JSON patches.
 
-        Instead of rewriting the whole scene (which causes word-count loss),
-        identifies 2-3 anchor points in the existing prose and asks the model
-        to insert short dialogue exchanges at those points only.
+        Instead of asking the model to rewrite the whole scene (which local
+        models fail at consistently), asks for a JSON patch specifying
+        paragraph indices and dialogue blocks, then applies insertions
+        deterministically in code.
         """
         MIN_DIALOGUE_LINES = 3
+        MAX_RETRIES = 1
 
         dialogue_lines = len(re.findall(r'"[^"]{5,}"', content))
         if dialogue_lines >= MIN_DIALOGUE_LINES:
@@ -6930,94 +7186,148 @@ End on action or dialogue, not reflection."""
 
         logger.info(f"Dialogue drought in {sid}: {dialogue_lines} lines (min {MIN_DIALOGUE_LINES})")
 
-        # Find insertion anchors: paragraphs with interaction cues
         paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
         if len(paragraphs) < 3:
             return content, 0
 
-        # Build annotated scene with [KEEP] / [INSERT DIALOGUE HERE] markers
-        interaction_cues = re.compile(
-            r'\b(looked at|turned to|faced|glanced|stared|nodded|shook|'
-            r'stepped|moved toward|reached|grabbed|touched|voice|spoke|'
-            r'whispered|mouth|lips|jaw|throat|eyes met)\b', re.IGNORECASE)
+        # Gather character names for the prompt
+        chars = []
+        if scene.get("characters"):
+            chars = [c.get("name", "") for c in scene["characters"] if c.get("name")]
+        if not chars and self.state.characters:
+            chars = [c.get("name", "") for c in self.state.characters[:4] if c.get("name")]
+        char_list = ", ".join(chars[:4]) if chars else "the characters present"
 
-        anchors = []
-        for i, para in enumerate(paragraphs):
-            if interaction_cues.search(para) and i > 0:
-                anchors.append(i)
+        # Voice profile constraints for dialogue quality
+        voice_block = self._format_voice_constraints(chars if chars else None)
 
-        # If no interaction cues, pick paragraph before final 2 + midpoint
-        if not anchors:
-            mid = len(paragraphs) // 2
-            anchors = [mid, max(mid + 1, len(paragraphs) - 3)]
+        total_tokens = 0
 
-        # Limit to 3 anchors, spread across the scene
-        anchors = sorted(set(anchors))[:3]
-        needed = max(MIN_DIALOGUE_LINES - dialogue_lines + 1, 3)
+        for attempt in range(MAX_RETRIES + 1):
+            # Build numbered paragraph listing for the model
+            numbered = "\n\n".join(
+                f"[{i}] {para}" for i, para in enumerate(paragraphs)
+            )
+            needed = max(MIN_DIALOGUE_LINES - dialogue_lines + 1, 3)
+            max_idx = len(paragraphs) - 1
 
-        # Build the annotated scene
-        annotated_parts = []
-        for i, para in enumerate(paragraphs):
-            if i in anchors:
-                annotated_parts.append(f"[INSERT DIALOGUE AFTER THIS PARAGRAPH]\n{para}")
-            else:
-                annotated_parts.append(f"[KEEP VERBATIM]\n{para}")
+            prompt = f"""This scene has only {dialogue_lines} dialogue lines — it reads flat.
+It needs at least {needed} new quoted dialogue exchanges inserted.
 
-        annotated_scene = '\n\n'.join(annotated_parts)
+=== CHARACTERS PRESENT ===
+{char_list}
 
-        prompt = f"""This scene has only {dialogue_lines} dialogue lines. Insert dialogue at the marked points.
+{voice_block}
 
-=== RULES (NON-NEGOTIABLE) ===
-1. Every paragraph marked [KEEP VERBATIM] must appear UNCHANGED in your output.
-2. After each [INSERT DIALOGUE AFTER THIS PARAGRAPH], add 1-2 short dialogue exchanges.
-3. A dialogue exchange = a quoted line + a physical beat (what hands/eyes/body do).
-4. Total new dialogue: at least {needed} quoted lines spread across the insert points.
-5. Dialogue must CAUSE A TURN — reveal, challenge, deflect, or surprise.
-6. Each character sounds DIFFERENT. Real people fumble, dodge, interrupt.
-7. You may ONLY add lines. Do NOT delete, rephrase, or compress any existing text.
-8. The final output must be LONGER than the input (you're adding, not replacing).
+=== POV ===
+First person ("I") — {pov}'s POV.
 
-=== POV LOCK ===
-FIRST PERSON ("I") — {pov}'s POV.
+=== NUMBERED PARAGRAPHS ===
+{numbered}
 
-=== SCENE WITH INSERTION MARKERS ===
-{annotated_scene}
+=== YOUR TASK ===
+Return a JSON object with ONE key "insertions" — an array of objects, each with:
+  "after_paragraph": <integer index from 0 to {max_idx}>,
+  "text": "<1-3 sentences: a quoted dialogue line + a physical beat>"
 
-=== NOW OUTPUT ===
-Return the complete scene with dialogue inserted at the marked points.
-Remove all [KEEP VERBATIM] and [INSERT DIALOGUE AFTER THIS PARAGRAPH] markers.
-Output ONLY the scene text — no commentary, no labels."""
+Rules:
+1. Each "text" MUST contain at least one quoted line ("...") plus a brief action beat.
+2. Dialogue must CAUSE A TURN — reveal, challenge, deflect, or surprise. No bland agreement.
+3. Each character sounds DIFFERENT. Real people fumble, dodge, interrupt.
+4. Spread insertions across the scene — not all in one cluster.
+5. Return at least {needed} insertions.
+6. "after_paragraph" means the new text goes AFTER that paragraph index.
+7. The FINAL inserted line (highest after_paragraph) MUST be a threat, vow, refusal, demand, or revelation that changes what happens next.
+8. Every inserted block must reference at least 1 concrete anchor from the scene (a location, object, character detail, or ongoing action).
 
-        try:
-            max_tokens = min(max(int(len(content.split()) * 2.5), 2500), 5000)
-            response = await client.generate(
-                prompt, max_tokens=max_tokens, temperature=0.5,
-                system_prompt=self._format_contract,
-                stop=self._stop_sequences, timeout=300)
-            tokens = response.input_tokens + response.output_tokens
+=== EXAMPLE OUTPUT ===
+{{"insertions": [{{"after_paragraph": 2, "text": "\\"Are you sure about this?\\" Noor's fingers tightened around the strap of her bag."}}, {{"after_paragraph": 5, "text": "I grabbed her wrist. \\"Don't. Not yet.\\"\\nShe yanked free, eyes blazing."}}]}}
 
-            new_content = self._postprocess(response.content, pov_character=pov)
-            # Strip any surviving markers
-            new_content = re.sub(r'\[(?:KEEP VERBATIM|INSERT DIALOGUE[^\]]*)\]\s*', '', new_content)
+Return ONLY the JSON object. No commentary, no markdown."""
 
-            # Validate: must have dialogue AND not shrink
-            new_dialogue = len(re.findall(r'"[^"]{5,}"', new_content))
-            old_words = len(content.split())
-            new_words = len(new_content.split())
+            try:
+                response = await client.generate(
+                    prompt, max_tokens=1500, temperature=0.5,
+                    system_prompt="You are a dialogue specialist. Output ONLY valid JSON. No markdown. No commentary.",
+                    stop=PLANNING_STOP_SEQUENCES, timeout=300)
+                tokens = response.input_tokens + response.output_tokens
+                total_tokens += tokens
 
-            if (new_dialogue >= MIN_DIALOGUE_LINES and
-                    new_words >= old_words * 0.92 and
-                    new_content and len(new_content.strip()) > 200):
-                logger.info(f"Dialogue drought fixed in {sid}: "
-                           f"{dialogue_lines} -> {new_dialogue} lines")
-                return new_content, tokens
-            else:
-                logger.warning(f"Dialogue fix rejected for {sid}: "
-                             f"dialogue {new_dialogue}, words {new_words}/{old_words}")
-                return content, tokens
-        except Exception as e:
-            logger.warning(f"Dialogue drought fix failed for {sid}: {e}")
-            return content, 0
+                # Parse JSON response
+                result = extract_json_robust(response.content, expect_array=False)
+
+                if isinstance(result, dict) and "insertions" in result:
+                    insertions = result["insertions"]
+                elif isinstance(result, list):
+                    insertions = result
+                else:
+                    logger.warning(f"Unexpected dialogue patch format for {sid}: {type(result)}")
+                    continue
+
+                if not insertions or not isinstance(insertions, list):
+                    logger.warning(f"No insertions returned for {sid}")
+                    continue
+
+                # Validate, clamp, and deduplicate insertions
+                valid_insertions = []
+                seen_indices = set()
+                for ins in insertions:
+                    if not isinstance(ins, dict):
+                        continue
+                    idx = ins.get("after_paragraph")
+                    text = ins.get("text", "").strip()
+                    if idx is None or not text:
+                        continue
+                    try:
+                        idx = int(idx)
+                    except (ValueError, TypeError):
+                        continue
+                    # Clamp to valid range
+                    idx = max(0, min(idx, max_idx))
+                    # Deduplicate
+                    if idx in seen_indices:
+                        continue
+                    seen_indices.add(idx)
+                    # Must contain at least one quoted line (straight or curly quotes)
+                    if not any(q in text for q in ['"', '\u201c', '\u201d']):
+                        continue
+                    valid_insertions.append((idx, text))
+
+                if not valid_insertions:
+                    logger.warning(f"No valid insertions after validation for {sid}")
+                    continue
+
+                # Insert from bottom up so earlier indices stay stable
+                valid_insertions.sort(key=lambda x: x[0], reverse=True)
+
+                for idx, text in valid_insertions:
+                    paragraphs.insert(idx + 1, text)
+
+                new_content = '\n\n'.join(paragraphs)
+
+                # Validate result
+                new_dialogue = len(re.findall(r'"[^"]{5,}"', new_content))
+                old_words = len(content.split())
+                new_words = len(new_content.split())
+
+                if new_dialogue >= MIN_DIALOGUE_LINES and new_words >= old_words:
+                    logger.info(f"Dialogue drought fixed in {sid}: "
+                               f"{dialogue_lines} -> {new_dialogue} lines "
+                               f"({len(valid_insertions)} insertions)")
+                    return new_content, total_tokens
+                else:
+                    logger.warning(f"Dialogue patch insufficient for {sid}: "
+                                 f"dialogue {new_dialogue}, words {new_words}/{old_words}, "
+                                 f"attempt {attempt + 1}/{MAX_RETRIES + 1}")
+                    # Reset paragraphs for retry
+                    paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
+                    dialogue_lines = len(re.findall(r'"[^"]{5,}"', content))
+
+            except Exception as e:
+                logger.warning(f"Dialogue patch failed for {sid}: {e}")
+
+        logger.warning(f"Dialogue drought unfixed after {MAX_RETRIES + 1} attempts for {sid}")
+        return content, total_tokens
 
     async def _micro_ai_tell_scrub(self, client, content: str, scene: dict,
                                     sid: str, pov: str) -> tuple:
@@ -7109,6 +7419,9 @@ that contain the listed phrases. Everything else stays EXACTLY as written."""
             "door", "phone", "voice", "said", "asked", "told",
             "decided", "chose", "turned", "stopped", "froze",
             "no", "wait", "wrong", "different", "?",
+            # Challenge turns (confrontation / dare / ultimatum)
+            "prove", "show me", "try me", "let's see", "make me",
+            "dare", "confront", "face me", "choose", "swear",
         ]
         has_turn = sum(1 for sig in turn_signals if sig in last_two)
 
@@ -8384,6 +8697,8 @@ JOB 6: SURFACE CLEANUP
 - Kill weak constructions: seemed to, began to, managed to
 - Kill stock romance: warm hug, butterflies, anchor in rough seas,
   ethereal glow, comfortable silence, breath I didn't know I held
+- Kill dramatic cliches: no turning back, nothing would ever be the same,
+  everything had changed, past the point of no return, changed forever
 
 === POV DEPTH ({pov}) — FIRST PERSON ONLY ===
 Stay in their head. Their vocabulary. Their biases. Their blind spots.
@@ -9150,7 +9465,9 @@ OUTPUT the text with only problematic sentences fixed:"""
                         system_prompt=self._format_contract,
                         stop=self._stop_sequences)
                     rewritten_middle = self._postprocess(response.content, pov_character=scene.get("pov", ""))
-                    total_tokens += response.input_tokens + response.output_tokens
+                    _tok = ((response.input_tokens or 0) + (response.output_tokens or 0)) if response else 0
+                    total_tokens += _tok
+                    self._budget_tracker["defense_tokens"] += _tok
 
                     # Per-paragraph word count guard: reject if any paragraph
                     # lost >50% of its words (LLM rewrote too aggressively)
@@ -9213,7 +9530,9 @@ OUTPUT the text with only problematic sentences fixed:"""
                         system_prompt=self._format_contract,
                         stop=self._stop_sequences)
                     content = self._postprocess(response.content, pov_character=scene.get("pov", ""))
-                    total_tokens += response.input_tokens + response.output_tokens
+                    _tok = ((response.input_tokens or 0) + (response.output_tokens or 0)) if response else 0
+                    total_tokens += _tok
+                    self._budget_tracker["defense_tokens"] += _tok
                     scene_fixes += remaining_tells["total_tells"]
 
             if scene_fixes > 0:
@@ -9271,6 +9590,33 @@ OUTPUT the text with only problematic sentences fixed:"""
             logger.warning(f"final_deai post-check issues: {deai_issues}")
         return {"fixes_made": fixes_made, "scenes_processed": len(cleaned_scenes),
                 "hooks_protected": len(chapter_end_indices), "post_check_issues": deai_issues}, total_tokens
+
+    async def _stage_quality_meters(self) -> tuple:
+        """Run deterministic quality meters (no LLM needed). Non-blocking."""
+        scenes = [s for s in (self.state.scenes or []) if isinstance(s, dict)]
+        outline = self.state.master_outline or []
+        characters = self.state.characters or []
+
+        try:
+            meter_report = run_all_meters(
+                scenes=scenes,
+                outline=outline,
+                characters=characters,
+            )
+        except Exception as e:
+            logger.warning(f"Quality meters failed (non-blocking): {e}")
+            meter_report = {"all_pass": None, "error": str(e)}
+
+        # Store in state for run_report
+        self.state.quality_meter_report = meter_report
+
+        all_pass = meter_report.get("all_pass", True)
+        if not all_pass:
+            failures = [k for k, v in meter_report.items()
+                       if isinstance(v, dict) and not v.get("pass", True)]
+            logger.warning(f"Quality meters detected issues: {failures}")
+
+        return meter_report, 0  # No tokens used (deterministic)
 
     async def _stage_quality_audit(self) -> tuple:
         """Comprehensive quality audit before final output."""
@@ -9889,14 +10235,21 @@ Respond with JSON:
         # Quality dashboard: % scenes flagged by each defense mechanism
         if self.state.scenes:
             total_sc = len(self.state.scenes)
-            am = self.state.artifact_metrics
-            flagged_dedup = sum(1 for m in am.values() if m.get("retried")) if am else 0
-            flagged_gate = sum(1 for m in am.values()
-                              if m.get("structure_repair_iteration", 0) > 0) if am else 0
+            # Scene-level metrics live on scene dicts, not artifact_metrics
+            flagged_dedup = sum(
+                1 for sc in self.state.scenes
+                if isinstance(sc, dict) and sc.get("retried")
+            )
+            flagged_gate = sum(
+                1 for sc in self.state.scenes
+                if isinstance(sc, dict) and sc.get("structure_repair_iteration", 0) > 0
+            )
             avg_repair_delta = 0.0
             repair_deltas = []
-            for m in (am or {}).values():
-                history = m.get("structure_scores_history", [])
+            for sc in self.state.scenes:
+                if not isinstance(sc, dict):
+                    continue
+                history = sc.get("structure_scores_history", [])
                 if len(history) >= 2:
                     repair_deltas.append(history[-1] - history[0])
             if repair_deltas:
@@ -9912,12 +10265,14 @@ Respond with JSON:
         # Add high concept info if available
         if self.state.high_concept_fingerprint:
             run_report["high_concept_fingerprint"] = self.state.high_concept_fingerprint
+        if hasattr(self.state, 'quality_meter_report') and self.state.quality_meter_report:
+            run_report["quality_meters"] = self.state.quality_meter_report
         if metrics_delta:
             run_report["metrics_delta"] = metrics_delta
 
         report_file = output_dir / "run_report.json"
         try:
-            with open(report_file, "w") as f:
+            with open(report_file, "w", encoding="utf-8") as f:
                 json.dump(run_report, f, indent=2, default=str)
             logger.info(f"Run report saved to {report_file}")
         except Exception as e:

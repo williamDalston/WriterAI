@@ -1,0 +1,29 @@
+# Hybrid Paid Model Preset
+# Use: PROMETHEUS_ENV=hybrid_paid
+# Or copy model_defaults + model_tuning into project config.yaml.
+# See docs/MODEL_SWAP_GUIDE.md
+
+model_defaults:
+  api_model: gpt-4o-mini
+  critic_model: claude-3-haiku
+  fallback_model: gemini-1.5-flash
+
+model_tuning:
+  stage_temperatures:
+    high_concept: 0.3
+    world_building: 0.3
+    beat_sheet: 0.2
+    master_outline: 0.2
+    trope_integration: 0.3
+    scene_drafting: 0.7
+    scene_expansion: 0.6
+    dialogue_polish: 0.3
+    prose_polish: 0.4
+    final_deai: 0.2
+    structure_gate: 0.1
+    continuity_audit: 0.2
+    quality_audit: 0.2
+  stage_max_tokens:
+    master_outline: 4096
+    scene_drafting: 4500
+    scene_expansion: 2500

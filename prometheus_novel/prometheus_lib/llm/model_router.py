@@ -32,6 +32,7 @@ MODEL_CLIENT_MAP: Dict[str, Type[BaseLLMClient]] = {
     "phi3": OllamaClient,
     "deepseek": OllamaClient,
     # OpenAI models
+    "gpt-5-mini": OpenAIClient,
     "gpt-4o": OpenAIClient,
     "gpt-4o-mini": OpenAIClient,
     "gpt-4o-mini-nano": OpenAIClient,

@@ -1565,8 +1565,8 @@ Issues identified during audit that should be resolved:
 
 | Issue | Section | Severity | Description |
 |-------|---------|----------|-------------|
-| Scene drafting context bypass | §3.2 | **High** | Scene drafting builds context inline, bypassing `_build_scene_context()` safety checks (injection detection, alignment, provenance hashing) |
-| Non-atomic state writes | §9.1 | **High** | `pipeline_state.json` written directly with no temp file + rename; crash during write = total state loss |
+| ~~Scene drafting context bypass~~ | §3.2 | ~~High~~ **FIXED** | `_validate_context_schema()` now called on inline-assembled prompt before generation |
+| ~~Non-atomic state writes~~ | §9.1 | ~~High~~ **FIXED** | `PipelineState.save()` now uses temp file + `os.replace()` for crash-safe writes |
 | Inconsistent parameterization | §14.5 | Medium | Some stages omit temperature/max_tokens, using silent client defaults that differ across providers |
 | No config schema validation | §4.2 | Medium | Config typos silently produce empty fields; no load-time check |
 | Strategic guidance not seeded | §2.2, §4.1 | Medium | Genre-critical guidance requires manual addition; seed guided mode doesn't ask |
@@ -1611,6 +1611,7 @@ Issues identified during audit that should be resolved:
 | _build_structure_repair_prompt | pipeline.py ~6057 |
 | CATEGORY_FILL_INS | pipeline.py ~312 |
 | STRUCTURE_REPAIR_SYSTEM_PROMPT | pipeline.py ~396 |
+| _mark_repair_spans | pipeline.py ~6075 |
 | _stage_continuity_recheck | pipeline.py ~6340 |
 | **Artifact Prevention** | |
 | FORMAT_CONTRACT | pipeline.py ~2260 |

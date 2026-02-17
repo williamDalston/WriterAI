@@ -6,6 +6,7 @@ Amazon Kindle Direct Publishing.
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import json
@@ -62,9 +63,13 @@ class KDPExporter:
         # Load pipeline state if exists
         state_file = self.project_path / "pipeline_state.json"
         if state_file.exists():
-            with open(state_file, 'r', encoding='utf-8') as f:
-                state = json.load(f)
-                self.scenes = state.get("scenes", [])
+            try:
+                with open(state_file, 'r', encoding='utf-8') as f:
+                    state = json.load(f)
+                    self.scenes = state.get("scenes", [])
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"Failed to load pipeline state: {e}")
+                self.scenes = []
 
         # Or load from markdown output
         output_file = self.project_path / "output" / f"{self.config.get('project_name', 'novel')}.md"
@@ -76,7 +81,6 @@ class KDPExporter:
         content = md_file.read_text(encoding='utf-8')
 
         # Split by chapter headers
-        import re
         chapters = re.split(r'\n## Chapter (\d+)', content)
 
         current_chapter = 0
@@ -229,6 +233,42 @@ class KDPExporter:
 
         self.doc.add_page_break()
 
+    def _add_formatted_paragraph(self, text: str, first_in_section: bool = False):
+        """Add a paragraph with Markdown bold/italic rendered as DOCX formatting.
+
+        Parses ``**bold**`` and ``*italic*`` markers into proper DOCX runs.
+        Bold markers are matched first so ``**`` is not misinterpreted as
+        two italic markers.  Unmatched asterisks are left as-is.
+        """
+        para = self.doc.add_paragraph()
+        if first_in_section:
+            para.paragraph_format.first_line_indent = Inches(0)
+
+        # Pattern: **bold** (group 2), then *italic* (group 3).
+        # Order in the alternation matters: **...** is tried before *...*
+        pattern = r'(\*\*(.+?)\*\*|\*(.+?)\*)'
+
+        last_end = 0
+        for match in re.finditer(pattern, text):
+            # Add any plain text before this match
+            if match.start() > last_end:
+                para.add_run(text[last_end:match.start()])
+
+            if match.group(2):  # **bold**
+                run = para.add_run(match.group(2))
+                run.font.bold = True
+            elif match.group(3):  # *italic*
+                run = para.add_run(match.group(3))
+                run.font.italic = True
+
+            last_end = match.end()
+
+        # Add any remaining plain text after the last match
+        if last_end < len(text):
+            para.add_run(text[last_end:])
+
+        return para
+
     def _add_chapter(self, chapter_num: int, scenes: List[Dict[str, Any]]):
         """Add a chapter with its scenes."""
         # Chapter heading
@@ -256,11 +296,7 @@ class KDPExporter:
                 # Clean up the text
                 para_text = para_text.replace('\n', ' ')
 
-                para = self.doc.add_paragraph(para_text)
-
-                # First paragraph after heading/break has no indent
-                if j == 0:
-                    para.paragraph_format.first_line_indent = Inches(0)
+                para = self._add_formatted_paragraph(para_text, first_in_section=(j == 0))
 
     def _validate_scenes(self) -> None:
         """Run pre-export validation; log issues. In strict mode, raise on errors."""
@@ -309,9 +345,15 @@ class KDPExporter:
                 chapters[ch] = []
             chapters[ch].append(scene)
 
-        # Add chapters in order
+        # Add chapters in order, scenes sorted within each chapter
+        def _scene_sort_key(sc: dict):
+            return (
+                int(sc.get("scene_number") or sc.get("scene") or 10**9),
+                str(sc.get("scene_id") or ""),
+            )
+
         for chapter_num in sorted(chapters.keys()):
-            self._add_chapter(chapter_num, chapters[chapter_num])
+            self._add_chapter(chapter_num, sorted(chapters[chapter_num], key=_scene_sort_key))
 
         # Determine output path
         if output_path is None:

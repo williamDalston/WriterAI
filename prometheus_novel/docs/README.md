@@ -31,9 +31,43 @@ This directory contains documentation, runbooks, and failure scenarios for the P
     uvicorn api:app --reload --port 8000
     ```
 
+## Getting Running (Tests)
+
+Dev dependencies (including `pytest-asyncio`) are required for tests:
+
+```bash
+cd prometheus_novel
+poetry install   # installs dev deps; or: pip install pytest pytest-asyncio
+```
+
+**Run unit tests:**
+```bash
+pytest
+```
+
+**Run smoke tests** (require Ollama or API; use temp project from `tests/fixtures/`):
+```bash
+pytest -m smoke
+```
+Smoke tests run with `qwen2.5:7b` and reduced token budgets. Treat them as a **boot sequence** (plumbing, contracts, stage order, no explosions), not a performance or prose-quality benchmark. For quality evaluation, run the same tests manually with 14b or your target model.
+
+**Run slow/stress tests:**
+```bash
+pytest -m slow
+```
+
+**Skip smoke/slow** (CI, or when LLM not available):
+```bash
+pytest -m "not smoke and not slow"
+```
+
 ## Architecture & Defense Layers
 
 * **[DEFENSE_ARCHITECTURE.md](DEFENSE_ARCHITECTURE.md)** — Defense layers, problem→defense mapping, artifact metrics, config reference, and improvement inference guide.
+
+* **[MODEL_SWAP_GUIDE.md](MODEL_SWAP_GUIDE.md)** — Switching from local Qwen to paid models (OpenAI, Anthropic, Gemini). Config + calibration only; no code changes.
+
+* **[AUDIOBOOK_GUIDE.md](AUDIOBOOK_GUIDE.md)** — Generating ACX/Audible-compliant audiobooks via Google Cloud TTS. Multi-voice support, cost estimation, CLI usage, and troubleshooting.
 
 ## Runbooks & Failure Scenarios
 (Detailed guides for operating the system, diagnosing issues, and recovery procedures)

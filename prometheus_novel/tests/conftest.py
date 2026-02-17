@@ -53,6 +53,8 @@ def sample_config() -> dict:
         "title": "Test Novel",
         "genre": "sci-fi",
         "synopsis": "A test story about testing",
+        "protagonist": "A scientist who discovers AI consciousness",
+        "target_length": "standard (60k)",
         "themes": ["technology", "humanity"],
         "conflicts": ["man vs machine"],
         "archetypes": ["scientist", "AI"],
@@ -79,6 +81,35 @@ def project_with_config(temp_project_dir: Path, sample_config: dict) -> Path:
     with open(config_file, "w") as f:
         yaml.dump(sample_config, f)
     return temp_project_dir
+
+
+# ============================================================================
+# Smoke Test Fixtures (for pytest -m smoke)
+# ============================================================================
+
+@pytest.fixture
+def smoke_project() -> Generator[Path, None, None]:
+    """Materialize a temporary project from embedded smoke config.
+    Smoke tests use this instead of hardcoded data/projects/<name> paths.
+    """
+    fixtures_dir = PROJECT_ROOT / "tests" / "fixtures"
+    config_src = fixtures_dir / "smoke_config.yaml"
+    if not config_src.exists():
+        pytest.skip(f"Smoke fixture not found: {config_src}")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_dir = Path(tmpdir) / "smoke-test-project"
+        project_dir.mkdir()
+        (project_dir / "drafts").mkdir()
+        (project_dir / "output").mkdir()
+        (project_dir / "memory").mkdir()
+
+        with open(config_src) as f:
+            config = yaml.safe_load(f)
+        with open(project_dir / "config.yaml", "w") as f:
+            yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+
+        yield project_dir
 
 
 # ============================================================================

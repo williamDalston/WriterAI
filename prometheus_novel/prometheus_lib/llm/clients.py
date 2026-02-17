@@ -320,11 +320,13 @@ class OpenAIClient(BaseLLMClient):
                     timeout=timeout
                 )
 
+                if not response.choices:
+                    raise LLMError("OpenAI returned empty choices array")
                 return LLMResponse(
-                    content=response.choices[0].message.content,
+                    content=response.choices[0].message.content or "",
                     model=response.model,
-                    input_tokens=response.usage.prompt_tokens,
-                    output_tokens=response.usage.completion_tokens,
+                    input_tokens=getattr(response.usage, "prompt_tokens", 0),
+                    output_tokens=getattr(response.usage, "completion_tokens", 0),
                     finish_reason=response.choices[0].finish_reason,
                     raw_response=response
                 )
@@ -436,16 +438,16 @@ class GeminiClient(BaseLLMClient):
         temperature: float = 0.7,
         **kwargs
     ) -> LLMResponse:
-        """Generate text using Gemini API."""
+        """Generate text using Gemini API with retry logic."""
         await self._ensure_initialized()
-        kwargs.pop('json_mode', None)  # Gemini doesn't support this parameter
+        kwargs.pop('json_mode', None)
+        stop = kwargs.pop('stop', None)
 
         full_prompt = prompt
         if system_prompt:
             full_prompt = f"{system_prompt}\n\n{prompt}"
 
         if not self.model:
-            # Mock response
             logger.debug("Using mock Gemini response")
             return LLMResponse(
                 content=f"[Mock Gemini response for: {prompt[:100]}...]",
@@ -455,31 +457,79 @@ class GeminiClient(BaseLLMClient):
                 finish_reason="stop"
             )
 
-        try:
-            # Gemini API is sync, so run in executor
-            response = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self.model.generate_content(
-                    full_prompt,
-                    generation_config={
-                        "max_output_tokens": max_tokens,
-                        "temperature": temperature
-                    }
+        # Retry loop with exponential backoff (matching OpenAI pattern)
+        last_error = None
+        delay = INITIAL_RETRY_DELAY
+        timeout = kwargs.pop('timeout', DEFAULT_TIMEOUT_SECONDS)
+
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                await rate_limit_check("gemini")
+
+                gen_config = {
+                    "max_output_tokens": max_tokens,
+                    "temperature": temperature,
+                }
+                if stop:
+                    gen_config["stop_sequences"] = stop
+
+                # Gemini API is sync, so run in executor
+                response = await asyncio.wait_for(
+                    asyncio.get_running_loop().run_in_executor(
+                        None,
+                        lambda: self.model.generate_content(
+                            full_prompt,
+                            generation_config=gen_config
+                        )
+                    ),
+                    timeout=timeout
                 )
-            )
 
-            return LLMResponse(
-                content=response.text,
-                model=self.model_name,
-                input_tokens=self.estimate_tokens(full_prompt),
-                output_tokens=self.estimate_tokens(response.text),
-                finish_reason="stop",
-                raw_response=response
-            )
+                # Validate response before accessing .text
+                if not response.candidates:
+                    raise LLMError(f"Gemini returned no candidates (safety filter or empty response)")
 
-        except Exception as e:
-            logger.error(f"Gemini API error: {e}")
-            raise
+                content = response.text
+                # Apply stop sequence clamp (post-generation safety net)
+                if stop and content:
+                    for s in stop:
+                        idx = content.find(s)
+                        if idx != -1:
+                            content = content[:idx]
+
+                return LLMResponse(
+                    content=content,
+                    model=self.model_name,
+                    input_tokens=self.estimate_tokens(full_prompt),
+                    output_tokens=self.estimate_tokens(content),
+                    finish_reason="stop",
+                    raw_response=response
+                )
+
+            except asyncio.TimeoutError:
+                last_error = TimeoutError(f"Gemini request timed out after {timeout}s")
+                logger.warning(f"Gemini timeout on attempt {attempt + 1}/{MAX_RETRIES + 1}")
+
+            except Exception as e:
+                error_str = str(e).lower()
+                last_error = e
+
+                if "401" in error_str or "invalid api key" in error_str:
+                    raise AuthenticationError(f"Gemini authentication failed: {e}")
+
+                if "429" in error_str or "rate limit" in error_str or "quota" in error_str:
+                    delay = min(delay * 3, MAX_RETRY_DELAY)
+                    logger.warning(f"Rate limited by Gemini, waiting {delay}s")
+                else:
+                    logger.warning(f"Gemini error on attempt {attempt + 1}: {e}")
+
+            if attempt < MAX_RETRIES:
+                jitter = random.uniform(0, delay * 0.1)
+                await asyncio.sleep(delay + jitter)
+                delay = min(delay * RETRY_MULTIPLIER, MAX_RETRY_DELAY)
+
+        logger.error(f"Gemini API failed after {MAX_RETRIES + 1} attempts: {last_error}")
+        raise last_error or LLMError("Gemini max retries exceeded")
 
     async def generate_stream(
         self,
@@ -505,7 +555,7 @@ class GeminiClient(BaseLLMClient):
             return
 
         try:
-            response = await asyncio.get_event_loop().run_in_executor(
+            response = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: self.model.generate_content(
                     full_prompt,
@@ -580,53 +630,70 @@ class OllamaClient(BaseLLMClient):
                 finish_reason="stop"
             )
 
-        try:
-            # Build create kwargs
-            create_kwargs = {
-                "model": self.model_name,
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            }
+        # Build create kwargs
+        json_mode = kwargs.pop("json_mode", False)
+        stop = kwargs.pop("stop", None)
+        timeout_val = kwargs.pop("timeout", 300)
 
-            # Support JSON mode for structured output
-            json_mode = kwargs.pop("json_mode", False)
-            if json_mode:
-                create_kwargs["response_format"] = {"type": "json_object"}
+        create_kwargs = {
+            "model": self.model_name,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if json_mode:
+            create_kwargs["response_format"] = {"type": "json_object"}
+        if stop:
+            create_kwargs["stop"] = stop
+        create_kwargs.update({k: v for k, v in kwargs.items()})
 
-            # Handle stop sequences explicitly
-            stop = kwargs.pop("stop", None)
-            if stop:
-                create_kwargs["stop"] = stop
+        # Retry loop with exponential backoff
+        last_error = None
+        delay = INITIAL_RETRY_DELAY
 
-            # Pass through remaining kwargs (excluding internal ones)
-            timeout_val = kwargs.pop("timeout", 300)
-            create_kwargs.update({k: v for k, v in kwargs.items()})
-
-            response = await asyncio.wait_for(
-                self.client.chat.completions.create(**create_kwargs),
-                timeout=timeout_val  # Longer timeout for local
-            )
-
-            content = response.choices[0].message.content or ""
-            return LLMResponse(
-                content=content,
-                model=response.model or self.model_name,
-                input_tokens=getattr(response.usage, "prompt_tokens", self.estimate_tokens(prompt)),
-                output_tokens=getattr(response.usage, "completion_tokens", self.estimate_tokens(content)),
-                finish_reason=response.choices[0].finish_reason or "stop",
-                raw_response=response
-            )
-
-        except Exception as e:
-            error_str = str(e).lower()
-            if "connection" in error_str or "refused" in error_str:
-                raise LLMError(
-                    f"Ollama not reachable at {self.base_url}. "
-                    f"Start Ollama (ollama serve) and run: ollama run {self.model_name}"
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                response = await asyncio.wait_for(
+                    self.client.chat.completions.create(**create_kwargs),
+                    timeout=timeout_val
                 )
-            logger.error(f"Ollama error: {e}")
-            raise
+
+                if not response.choices:
+                    raise LLMError(f"Ollama ({self.model_name}) returned empty choices array")
+                content = response.choices[0].message.content or ""
+                return LLMResponse(
+                    content=content,
+                    model=response.model or self.model_name,
+                    input_tokens=getattr(response.usage, "prompt_tokens", self.estimate_tokens(prompt)),
+                    output_tokens=getattr(response.usage, "completion_tokens", self.estimate_tokens(content)),
+                    finish_reason=response.choices[0].finish_reason or "stop",
+                    raw_response=response
+                )
+
+            except asyncio.TimeoutError:
+                last_error = TimeoutError(f"Ollama request timed out after {timeout_val}s")
+                logger.warning(f"Ollama timeout on attempt {attempt + 1}/{MAX_RETRIES + 1}")
+
+            except Exception as e:
+                error_str = str(e).lower()
+                last_error = e
+
+                # Connection errors are not retryable — Ollama is down
+                if "connection" in error_str or "refused" in error_str:
+                    raise LLMError(
+                        f"Ollama not reachable at {self.base_url}. "
+                        f"Start Ollama (ollama serve) and run: ollama run {self.model_name}"
+                    )
+
+                logger.warning(f"Ollama error on attempt {attempt + 1}: {e}")
+
+            if attempt < MAX_RETRIES:
+                jitter = random.uniform(0, delay * 0.1)
+                await asyncio.sleep(delay + jitter)
+                delay = min(delay * RETRY_MULTIPLIER, MAX_RETRY_DELAY)
+
+        logger.error(f"Ollama failed after {MAX_RETRIES + 1} attempts: {last_error}")
+        raise last_error or LLMError("Ollama max retries exceeded")
 
     async def generate_stream(
         self,
@@ -705,7 +772,7 @@ class AnthropicClient(BaseLLMClient):
         temperature: float = 0.7,
         **kwargs
     ) -> LLMResponse:
-        """Generate text using Anthropic API."""
+        """Generate text using Anthropic API with retry logic."""
         await self._ensure_initialized()
         kwargs.pop('json_mode', None)  # Anthropic doesn't support this parameter
         stop = kwargs.pop('stop', None)  # Map to Anthropic's stop_sequences
@@ -719,31 +786,69 @@ class AnthropicClient(BaseLLMClient):
                 finish_reason="stop"
             )
 
-        try:
-            create_kwargs = {
-                "model": self.model_name,
-                "max_tokens": max_tokens,
-                "system": system_prompt or "You are a helpful assistant.",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": temperature,
-            }
-            if stop:
-                create_kwargs["stop_sequences"] = stop
+        # Retry loop with exponential backoff (matching OpenAI pattern)
+        last_error = None
+        delay = INITIAL_RETRY_DELAY
+        timeout = kwargs.pop('timeout', DEFAULT_TIMEOUT_SECONDS)
 
-            message = await self.client.messages.create(**create_kwargs)
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                await rate_limit_check("anthropic")
 
-            return LLMResponse(
-                content=message.content[0].text,
-                model=message.model,
-                input_tokens=message.usage.input_tokens,
-                output_tokens=message.usage.output_tokens,
-                finish_reason=message.stop_reason,
-                raw_response=message
-            )
+                create_kwargs = {
+                    "model": self.model_name,
+                    "max_tokens": max_tokens,
+                    "system": system_prompt or "You are a helpful assistant.",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": temperature,
+                }
+                if stop:
+                    create_kwargs["stop_sequences"] = stop
 
-        except Exception as e:
-            logger.error(f"Anthropic API error: {e}")
-            raise
+                message = await asyncio.wait_for(
+                    self.client.messages.create(**create_kwargs),
+                    timeout=timeout
+                )
+
+                content = message.content[0].text if message.content else ""
+                if not content:
+                    logger.warning("Anthropic returned empty content")
+                return LLMResponse(
+                    content=content,
+                    model=message.model,
+                    input_tokens=getattr(message.usage, "input_tokens", 0),
+                    output_tokens=getattr(message.usage, "output_tokens", 0),
+                    finish_reason=message.stop_reason,
+                    raw_response=message
+                )
+
+            except asyncio.TimeoutError:
+                last_error = TimeoutError(f"Anthropic request timed out after {timeout}s")
+                logger.warning(f"Anthropic timeout on attempt {attempt + 1}/{MAX_RETRIES + 1}")
+
+            except Exception as e:
+                error_str = str(e).lower()
+                last_error = e
+
+                if "401" in error_str or "invalid" in error_str and "key" in error_str:
+                    raise AuthenticationError(f"Anthropic authentication failed: {e}")
+
+                if "429" in error_str or "rate limit" in error_str:
+                    delay = min(delay * 3, MAX_RETRY_DELAY)
+                    logger.warning(f"Rate limited by Anthropic, waiting {delay}s")
+                elif "overloaded" in error_str or "529" in error_str:
+                    delay = min(delay * 2, MAX_RETRY_DELAY)
+                    logger.warning(f"Anthropic overloaded on attempt {attempt + 1}")
+                else:
+                    logger.warning(f"Anthropic error on attempt {attempt + 1}: {e}")
+
+            if attempt < MAX_RETRIES:
+                jitter = random.uniform(0, delay * 0.1)
+                await asyncio.sleep(delay + jitter)
+                delay = min(delay * RETRY_MULTIPLIER, MAX_RETRY_DELAY)
+
+        logger.error(f"Anthropic API failed after {MAX_RETRIES + 1} attempts: {last_error}")
+        raise last_error or LLMError("Anthropic max retries exceeded")
 
     async def generate_stream(
         self,
@@ -755,6 +860,7 @@ class AnthropicClient(BaseLLMClient):
     ) -> AsyncIterator[str]:
         """Stream text generation from Anthropic."""
         await self._ensure_initialized()
+        stop = kwargs.pop('stop', None)  # Map to Anthropic's stop_sequences
 
         if not self.client:
             mock_text = f"[Mock Claude streaming for: {prompt[:50]}...]"
@@ -764,13 +870,17 @@ class AnthropicClient(BaseLLMClient):
             return
 
         try:
-            async with self.client.messages.stream(
-                model=self.model_name,
-                max_tokens=max_tokens,
-                system=system_prompt or "You are a helpful assistant.",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=temperature
-            ) as stream:
+            stream_kwargs = {
+                "model": self.model_name,
+                "max_tokens": max_tokens,
+                "system": system_prompt or "You are a helpful assistant.",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": temperature,
+            }
+            if stop:
+                stream_kwargs["stop_sequences"] = stop
+
+            async with self.client.messages.stream(**stream_kwargs) as stream:
                 async for text in stream.text_stream:
                     yield text
 
@@ -786,7 +896,8 @@ OLLAMA_MODEL_PREFIXES = ("ollama:", "llama", "mistral", "qwen", "phi", "gemma", 
 def is_ollama_model(model_name: str) -> bool:
     """Check if model name indicates a local Ollama model."""
     lower = model_name.lower()
-    return any(lower.startswith(p) or p in lower for p in OLLAMA_MODEL_PREFIXES)
+    # Use prefix-only matching to avoid false positives (e.g. "phi" in "sophie")
+    return any(lower.startswith(p) for p in OLLAMA_MODEL_PREFIXES)
 
 
 # Client factory

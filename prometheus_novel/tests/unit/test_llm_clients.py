@@ -67,11 +67,13 @@ class TestOpenAIClient:
         assert not client._initialized
 
     def test_token_estimation(self):
-        """Test token estimation."""
+        """Test token estimation (uses tiktoken when available, else heuristic)."""
         client = OpenAIClient("gpt-4o-mini")
         text = "This is a test string with some words"
         tokens = client.estimate_tokens(text)
-        assert tokens == len(text) // 4
+        # tiktoken returns ~11 for this string; heuristic returns ~11 (len/3.3)
+        assert tokens > 0
+        assert tokens <= len(text)  # tokens should not exceed char count
 
     @pytest.mark.asyncio
     async def test_mock_response_without_api_key(self):

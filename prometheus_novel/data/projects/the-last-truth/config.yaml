@@ -1,0 +1,51 @@
+antagonist: A shadowy figure from her past who controls everything from the shadows.
+avoid: ''
+budget_usd: 0
+central_conflict: She must confront the dark secrets of her past and discover the
+  truth before it's too late.
+central_question: ''
+genre: Thriller
+influences: ''
+key_locations: ''
+key_plot_points: ''
+model_defaults:
+  api_model: qwen2.5:7b
+  critic_model: qwen2.5:7b
+  fallback_model: qwen2.5:7b
+  local_model: qwen2.5:7b
+motifs: ''
+other_characters: ''
+premise: ''
+project_name: the-last-truth
+protagonist: A determined young woman who works as an investigator. She's strong and
+  independent.
+setting: A big city full of danger and secrets.
+stage_model_map:
+  beat_sheet: api_model
+  high_concept: api_model
+  self_refine: critic_model
+  write_scene: api_model
+status: seeded
+subplots: ''
+synopsis: 'In a world where dark secrets lurk beneath the surface, an unlikely hero
+  must confront
+
+  their dark past and discovers the truth about everything they believed. Nothing
+  is as
+
+  it seems, and when a shocking revelation threatens to destroy everything, they must
+
+  choose between love and duty in a race against time. Against all odds, this tale
+  of
+
+  love and loss follows a journey of self-discovery as the protagonist faces their
+
+  greatest challenge and tries to uncover the mystery of the hidden truths that will
+
+  change everything forever. Nothing will ever be the same once the truth is revealed.'
+target_length: novella (30k)
+themes: Truth, identity, betrayal, love
+title: The Last Truth
+tone: Dark, suspenseful, emotionally charged
+world_rules: ''
+writing_style: ''

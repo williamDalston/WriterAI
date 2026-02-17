@@ -10,6 +10,7 @@ Main entry point for the web interface, providing:
 """
 
 import os
+import re
 import sys
 import json
 import asyncio
@@ -107,7 +108,7 @@ class AppState:
                     if config_file.exists():
                         # Read status from config file
                         try:
-                            with open(config_file, 'r') as f:
+                            with open(config_file, 'r', encoding='utf-8') as f:
                                 config = yaml.safe_load(f) or {}
                             status = config.get("status", "ready")
                         except Exception:
@@ -232,12 +233,15 @@ async def create_project(request: Request):
     """Create a new project."""
     data = await request.json()
     project_name = data.get("name", "").strip()
+    project_name = re.sub(r'[^a-zA-Z0-9_-]', '', project_name.lower().replace(' ', '-'))
 
     if not project_name:
         raise HTTPException(status_code=400, detail="Project name required")
 
-    # Create project directory
+    # Path traversal guard
     project_dir = PROJECT_ROOT / "data" / "projects" / project_name
+    if not str(project_dir.resolve()).startswith(str((PROJECT_ROOT / "data" / "projects").resolve())):
+        raise HTTPException(status_code=400, detail="Invalid project name")
     project_dir.mkdir(parents=True, exist_ok=True)
 
     # Create project config
@@ -251,7 +255,7 @@ async def create_project(request: Request):
 
     config_file = project_dir / "config.yaml"
     import yaml
-    with open(config_file, "w") as f:
+    with open(config_file, "w", encoding="utf-8") as f:
         yaml.dump(config, f)
 
     app_state.projects[project_name] = {
@@ -320,7 +324,7 @@ async def export_project(project_name: str, sample: bool = True):
         )
     except Exception as e:
         logger.error(f"Export failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Export failed. Check server logs for details.")
 
 
 @app.get("/api/v2/ideas")
@@ -348,12 +352,14 @@ async def save_idea(request: Request):
 @app.get("/api/v2/settings")
 async def get_settings():
     """Get current settings."""
-    # Mask API keys
+    # Mask API keys — only show last 4 chars if key is long enough
     safe_settings = {**app_state.settings}
-    if safe_settings.get("openai_api_key"):
-        safe_settings["openai_api_key"] = "sk-..." + safe_settings["openai_api_key"][-4:]
-    if safe_settings.get("google_api_key"):
-        safe_settings["google_api_key"] = "..." + safe_settings["google_api_key"][-4:]
+    for key_name in ("openai_api_key", "google_api_key", "anthropic_api_key"):
+        val = safe_settings.get(key_name, "")
+        if val and len(val) > 8:
+            safe_settings[key_name] = "***..." + val[-4:]
+        elif val:
+            safe_settings[key_name] = "***"
     return safe_settings
 
 
@@ -442,12 +448,12 @@ async def create_project_from_seed(request: Request, background_tasks: Backgroun
 
     # Save config
     config_file = project_dir / "config.yaml"
-    with open(config_file, "w") as f:
+    with open(config_file, "w", encoding="utf-8") as f:
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
 
     # Save raw seed
     seed_file = project_dir / "seed_data.yaml"
-    with open(seed_file, "w") as f:
+    with open(seed_file, "w", encoding="utf-8") as f:
         yaml.dump(seed_data, f, default_flow_style=False, allow_unicode=True)
 
     # Update app state
@@ -919,6 +925,8 @@ def get_projects_html() -> str:
     </div>
 
     <script>
+        function esc(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+
         const form = document.getElementById('newProjectForm');
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -953,19 +961,19 @@ def get_projects_html() -> str:
             }
 
             list.innerHTML = data.projects.map(p => `
-                <div class="project-card" id="project-${p.name}">
+                <div class="project-card" id="project-${esc(p.name)}">
                     <div>
-                        <h3>${p.name}</h3>
-                        <p style="color: #9ca3af;">${p.path}</p>
-                        <p class="progress-indicator" id="progress-${p.name}"></p>
+                        <h3>${esc(p.name)}</h3>
+                        <p style="color: #9ca3af;">${esc(p.path)}</p>
+                        <p class="progress-indicator" id="progress-${esc(p.name)}"></p>
                     </div>
                     <div class="project-actions">
-                        <span class="project-status status-${p.status}" id="status-${p.name}">${p.status}</span>
-                        <a href="/api/v2/projects/${p.name}/export?sample=${p.status !== 'completed'}"
-                           class="btn-download" id="download-${p.name}" download>
+                        <span class="project-status status-${esc(p.status)}" id="status-${esc(p.name)}">${esc(p.status)}</span>
+                        <a href="/api/v2/projects/${encodeURIComponent(p.name)}/export?sample=${p.status !== 'completed'}"
+                           class="btn-download" id="download-${esc(p.name)}" download>
                             ${p.status === 'completed' ? 'Download Novel' : 'Download Seed'}
                         </a>
-                        <button class="btn-generate" id="btn-${p.name}" onclick="startGeneration('${p.name}')"
+                        <button class="btn-generate" id="btn-${esc(p.name)}" onclick="startGeneration('${esc(p.name)}')"
                             ${p.status === 'generating' ? 'disabled' : ''}>
                             ${p.status === 'generating' ? 'Generating...' : 'Generate'}
                         </button>
@@ -1157,6 +1165,8 @@ def get_ideas_html() -> str:
     </div>
 
     <script>
+        function esc(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+
         async function saveIdea() {
             const content = document.getElementById('ideaContent').value;
             if (!content.trim()) return;
@@ -1183,8 +1193,8 @@ def get_ideas_html() -> str:
 
             list.innerHTML = data.ideas.map(idea => `
                 <div class="idea-card">
-                    <p>${idea.content}</p>
-                    <div class="idea-meta">Source: ${idea.source}</div>
+                    <p>${esc(idea.content)}</p>
+                    <div class="idea-meta">Source: ${esc(idea.source)}</div>
                 </div>
             `).join('');
         }
@@ -2087,7 +2097,7 @@ def main():
     """Run the web server."""
     import argparse
     parser = argparse.ArgumentParser(description="WriterAI Web Dashboard")
-    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8080, help="Port to bind to")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
     args = parser.parse_args()

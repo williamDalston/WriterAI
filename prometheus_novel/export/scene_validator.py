@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 # Each tuple: (regex, code, human-readable pattern_name)
 META_TEXT_PATTERNS = [
     (r"certainly!?\s*(?:here\s+is|here's)", "META_TEXT", "certainly_preamble"),
+    (r"of\s+course!?\s*(?:here\s+is|here's)", "META_TEXT", "of_course_preamble"),
     (r"here\s+is\s+the\s+revised\b", "META_TEXT", "here_is_revised"),
     (r"below\s+is\s+the\s+(?:revised|updated)\b", "META_TEXT", "below_is_updated"),
     (r"as\s+requested,?\s*(?:here\s+is|here's)", "META_TEXT", "as_requested"),
@@ -85,9 +86,13 @@ def _validation_mode(config: Dict[str, Any]) -> str:
 
 
 def _scene_id(scene: Dict[str, Any], index: int) -> str:
-    ch = scene.get("chapter", index + 1)
-    sc = scene.get("scene_number", 1)
-    return f"Ch{ch}Sc{sc}"
+    """Use stable scene_id from pipeline when present, else derive (ch02_s01 format)."""
+    sid = scene.get("scene_id")
+    if sid:
+        return sid
+    ch = scene.get("chapter", index + 1) or 1
+    sc = scene.get("scene_number", scene.get("scene", 1)) or 1
+    return f"ch{ch:02d}_s{int(sc):02d}"
 
 
 def _excerpt(text: str, max_len: int = 60) -> str:

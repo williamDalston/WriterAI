@@ -14,6 +14,7 @@ from export.scene_validator import (
     validate_project_scenes,
     validate_scene,
     _validation_mode,
+    _scene_id,
 )
 
 # --- Cleanup tests ---
@@ -180,3 +181,15 @@ def test_duplicate_scene_fingerprint():
     report = validate_project_scenes(scenes, {})
     dup = [i for i in report["issues"] if i["code"] == "DUPLICATE_SCENE"]
     assert len(dup) >= 1
+
+
+def test_scene_id_prefers_stable_id():
+    """Validator uses scene_id from pipeline when present."""
+    scene_with_id = {"chapter": 2, "scene_number": 1, "scene_id": "ch02_s01", "content": "x"}
+    assert _scene_id(scene_with_id, 0) == "ch02_s01"
+
+
+def test_scene_id_derives_when_missing():
+    """Validator derives ch02_s01 format when scene_id missing."""
+    scene_no_id = {"chapter": 2, "scene_number": 1, "content": "x"}
+    assert _scene_id(scene_no_id, 0) == "ch02_s01"

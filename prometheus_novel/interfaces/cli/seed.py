@@ -322,8 +322,11 @@ def parse_template_input(text: str) -> Dict[str, str]:
 
 def validate_seed(seed_data: Dict[str, str]) -> tuple[bool, str]:
     """Validate that we have minimum required data."""
-    if not seed_data.get('IDEA'):
+    idea = (seed_data.get('IDEA') or '').strip()
+    if not idea:
         return False, "IDEA is required. Please provide at least a one-sentence story concept."
+    if len(idea) < 3:
+        return False, "IDEA is too short. Please provide at least a word or phrase for your story concept."
     return True, "Valid"
 
 
@@ -675,12 +678,12 @@ def create_project_from_seed(seed_data: Dict[str, Any], project_name: str = None
 
     # Save config
     config_file = project_dir / "config.yaml"
-    with open(config_file, "w") as f:
+    with open(config_file, "w", encoding="utf-8") as f:
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
 
     # Save raw seed data for reference
     seed_file = project_dir / "seed_data.yaml"
-    with open(seed_file, "w") as f:
+    with open(seed_file, "w", encoding="utf-8") as f:
         yaml.dump(seed_data, f, default_flow_style=False, allow_unicode=True)
 
     return project_dir
@@ -747,7 +750,7 @@ async def run_seed_interactive():
         print(f"  Config:   {C.C}{project_dir / 'config.yaml'}{C.E}")
         print(f"\n{C.B}Next steps:{C.E}")
         print(f"  1. Review: {C.DIM}cat {project_dir / 'config.yaml'}{C.E}")
-        print(f"  2. Generate: {C.DIM}python -m interfaces.cli.main generate -c {project_dir / 'config.yaml'}{C.E}")
+        print(f"  2. Generate: {C.DIM}python -m prometheus_novel.interfaces.cli.main generate -c {project_dir / 'config.yaml'}{C.E}")
         print()
 
         return project_dir
@@ -774,7 +777,7 @@ def main():
             print(f"{C.R}File not found: {args.file}{C.E}")
             return 1
 
-        text = args.file.read_text()
+        text = args.file.read_text(encoding="utf-8")
         seed_data = parse_template_input(text)
 
         valid, msg = validate_seed(seed_data)
