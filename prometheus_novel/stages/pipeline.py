@@ -16,9 +16,10 @@ Validation: final_deai, quality_audit, output_validation
 import asyncio
 import logging
 import os
+import random
 import re
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Optional, List, Callable, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 import json
@@ -26,6 +27,7 @@ import secrets
 import yaml
 from datetime import datetime
 from stages.quality_meters import run_all_meters
+from quality.quality_contract import run_quality_contract
 from quality.phrase_miner import mine_hot_phrases, write_auto_yaml, load_phrase_config, load_miner_config
 from quality.phrase_suppressor import suppress_phrases
 from quality.dialogue_trimmer import process_scenes as trim_dialogue_scenes
@@ -936,16 +938,20 @@ def _clean_scene_content(text: str, scene_id: str = "", policy: 'Policy | None' 
         text = pre
         logger.info("Cleanup: truncated at rest-unchanged marker (kept %d chars)", len(pre))
     else:
-        # Optional YAML markers (add more truncate points)
-        cleanup_cfg = _load_cleanup_config()
-        for marker in cleanup_cfg.get("inline_truncate_markers", []) or []:
+        # Optional markers from policy (falls back to cleanup_patterns.yaml if no policy)
+        if policy:
+            _trunc_markers = policy.cleanup.truncate_markers
+        else:
+            cleanup_cfg = _load_cleanup_config()
+            _trunc_markers = cleanup_cfg.get("inline_truncate_markers", []) or []
+        for marker in _trunc_markers:
             if not isinstance(marker, str):
                 continue
             pos = text.lower().find(marker.lower())
             if pos >= 0:
                 pre = text[:pos].rstrip()
                 text = pre
-                logger.info("Cleanup: truncated at YAML marker %r (kept %d chars)", marker[:40], len(pre))
+                logger.info("Cleanup: truncated at marker %r (kept %d chars)", marker[:40], len(pre))
                 break
 
     # --- PHASE 1.6: Truncate at LLM preamble mid-text (wrong pasted assistant content) ---
@@ -961,8 +967,12 @@ def _clean_scene_content(text: str, scene_id: str = "", policy: 'Policy | None' 
                 prefix_chars, prefix_lines,
             )
     else:
-        cleanup_cfg = _load_cleanup_config()
-        for marker in cleanup_cfg.get("inline_preamble_markers", []) or []:
+        if policy:
+            _preamble_markers = policy.cleanup.preamble_markers
+        else:
+            cleanup_cfg = _load_cleanup_config()
+            _preamble_markers = cleanup_cfg.get("inline_preamble_markers", []) or []
+        for marker in _preamble_markers:
             if not isinstance(marker, str):
                 continue
             pos = text.lower().find(marker.lower())
@@ -970,7 +980,7 @@ def _clean_scene_content(text: str, scene_id: str = "", policy: 'Policy | None' 
                 pre = text[:pos].rstrip()
                 if len(pre) >= MIN_PREFIX_CHARS or len(pre.splitlines()) >= MIN_PREFIX_LINES:
                     text = pre
-                    logger.info("Cleanup: truncated at YAML preamble marker %r", marker[:40])
+                    logger.info("Cleanup: truncated at preamble marker %r", marker[:40])
                 break
 
     # --- PHASE 2: Strip trailing meta-text (truncate at first meta-marker) ---
@@ -1048,49 +1058,59 @@ def _clean_scene_content(text: str, scene_id: str = "", policy: 'Policy | None' 
 
     # --- PHASE 3: Inline artifact removal (patterns that appear MID-text) ---
     # Each pattern is (name, regex). Names enable exact disabled_builtins matching.
-    _named_inline_patterns = [
-        ("rest_unchanged", r'(?:The )?rest (?:of (?:the |this )?(?:scene|chapter|text|content) )?'
-         r'(?:remains?|is) unchanged[^.]*[.\s]*'),
-        ("rest_unchanged_bracket", r'\[(?:The )?rest (?:of (?:the |this )?(?:scene|chapter))? remains unchanged[^\]]*\]\s*'),
-        ("current_scene_header", r'CURRENT SCENE(?: MODIFIED)?:\s*'),
-        ("visible_pct_marker", r'Visible:\s*\d+%\s*[–—-]\s*\d+%\s*'),
-        ("enhanced_scene_header", r'(?:ENHANCED|EXPANDED|POLISHED|FIXED|REVISED) SCENE:\s*'),
-        ("heres_revised", r'(?:Sure[,.]?\s*)?[Hh]ere\'?s?\s+(?:the |a )?(?:revised|enhanced|polished|expanded|edited)'
-         r'\s+(?:version|scene|text|content)[.:]\s*'),
-        ("hook_instruction_bleed", r'A great chapter-(?:ending|opening) hook can be:\s*(?:\n[-•*][^\n]+)*'),
-        ("writing_tips_bullets", r'(?:\n[-•*]\s*(?:A cliffhanger|In medias res|A striking sensory|'
-         r'A provocative|Immediate conflict|Disorientation|A kiss or romantic|'
-         r'A threat delivered|A question raised|A twist revealed|'
-         r'An emotional gut-punch|A decision made)[^\n]*)+'),
-        ("scene_header_chapter", r'Chapter\s+\d+,?\s*Scene\s+\d+\s*(?:POV:[^\n]*)?'),
-        ("scene_header_pov", r'POV:\s*FIRST PERSON[^\n]*'),
-        ("scene_header_count", r'Scene\s+\d+\s+of\s+\d+[^\n]*'),
-        ("xml_tag_scene", r'</?scene[^>]*>'),
-        ("xml_tag_chapter", r'</?chapter[^>]*>'),
-        ("xml_tag_content", r'</?content[^>]*>'),
-        ("beat_sheet_physical", r'Physical beats:\s*(?:\n[-•*][^\n]+)*'),
-        ("beat_sheet_emotional", r'Emotional beats:\s*(?:\n[-•*][^\n]+)*'),
-        ("beat_sheet_sensory", r'Sensory details:\s*(?:\n[-•*][^\n]+)*'),
-    ]
-
-    # Merge optional custom patterns from configs/cleanup_patterns.yaml
-    cleanup_cfg = _load_cleanup_config()
-    for item in cleanup_cfg.get("inline", []) or []:
-        if isinstance(item, str):
-            _named_inline_patterns.append(("custom_inline", item))
-    for item in cleanup_cfg.get("regex_patterns", []) or []:
-        if isinstance(item, dict) and item.get("pattern"):
-            _named_inline_patterns.append((item.get("name", "custom_regex"), item["pattern"]))
-
-    # Filter out disabled built-in patterns by exact pattern_name.
-    # Also supports legacy substring matching as fallback.
-    disabled = cleanup_cfg.get("disabled_builtins", []) or []
-    if disabled:
-        disabled_set = set(d.strip() for d in disabled if isinstance(d, str))
+    # Source: policy.cleanup if available, else hardcoded + cleanup_patterns.yaml
+    if policy:
+        _named_inline_patterns = [(ip.name, ip.pattern) for ip in policy.cleanup.inline_patterns]
+        # Add policy regex_patterns
+        for rp in policy.cleanup.regex_patterns:
+            _named_inline_patterns.append((rp.name, rp.pattern))
+        # Filter disabled
+        if policy.cleanup.disabled_builtins:
+            disabled_set = set(policy.cleanup.disabled_builtins)
+            _named_inline_patterns = [
+                (name, pat) for name, pat in _named_inline_patterns
+                if name not in disabled_set and not any(d.lower() in pat.lower() for d in disabled_set)
+            ]
+    else:
         _named_inline_patterns = [
-            (name, pat) for name, pat in _named_inline_patterns
-            if name not in disabled_set and not any(d.lower() in pat.lower() for d in disabled_set)
+            ("rest_unchanged", r'(?:The )?rest (?:of (?:the |this )?(?:scene|chapter|text|content) )?'
+             r'(?:remains?|is) unchanged[^.]*[.\s]*'),
+            ("rest_unchanged_bracket", r'\[(?:The )?rest (?:of (?:the |this )?(?:scene|chapter))? remains unchanged[^\]]*\]\s*'),
+            ("current_scene_header", r'CURRENT SCENE(?: MODIFIED)?:\s*'),
+            ("visible_pct_marker", r'Visible:\s*\d+%\s*[–—-]\s*\d+%\s*'),
+            ("enhanced_scene_header", r'(?:ENHANCED|EXPANDED|POLISHED|FIXED|REVISED) SCENE:\s*'),
+            ("heres_revised", r'(?:Sure[,.]?\s*)?[Hh]ere\'?s?\s+(?:the |a )?(?:revised|enhanced|polished|expanded|edited)'
+             r'\s+(?:version|scene|text|content)[.:]\s*'),
+            ("hook_instruction_bleed", r'A great chapter-(?:ending|opening) hook can be:\s*(?:\n[-•*][^\n]+)*'),
+            ("writing_tips_bullets", r'(?:\n[-•*]\s*(?:A cliffhanger|In medias res|A striking sensory|'
+             r'A provocative|Immediate conflict|Disorientation|A kiss or romantic|'
+             r'A threat delivered|A question raised|A twist revealed|'
+             r'An emotional gut-punch|A decision made)[^\n]*)+'),
+            ("scene_header_chapter", r'Chapter\s+\d+,?\s*Scene\s+\d+\s*(?:POV:[^\n]*)?'),
+            ("scene_header_pov", r'POV:\s*FIRST PERSON[^\n]*'),
+            ("scene_header_count", r'Scene\s+\d+\s+of\s+\d+[^\n]*'),
+            ("xml_tag_scene", r'</?scene[^>]*>'),
+            ("xml_tag_chapter", r'</?chapter[^>]*>'),
+            ("xml_tag_content", r'</?content[^>]*>'),
+            ("beat_sheet_physical", r'Physical beats:\s*(?:\n[-•*][^\n]+)*'),
+            ("beat_sheet_emotional", r'Emotional beats:\s*(?:\n[-•*][^\n]+)*'),
+            ("beat_sheet_sensory", r'Sensory details:\s*(?:\n[-•*][^\n]+)*'),
         ]
+        # Merge optional custom patterns from configs/cleanup_patterns.yaml
+        cleanup_cfg = _load_cleanup_config()
+        for item in cleanup_cfg.get("inline", []) or []:
+            if isinstance(item, str):
+                _named_inline_patterns.append(("custom_inline", item))
+        for item in cleanup_cfg.get("regex_patterns", []) or []:
+            if isinstance(item, dict) and item.get("pattern"):
+                _named_inline_patterns.append((item.get("name", "custom_regex"), item["pattern"]))
+        disabled = cleanup_cfg.get("disabled_builtins", []) or []
+        if disabled:
+            disabled_set = set(d.strip() for d in disabled if isinstance(d, str))
+            _named_inline_patterns = [
+                (name, pat) for name, pat in _named_inline_patterns
+                if name not in disabled_set and not any(d.lower() in pat.lower() for d in disabled_set)
+            ]
 
     for _name, pattern in _named_inline_patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
@@ -2160,7 +2180,8 @@ def _flag_language_inconsistencies(text: str, setting_language: str = "",
 def _postprocess_scene(text: str, protagonist_name: str = "",
                        setting_language: str = "",
                        protagonist_gender: str = "",
-                       foreign_whitelist: list = None) -> str:
+                       foreign_whitelist: list = None,
+                       policy: 'Policy | None' = None) -> str:
     """Master post-processor: applies all code-level quality enforcement.
 
     Called after _clean_scene_content on every creative stage output.
@@ -2169,7 +2190,7 @@ def _postprocess_scene(text: str, protagonist_name: str = "",
     # Strip sentinel token if present (matches both static <END_PROSE> and
     # per-run nonce variants like <END_PROSE_a3f1b2c9>)
     text = re.sub(r'\s*<END_PROSE(?:_[a-f0-9]+)?>\s*$', '', text or '', flags=re.IGNORECASE).strip()
-    text = _clean_scene_content(text)
+    text = _clean_scene_content(text, policy=policy)
     text = _detect_duplicate_content(text)
     text = _detect_semantic_duplicates(text)
     text = _enforce_first_person_pov(text, protagonist_name, protagonist_gender)
@@ -5376,6 +5397,84 @@ Return JSON with:
         # Take the first word (the actual first name)
         return first_part.split()[0] if first_part else ""
 
+    def _filter_characters_for_scene(
+        self,
+        scene_info: dict,
+        chapter: dict,
+        pov_char: str,
+    ) -> List[Dict]:
+        """Filter characters to those relevant to this scene (context hygiene).
+
+        Always includes protagonist and antagonist. Adds characters explicitly
+        named in the outline for this scene (extra_characters, characters list).
+        Reduces token waste and prevents hallucinated 'walk-on' characters.
+        """
+        all_chars = self.state.characters or []
+        if not all_chars:
+            return []
+
+        config = self.state.config or {}
+        include_names = set()
+
+        # Protagonist (always)
+        protag = self._get_protagonist_name()
+        if protag:
+            include_names.add(protag.split()[0])
+
+        # Antagonist (always if we can extract a name)
+        antag_raw = config.get("antagonist", "")
+        _skip = {"not", "the", "a", "an", "internal", "secondary", "external"}
+        if antag_raw:
+            words = antag_raw.replace(",", " ").replace("—", " ").replace('"', " ").split()
+            for w in words:
+                clean = w.strip("'\"")
+                if len(clean) > 1 and clean[0].isupper() and clean.lower() not in _skip:
+                    if clean[1:].replace("'", "").replace("-", "").isalpha():
+                        include_names.add(clean)
+                        break
+
+        # POV character (always)
+        pov_first = pov_char.split()[0] if isinstance(pov_char, str) and pov_char else ""
+        if pov_first and pov_first.lower() not in ("protagonist", "antagonist"):
+            include_names.add(pov_first)
+
+        # Scene-specific: extra_characters string (e.g. "Sofia Chen, Dante Vitale")
+        extra = scene_info.get("extra_characters", "") or ""
+        for part in re.split(r"[,;—\-–]", extra):
+            name = part.strip().split()[0] if part.strip() else ""
+            if name and name[0].isupper():
+                include_names.add(name)
+
+        # Scene-specific: characters list from outline (if present)
+        scene_chars = scene_info.get("characters", [])
+        if isinstance(scene_chars, list):
+            for c in scene_chars:
+                if isinstance(c, dict) and c.get("name"):
+                    include_names.add(str(c["name"]).split()[0])
+                elif isinstance(c, str):
+                    include_names.add(c.split()[0])
+
+        role_keep = {"protagonist", "antagonist", "love interest", "love interest (male)", "love interest (female)"}
+        include_lower = {n.lower() for n in include_names if n}
+
+        filtered = []
+        for ch in all_chars:
+            if not isinstance(ch, dict):
+                continue
+            name = ch.get("name", "")
+            role = (ch.get("role", "") or "").lower()
+            first_name = (name.split()[0] if name else "").lower()
+            if not first_name:
+                continue
+            if first_name in include_lower:
+                filtered.append(ch)
+            elif include_lower and any(n.lower() in name.lower() for n in include_names if n):
+                filtered.append(ch)
+            elif role in role_keep and (first_name == (protag or "").lower() or first_name == (pov_first or "").lower()):
+                filtered.append(ch)
+
+        return filtered if filtered else all_chars[:5]
+
     def _get_setting_language(self) -> str:
         """Detect the primary foreign language from setting/config for consistency checks."""
         if not self.state or not self.state.config:
@@ -5737,7 +5836,8 @@ RULES:
             pov_name,
             self._get_setting_language(),
             pov_gender,
-            self._get_foreign_whitelist()
+            self._get_foreign_whitelist(),
+            policy=self.policy,
         )
 
     # ========================================================================
@@ -6679,38 +6779,48 @@ RULES:
         return "\n".join(lines)
 
     def _get_chapter_openings_to_avoid(self, scenes: List[Dict], current_chapter: int) -> str:
-        """Collect first ~30 words of each of the last 3 chapters' first scenes.
+        """Collect first ~30 words + OPENING MOVE TYPE of each of the last 3 chapters.
 
-        Prevents LLMs from repeating syntactic patterns like "The [Noun] [Verb]..."
-        across chapter openings. Injected into scene drafting.
+        Prevents LLMs from repeating syntactic patterns and opening move types
+        (IN_MEDIAS_RES, DIALOGUE, SETTING, INTERNAL, FLASHBACK) across chapters.
+        Do NOT repeat the same opening type 2 chapters in a row.
         """
         if not scenes or current_chapter <= 1:
             return ""
 
-        # Build map: chapter -> first scene content in that chapter
-        chapter_first_scenes: Dict[int, str] = {}
+        # Build map: chapter -> (content_preview, opening_move_type)
+        try:
+            from quality.quality_contract import _classify_opening_move
+        except ImportError:
+            def _classify_opening_move(_t: str) -> str:
+                return "UNKNOWN"
+
+        chapter_data: Dict[int, Tuple[str, str]] = {}
         for s in scenes:
             if not isinstance(s, dict):
                 continue
             ch = int(s.get("chapter", 0))
             if ch <= 0:
                 continue
-            if ch not in chapter_first_scenes:
+            if ch not in chapter_data:
                 content = s.get("content", "")
                 opening = " ".join(content.split()[:30]) if content else ""
+                move = _classify_opening_move(content) if content else "UNKNOWN"
                 if opening:
-                    chapter_first_scenes[ch] = opening
+                    chapter_data[ch] = (opening, move)
 
         # Get last 3 chapters before current
-        previous_chapters = sorted([c for c in chapter_first_scenes if c < current_chapter], reverse=True)[:3]
+        previous_chapters = sorted([c for c in chapter_data if c < current_chapter], reverse=True)[:3]
         if not previous_chapters:
             return ""
 
         lines = ["=== CHAPTER OPENINGS TO AVOID ECHOING ===",
-                 "Do NOT open with similar syntax, sense, or entry point:"]
-        for ch in reversed(previous_chapters):  # Chronological order
-            lines.append(f'- Ch{ch}: "{chapter_first_scenes[ch]}..."')
-        lines.append("Use a DIFFERENT structure, sense, or action.")
+                 "Do NOT open with similar syntax, sense, or entry point."]
+        for ch in reversed(previous_chapters):
+            opening, move = chapter_data[ch]
+            lines.append(f'- Ch{ch} ({move}): "{opening}..."')
+        lines.append("Use a DIFFERENT opening move type (IN_MEDIAS_RES / DIALOGUE / SETTING / INTERNAL).")
+        lines.append("Never repeat the same type 2 chapters in a row.")
 
         return "\n".join(lines)
 
@@ -6721,8 +6831,6 @@ RULES:
         client = self.get_client_for_stage("scene_drafting")
         config = self.state.config
 
-        # Pre-serialize large objects once (avoid re-serializing per scene)
-        _characters_json = json.dumps(self.state.characters, indent=2) if self.state.characters else ''
         _world_bible_json = json.dumps(self.state.world_bible, indent=2) if self.state.world_bible else ''
 
         # Extract key config elements for drafting
@@ -6800,6 +6908,23 @@ RULES:
                 theme_connection = scene_info.get('theme_connection', '')
                 extra_chars = scene_info.get('extra_characters', '')
 
+                # Smart character pruning: only scene-relevant characters (saves tokens, reduces hallucination)
+                filtered_chars = self._filter_characters_for_scene(scene_info, chapter, pov_char)
+                _characters_json = json.dumps(filtered_chars, indent=2) if filtered_chars else ""
+
+                # Few-shot style injection: 1-2 random paragraphs from style_samples (mimicry > adjectives)
+                style_ref_block = ""
+                style_samples = config.get("style_samples") or []
+                if isinstance(style_samples, list) and style_samples:
+                    flat = []
+                    for s in style_samples:
+                        if isinstance(s, str) and s.strip():
+                            flat.extend([p.strip() for p in s.split("\n\n") if p.strip()])
+                    if flat:
+                        n = min(2, len(flat))
+                        picks = random.sample(flat, n) if len(flat) >= n else flat
+                        style_ref_block = "\n\n=== STYLE REFERENCE ===\nAdopt the sentence rhythm, vocabulary density, and sensory focus of the reference text below. Do NOT copy the content—only the voice.\n\n" + "\n\n".join(picks) + "\n\n"
+
                 # Build comprehensive scene prompt
                 # Detect scene position within chapter for differentiation
                 chapter_scene_list = [s for s in chapter.get("scenes", []) if isinstance(s, dict)]
@@ -6835,10 +6960,19 @@ RULES:
                     tension_instruction = f"""
 === TENSION (Level {tension_level}/10) ===
 Balance action with internal reaction. Maintain or escalate — do not deflate mid-scene.
+{f'- For tension {tension_level}+: forbid 2+ purely reflective paragraphs in a row. After reflection, add threat, choice, revelation, or friction.' if tension_level >= 6 else ""}
+{f'- For tense scenes: 30-40% of dialogue lines should be under 10 words. Avoid long expository speeches (2+ commas + because/that/which).' if tension_level >= 6 else ""}
 """
 
                 # Chapter opening variety (P0): collect last 3 chapter openings to avoid repetition
                 chapter_openings_block = self._get_chapter_openings_to_avoid(scenes, chapter_num)
+
+                # Build forbidden phrases from policy (centralizes what was hardcoded)
+                _style_avoid = self.policy.lexicon.style_avoid if self.policy else []
+                if _style_avoid:
+                    _style_avoid_lines = '- NEVER use: "' + '", "'.join(_style_avoid) + '"'
+                else:
+                    _style_avoid_lines = ""
 
                 # Romance prose block (P1): genre-specific constraints
                 genre = (config.get("genre") or "").lower()
@@ -6885,21 +7019,33 @@ YOU ARE {pov_char.upper()}. You are writing AS {pov_char}, in first person. "I" 
    - Let the character's unique voice filter all observations
    - Moments of reflection feel earned, not inserted
 
+=== CAUSALITY (trigger → response → consequence) ===
+- Every paragraph must have an explicit causal link to the previous.
+- If a paragraph begins with "And," "But," "Still," "Then," it must clearly reference the prior beat.
+- Never use "somehow," "suddenly," "it hit me," "for a moment" without a concrete stimulus in the previous 1-2 sentences.
+
+=== CONCRETE SPECIFICITY (anchor diversity) ===
+- Each scene must introduce at least one new concrete anchor from: OBJECT (handheld thing), PLACE DETAIL (spatial constraint),
+  SOCIAL (other people, rules, status), TIME (time pressure, deadline), MONEY/LOGISTICS (cost, distance, procedure), BODY (physical circumstance).
+- Avoid "wallpaper" — salt spray and lemon groves alone. Include meaningful detail that does work for the story.
+
+=== SENTENCE RHYTHM ===
+- Include at least one very short sentence (≤6 words) and one long sentence (≥25 words) per scene.
+- Vary length deliberately; avoid 4+ consecutive sentences in the 12-18 word band.
+
 === WRITING REQUIREMENTS ===
 STYLE: {writing_style}
 TONE: {tone}
 INFLUENCES TO CHANNEL: {influences}
+{style_ref_block}
 {tension_instruction}
 {first_chapter_hook}
 {romance_block}
 
 === ABSOLUTE RESTRICTIONS (NEVER INCLUDE) ===
 {avoid_list}
-- NEVER use: "couldn't help but", "found myself", "a sense of", "I realized"
-- NEVER use these AI padding phrases: "the weight of", "more than just",
-  "a mix of", "a hint of", "a wave of", "something shifted", "hung in the air",
-  "settled over her/him/them/me", "washed over", "cut through the silence/tension/air",
-  "I couldn't shake"
+{_style_avoid_lines}
+- NEVER use "somehow," "suddenly," "it hit me," "for a moment" without prior concrete stimulus
 - NEVER use stock metaphors: "electricity", "butterflies", "anchor", "storm",
   "walls crumbling", "breath I didn't know I was holding", "heart skipped"
 - NEVER end a paragraph by explaining the emotion it just showed
@@ -9777,11 +9923,11 @@ OUTPUT the text with only problematic sentences fixed:"""
         report = {}
         pass_deltas = []
 
-        # --- Load quality policy ---
-        genre = self.state.config.get("genre", "romance")
-        project_overrides = self.state.config.get("quality_policy", {})
-        policy = load_policy(genre=genre, project_overrides=project_overrides)
-        report["policy"] = {"genre": genre, "preset_loaded": True}
+        # --- Load quality policy from centralized policy ---
+        qp = self.policy.quality_polish
+        # Convert Pydantic model to dict for backward-compat with is_pass_enabled / .get()
+        policy = qp.model_dump()
+        report["policy"] = {"policy_version": self.policy.policy_version, "preset_loaded": True}
 
         # --- Initialize ceiling rules ---
         ceiling_cfg = policy.get("ceiling", {})
@@ -9960,6 +10106,47 @@ OUTPUT the text with only problematic sentences fixed:"""
         else:
             report["cliche_clusters"] = {"skipped": "disabled by policy"}
 
+        # --- 6. Quiet Killers transforms: filter removal, weak verb substitution, final-line rewrite ---
+        try:
+            from quality.quiet_killers import (
+                apply_filter_removal,
+                apply_weak_verb_substitution,
+                apply_final_line_rewrite,
+            )
+            before = list(texts)
+            filter_edits = 0
+            verb_edits = 0
+            line_edits = 0
+            for i, t in enumerate(texts):
+                t1 = apply_filter_removal(t, max_edits=5)
+                if t1 != t:
+                    filter_edits += 1
+                    texts[i] = t1
+                t2 = apply_weak_verb_substitution(t1, budget=3)
+                if t2 != t1:
+                    verb_edits += 1
+                    texts[i] = t2
+                t3 = apply_final_line_rewrite(t2)
+                if t3 != t2:
+                    line_edits += 1
+                    texts[i] = t3
+            report["quiet_killers_transforms"] = {
+                "filter_removal_scenes": filter_edits,
+                "weak_verb_substitution_scenes": verb_edits,
+                "final_line_rewrite_scenes": line_edits,
+            }
+            if filter_edits or verb_edits or line_edits:
+                pass_deltas.append({
+                    "pass_name": "quiet_killers",
+                    "before": before,
+                    "after": list(texts),
+                    "stats": report["quiet_killers_transforms"],
+                })
+        except ImportError:
+            report["quiet_killers_transforms"] = {"skipped": "module not found"}
+        except Exception as e:
+            report["quiet_killers_transforms"] = {"error": str(e)}
+
         # --- Build quality delta report ---
         unresolved = {}
         if "cliche_clusters" in report and isinstance(report["cliche_clusters"], dict):
@@ -10014,6 +10201,38 @@ OUTPUT the text with only problematic sentences fixed:"""
         except Exception as e:
             logger.warning(f"Quality meters failed (non-blocking): {e}")
             meter_report = {"all_pass": None, "error": str(e)}
+
+        # Quality Contract v1: cadence, causality, escalation, specificity
+        try:
+            qc_report = run_quality_contract(
+                scenes=scenes,
+                outline=outline,
+                quality_polish_report=getattr(self.state, "quality_polish_report", None),
+            )
+            meter_report["quality_contract"] = qc_report
+            self.state.quality_contract_report = qc_report
+
+            # Write quality_contract.json to output dir
+            project_path = Path(self.state.config.get("_project_path", ""))
+            if project_path.exists():
+                output_dir = project_path / "output"
+                output_dir.mkdir(parents=True, exist_ok=True)
+                qc_path = output_dir / "quality_contract.json"
+                export = {
+                    "contracts": qc_report.get("contracts", []),
+                    "opening_move_history": qc_report.get("opening_move_history", []),
+                    "opening_move_violations": qc_report.get("opening_move_violations", []),
+                }
+                with open(qc_path, "w", encoding="utf-8") as f:
+                    json.dump(export, f, indent=2, ensure_ascii=False)
+                logger.info("Quality Contract written to %s", qc_path)
+
+            warnings_count = sum(len(c.get("warnings", [])) for c in qc_report.get("contracts", []))
+            if warnings_count > 0:
+                logger.warning("Quality Contract: %d warnings across scenes", warnings_count)
+        except Exception as e:
+            logger.warning(f"Quality Contract failed (non-blocking): {e}")
+            meter_report["quality_contract"] = {"error": str(e)}
 
         # Store in state for run_report
         self.state.quality_meter_report = meter_report
@@ -10381,7 +10600,7 @@ OUTPUT the text with only problematic sentences fixed:"""
             # Use per-scene POV for dual-POV support
             pov_name, pov_gender = self._get_pov_info(scene.get("pov", ""), scene_text=content)
             language = self._get_setting_language()
-            cleaned = _postprocess_scene(content, pov_name, language, pov_gender)
+            cleaned = _postprocess_scene(content, pov_name, language, pov_gender, policy=self.policy)
 
             # If postprocessor fixed it, accept
             from prometheus_novel.export.scene_validator import validate_scene
@@ -10411,7 +10630,7 @@ OUTPUT the text with only problematic sentences fixed:"""
                     self._budget_tracker["defense_tokens"] += (
                         response.input_tokens + response.output_tokens
                     )
-                    rewritten = _postprocess_scene(response.content, pov_name, language, pov_gender)
+                    rewritten = _postprocess_scene(response.content, pov_name, language, pov_gender, policy=self.policy)
                     # Accept rewrite only if it preserves length AND key entities
                     _retention = self._get_threshold("feedback_loop_wc_retention")
                     if len(rewritten.split()) >= len(content.split()) * _retention:
@@ -10639,6 +10858,7 @@ Respond with JSON:
             },
             "artifact_metrics": self.state.artifact_metrics,
             "defense_budget": dict(self._budget_tracker),
+            "policy_version": self.policy.policy_version,
         }
         # Quality dashboard: % scenes flagged by each defense mechanism
         if self.state.scenes:

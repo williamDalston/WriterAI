@@ -146,6 +146,13 @@ world_rules: 'Contemporary setting. No magic/supernatural. Emotional realism gro
   profession details accurate for Lena''s divorce attorney background.
 
   '
+# Optional: Few-shot style samples — 1-2 paragraphs injected per scene for voice mimicry.
+# LLMs match rhythm/vocabulary better from examples than from adjectives.
+# style_samples:
+#   - |
+#     The lemon grove smelled like a promise I didn't trust. I traced the rim of my glass and watched Marco's hands as he talked—the way he gestured when he lied.
+#   - |
+#     She didn't ask. I didn't offer. We had perfected the art of not saying things.
 writing_style: 'First person, Lena''s POV. Sharp, witty internal voice that cracks
   when emotions get real. Short punchy sentences for tension, longer flowing ones
   for sensual moments. Heavy on sensory detail—taste, smell, texture. Dialogue-driven

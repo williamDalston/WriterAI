@@ -41,11 +41,12 @@ class KDPExporter:
     CHAPTER_FONT = "Garamond"
     CHAPTER_SIZE = Pt(24)
 
-    def __init__(self, project_path: Path):
+    def __init__(self, project_path: Path, policy: Optional[Any] = None):
         self.project_path = Path(project_path)
         self.config: Dict[str, Any] = {}
         self.scenes: List[Dict[str, Any]] = []
         self.doc: Optional[Document] = None
+        self.policy = policy  # Centralized policy (optional, for export gate)
 
     def load_project(self):
         """Load project config and generated content."""
@@ -299,10 +300,14 @@ class KDPExporter:
                 para = self._add_formatted_paragraph(para_text, first_in_section=(j == 0))
 
     def _validate_scenes(self) -> None:
-        """Run pre-export validation; log issues. In strict mode, raise on errors."""
+        """Run pre-export validation; log issues.
+
+        Uses policy.export_gate when available, otherwise falls back to
+        the legacy config-based strict/lenient mode.
+        """
         if not self.scenes:
             return
-        report = validate_project_scenes(self.scenes, self.config)
+        report = validate_project_scenes(self.scenes, self.config, policy=self.policy)
         for i in report["issues"]:
             msg = f"[{i['code']}] {i['scene_id']}: {i['message']}"
             if i.get("excerpt"):
@@ -311,12 +316,30 @@ class KDPExporter:
                 logger.error(msg)
             else:
                 logger.warning(msg)
-        mode = _validation_mode(self.config)
-        if report["has_errors"] and mode == "strict":
-            raise ValueError(
-                f"Export blocked: {len([x for x in report['issues'] if x['severity'] == 'error'])} "
-                "validation error(s). Set export.validation_mode: lenient to allow export."
-            )
+
+        # Export gate: policy-driven (preferred) or legacy config mode
+        if self.policy and hasattr(self.policy, 'export_gate') and self.policy.export_gate.enabled:
+            # Map issue severity to gate levels
+            _severity_map = {"error": "HIGH", "warning": "LOW"}
+            fail_levels = set(self.policy.export_gate.fail_on_severity)
+            blocking = [
+                i for i in report["issues"]
+                if _severity_map.get(i["severity"], "LOW") in fail_levels
+            ]
+            if blocking:
+                raise ValueError(
+                    f"Export blocked by policy (gate levels: {', '.join(sorted(fail_levels))}): "
+                    f"{len(blocking)} issue(s). "
+                    "Adjust policy.export_gate.fail_on_severity to allow export."
+                )
+        else:
+            # Legacy fallback: config-based strict/lenient
+            mode = _validation_mode(self.config)
+            if report["has_errors"] and mode == "strict":
+                raise ValueError(
+                    f"Export blocked: {len([x for x in report['issues'] if x['severity'] == 'error'])} "
+                    "validation error(s). Set export.validation_mode: lenient to allow export."
+                )
 
     def export(self, output_path: Optional[Path] = None) -> Path:
         """Export the novel to a Word document.

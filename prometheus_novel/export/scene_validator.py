@@ -107,10 +107,15 @@ def validate_scene(
     config: Dict[str, Any],
     scene_id: str = "",
     scene_index: int = -1,
+    policy: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """
     Validate a single scene. Returns list of structured issues.
     Each issue: {severity, code, scene_id, scene_index, offset, excerpt, pattern_name, message}
+
+    If *policy* is provided, uses policy.validation.meta_text_patterns and
+    policy.lexicon (block_names, block_terms) instead of hardcoded patterns.
+    Falls back to module-level META_TEXT_PATTERNS and config when policy is None.
     """
     issues: List[Dict[str, Any]] = []
     if not content:
@@ -121,7 +126,12 @@ def validate_scene(
         return issues
 
     # 3.1 Meta-text checks (error)
-    for pattern, code, pattern_name in META_TEXT_PATTERNS:
+    # Source: policy.validation.meta_text_patterns or module-level META_TEXT_PATTERNS
+    if policy and hasattr(policy, 'validation') and policy.validation.meta_text_patterns:
+        _patterns = [(p.regex, p.code, p.pattern_name) for p in policy.validation.meta_text_patterns]
+    else:
+        _patterns = META_TEXT_PATTERNS
+    for pattern, code, pattern_name in _patterns:
         m = re.search(pattern, content, re.IGNORECASE)
         if m:
             issues.append({
@@ -136,8 +146,11 @@ def validate_scene(
             })
 
     # 3.1b Word count check
+    _min_words = 100
+    if policy and hasattr(policy, 'validation'):
+        _min_words = policy.validation.min_scene_words
     word_count = len(content.split())
-    if word_count < 100:
+    if word_count < _min_words:
         issues.append({
             "severity": "warning",
             "code": "SHORT_SCENE",
@@ -146,15 +159,22 @@ def validate_scene(
             "offset": 0,
             "excerpt": _excerpt(content[:120]),
             "pattern_name": "word_count_low",
-            "message": f"Scene has only {word_count} words (expected 100+)",
+            "message": f"Scene has only {word_count} words (expected {_min_words}+)",
         })
 
     # 3.2 Character-name validation (warning by default)
+    # Policy lexicon.block_names supplements config-derived suspicious names
     allowed = _allowed_names(config)
+    if policy and hasattr(policy, 'lexicon') and policy.lexicon.allow_characters:
+        allowed = allowed | set(policy.lexicon.allow_characters)
+
     tone = _tone_constraints(config)
     suspicious_names: List[str] = tone.get("suspicious_names", [])
+    # Merge policy block_names
+    if policy and hasattr(policy, 'lexicon') and policy.lexicon.block_names:
+        suspicious_names = list(set(suspicious_names + policy.lexicon.block_names))
     if not suspicious_names and allowed:
-        suspicious_names = []  # Only use if explicitly in config
+        suspicious_names = []  # Only use if explicitly in config or policy
 
     for name in suspicious_names:
         if name in allowed:
@@ -172,8 +192,10 @@ def validate_scene(
                 "message": f"Character '{name}' appears {count}x (not in allowed list)",
             })
 
-    # 3.3 Disallow terms (only when config opts in)
+    # 3.3 Disallow terms (config + policy.lexicon.block_terms)
     disallow_terms = tone.get("disallow_terms", [])
+    if policy and hasattr(policy, 'lexicon') and policy.lexicon.block_terms:
+        disallow_terms = list(set(disallow_terms + policy.lexicon.block_terms))
     for term in disallow_terms:
         pat = re.escape(term) if isinstance(term, str) else term
         m = re.search(pat, content, re.IGNORECASE)
@@ -195,9 +217,13 @@ def validate_scene(
 def validate_project_scenes(
     scenes: List[Dict[str, Any]],
     config: Dict[str, Any],
+    policy: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Validate all scenes before export.
+
+    If *policy* is provided, threads it to validate_scene() and uses
+    policy.validation.suspect_name_threshold for recurrence escalation.
 
     Returns:
         {
@@ -211,14 +237,19 @@ def validate_project_scenes(
 
     tone = _tone_constraints(config)
     suspicious_names: List[str] = tone.get("suspicious_names", [])
+    # Merge policy block_names
+    if policy and hasattr(policy, 'lexicon') and policy.lexicon.block_names:
+        suspicious_names = list(set(suspicious_names + policy.lexicon.block_names))
     allowed = _allowed_names(config)
+    if policy and hasattr(policy, 'lexicon') and policy.lexicon.allow_characters:
+        allowed = allowed | set(policy.lexicon.allow_characters)
 
     for i, scene in enumerate(scenes):
         if not isinstance(scene, dict):
             continue
         content = scene.get("content", "") or ""
         sid = _scene_id(scene, i)
-        scene_issues = validate_scene(content, config, sid, scene_index=i)
+        scene_issues = validate_scene(content, config, sid, scene_index=i, policy=policy)
         all_issues.extend(scene_issues)
 
         # Track suspicious name recurrence across scenes
@@ -229,8 +260,11 @@ def validate_project_scenes(
                 name_scene_counts.setdefault(name, set()).add(sid)
 
     # 3.4 Escalate recurring unknown names to error
+    _name_threshold = SUSPECT_NAME_ERROR_THRESHOLD
+    if policy and hasattr(policy, 'validation'):
+        _name_threshold = policy.validation.suspect_name_threshold
     for name, scene_ids in name_scene_counts.items():
-        if len(scene_ids) >= SUSPECT_NAME_ERROR_THRESHOLD:
+        if len(scene_ids) >= _name_threshold:
             all_issues.append({
                 "severity": "error",
                 "code": "SUSPECT_NAME_RECURRING",
