@@ -26,6 +26,11 @@ import secrets
 import yaml
 from datetime import datetime
 from stages.quality_meters import run_all_meters
+from quality.phrase_miner import mine_hot_phrases, write_auto_yaml, load_phrase_config, load_miner_config
+from quality.phrase_suppressor import suppress_phrases
+from quality.dialogue_trimmer import process_scenes as trim_dialogue_scenes
+from quality.emotion_diversifier import process_scenes as diversify_emotion_scenes
+from quality.cliche_clusters import detect_clusters
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +90,9 @@ RHETORICAL_DEVICES = {
     "parataxis": "Clauses placed side by side without conjunctions",
     "hypotaxis": "Hierarchy of clauses (subordination)",
 }
+
+# Pre-compiled regex for CJK language drift detection (avoid recompiling per scene)
+_LANG_DRIFT_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]')
 
 # ANTI-AI-TELL PATTERNS - Phrases that reveal AI authorship
 AI_TELL_PATTERNS = [
@@ -254,9 +262,14 @@ def count_ai_tells(text: str) -> Dict:
     total = 0
 
     for pattern in AI_TELL_PATTERNS:
-        # Handle patterns with placeholders
-        search_pattern = pattern.lower().replace("[x]", "").replace("[emotion]", "").replace("[character]", "")
-        count = text_lower.count(search_pattern)
+        p_lower = pattern.lower()
+        if '[' in p_lower:
+            # Convert placeholder patterns to regex (e.g. "[X]" → r'\w+')
+            rx = re.escape(p_lower)
+            rx = rx.replace(r'\[x\]', r'\w+').replace(r'\[emotion\]', r'\w+').replace(r'\[character\]', r'\w+')
+            count = len(re.findall(rx, text_lower))
+        else:
+            count = text_lower.count(p_lower)
         if count > 0:
             counts[pattern] = count
             total += count
@@ -2074,7 +2087,7 @@ def _flag_language_inconsistencies(text: str, setting_language: str = "",
             r'\bSeñor\b': 'Signore',
             r'\bseñor\b': 'signore',
             r'\bSeñora\b': 'Signora',
-            r'\bseñora\b': 'señora',
+            r'\bseñora\b': 'signora',
         }
         replacements = spanish_to_italian
 
@@ -2850,6 +2863,9 @@ class PipelineState:
             "total_cost_usd": self.total_cost_usd,
             "artifact_metrics": self.artifact_metrics,
             "quality_meter_report": self.quality_meter_report,
+            "_quality_iterations": getattr(self, '_quality_iterations', 0),
+            "_prev_audit_snapshot": getattr(self, '_prev_audit_snapshot', None),
+            "_continuity_fixed_indices": getattr(self, '_continuity_fixed_indices', []),
             "stage_results": [
                 {
                     "stage_name": r.stage_name,
@@ -2882,15 +2898,23 @@ class PipelineState:
         if not state_file.exists():
             return None
 
-        with open(state_file, encoding="utf-8") as f:
-            data = json.load(f)
+        try:
+            with open(state_file, encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Failed to parse pipeline state JSON: {e}")
+            return None
 
         config_file = project_path / "config.yaml"
-        with open(config_file, encoding="utf-8") as f:
-            config = yaml.safe_load(f)
+        try:
+            with open(config_file, encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+        except (yaml.YAMLError, ValueError) as e:
+            logger.error(f"Failed to parse config YAML: {e}")
+            return None
 
         state = cls(
-            project_name=data["project_name"],
+            project_name=data.get("project_name", project_path.name),
             project_path=project_path,
             config=config,
             current_stage=data.get("current_stage", 0),
@@ -2923,6 +2947,9 @@ class PipelineState:
             }),
             quality_meter_report=data.get("quality_meter_report")
         )
+        state._quality_iterations = data.get("_quality_iterations", 0)
+        state._prev_audit_snapshot = data.get("_prev_audit_snapshot")
+        state._continuity_fixed_indices = data.get("_continuity_fixed_indices", [])
 
         # Recalculate targets from config if loading
         state.calculate_targets()
@@ -2977,6 +3004,7 @@ class PipelineOrchestrator:
         # === VALIDATION PHASE ===
         # Safety net: surgical AI tell removal (protects hooks)
         "final_deai",
+        "quality_polish",           # Deterministic: phrase suppression + dialogue trim + emotion diversify
         "quality_meters",           # Deterministic quality meters (no LLM, non-blocking)
         "quality_audit",
         "output_validation"
@@ -3007,6 +3035,7 @@ class PipelineOrchestrator:
         "chapter_hooks": "claude",
         "prose_polish": "claude",
         "final_deai": "gpt",                 # Fast surgical replacement (no creativity needed)
+        "quality_polish": "gpt",             # Deterministic (no LLM call)
         "quality_meters": "gpt",             # Deterministic (no LLM call), cheapest placeholder
         "quality_audit": "gemini",           # Long context for full audit
         "output_validation": "gpt"
@@ -3042,6 +3071,7 @@ class PipelineOrchestrator:
         "continuity_fix_2": 0.3,
         "self_refinement": 0.5,
         "final_deai": 0.3,
+        "quality_polish": 0.2,
         "quality_meters": 0.2,
         "quality_audit": 0.2,
         "output_validation": 0.2
@@ -3570,6 +3600,7 @@ class PipelineOrchestrator:
                                 f"Stage {stage_name} failed ({consecutive_failures}/{CIRCUIT_BREAKER_THRESHOLD} "
                                 f"consecutive failures). Continuing pipeline."
                             )
+                            i += 1
                             continue
 
                     # Handle iteration if quality_audit indicates it's needed
@@ -3598,6 +3629,7 @@ class PipelineOrchestrator:
                                     p_result = await self._run_stage(polish_stage)
                                     self.state.stage_results.append(p_result)
                                     self.state.total_tokens += p_result.tokens_used
+                                    self.state.total_cost_usd += p_result.cost_usd
 
                             self.state.save()
 
@@ -3657,6 +3689,7 @@ class PipelineOrchestrator:
             "prose_polish": self._stage_prose_polish,
             "chapter_hooks": self._stage_chapter_hooks,
             "final_deai": self._stage_final_deai,
+            "quality_polish": self._stage_quality_polish,
             "quality_meters": self._stage_quality_meters,
             "quality_audit": self._stage_quality_audit,
             "output_validation": self._stage_output_validation
@@ -4992,7 +5025,7 @@ Respond with a JSON object: {{"chapters": [{{"chapter": {miss_ch}, "chapter_titl
                     bf_attempts = bf_retry + 1
                 if self.state.outline_json_report:
                     self.state.outline_json_report["backfill"]["attempts"].append({
-                        "chapter": miss_ch, "attempts": bf_attempts + 1, "success": bf_success, "recovery": bf_recovery
+                        "chapter": miss_ch, "attempts": bf_attempts, "success": bf_success, "recovery": bf_recovery
                     })
                 if not bf_success and self.state.outline_json_report:
                     self.state.outline_json_report["backfill"]["failures"].append(miss_ch)
@@ -5829,7 +5862,6 @@ RULES:
         # AND ratio to avoid false positives from quoted signs or names.
         # Ranges: CJK Unified (U+4E00-9FFF), Hiragana (U+3040-309F),
         #         Katakana (U+30A0-30FF), Hangul (U+AC00-D7AF)
-        _LANG_DRIFT_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]')
         drift_hits = len(_LANG_DRIFT_RE.findall(text))
         alpha_count = sum(1 for c in text if c.isalpha())
         drift_ratio = drift_hits / max(1, alpha_count)
@@ -5873,12 +5905,9 @@ RULES:
 
         # Dialogue integrity check: unbalanced quotes or extreme dialogue ratio
         if word_count >= 100:
-            open_quotes = text.count('\u201c') + text.count('"')  # " and "
-            close_quotes = text.count('\u201d') + text.count('"')  # " and "
-            # For straight quotes ("), count should be even
-            straight_quotes = text.count('"')
             smart_open = text.count('\u201c')
             smart_close = text.count('\u201d')
+            straight_quotes = text.count('"')
             if smart_open + smart_close > 0:
                 # Smart quotes: open/close should match within tolerance
                 if abs(smart_open - smart_close) > 2:
@@ -5886,11 +5915,10 @@ RULES:
                     logger.debug(
                         f"Unbalanced smart quotes: {smart_open} open vs {smart_close} close"
                     )
-            elif straight_quotes > 0 and straight_quotes % 2 != 0:
-                # Odd number of straight quotes = likely unbalanced
-                if straight_quotes > 3:  # Ignore single quote edge cases
-                    issues["dialogue_unbalanced"] = True
-                    logger.debug(f"Odd straight quote count: {straight_quotes}")
+            # Also check straight quotes independently (mixed text is common)
+            if straight_quotes > 3 and straight_quotes % 2 != 0:
+                issues["dialogue_unbalanced"] = True
+                logger.debug(f"Odd straight quote count: {straight_quotes}")
 
             # Dialogue ratio guard: too much or too little dialogue can indicate problems
             # Count words inside quotes as a rough dialogue ratio
@@ -9481,7 +9509,7 @@ OUTPUT the text with only problematic sentences fixed:"""
                             if owc > 20 and nwc < owc * (1 - self._get_threshold("deai_paragraph_loss_pct")):
                                 logger.warning(
                                     f"final_deai: paragraph shrank {owc}->{nwc} words "
-                                    f"(>{50}% loss), rejecting LLM rewrite for scene {idx}"
+                                    f"(>{int(self._get_threshold('deai_paragraph_loss_pct') * 100)}% loss), rejecting LLM rewrite for scene {idx}"
                                 )
                                 para_ok = False
                                 break
@@ -9590,6 +9618,131 @@ OUTPUT the text with only problematic sentences fixed:"""
             logger.warning(f"final_deai post-check issues: {deai_issues}")
         return {"fixes_made": fixes_made, "scenes_processed": len(cleaned_scenes),
                 "hooks_protected": len(chapter_end_indices), "post_check_issues": deai_issues}, total_tokens
+
+    async def _stage_quality_polish(self) -> tuple:
+        """Deterministic quality polish: phrase suppression, dialogue trim, emotion diversify.
+
+        Runs after final_deai, before quality_meters. No LLM calls — all
+        transformations are regex/config-driven. Modifies scenes in-place.
+        """
+        scenes_list = [s for s in (self.state.scenes or []) if isinstance(s, dict)]
+        if not scenes_list:
+            return {"skipped": "no scenes"}, 0
+
+        texts = [s.get("content", "") for s in scenes_list]
+        project_path = Path(self.state.config.get("_project_path", ""))
+        configs_dir = Path(__file__).parent.parent / "configs"
+        report = {}
+
+        # --- 1. Hot phrase mining ---
+        try:
+            miner_cfg = load_miner_config(configs_dir / "phrase_miner.yaml")
+            mine_result = mine_hot_phrases(
+                texts,
+                ignore_phrases=miner_cfg.get("ignore_phrases", []),
+                ignore_regex=miner_cfg.get("ignore_regex", []),
+            )
+            # Write auto YAML for this run
+            auto_yaml_path = project_path / "covergen" if project_path.exists() else configs_dir
+            auto_yaml_path = configs_dir / "hot_phrases.auto.yaml"
+            write_auto_yaml(mine_result, auto_yaml_path)
+            report["phrase_miner"] = {
+                "phrases_flagged": mine_result["stats"]["phrases_flagged"],
+                "top_5": [
+                    {"phrase": p["phrase"], "count": p["total_count"], "scenes": p["scene_count"]}
+                    for p in mine_result["phrases"][:5]
+                ],
+            }
+            logger.info(
+                "Phrase miner: %d phrases flagged",
+                mine_result["stats"]["phrases_flagged"],
+            )
+        except Exception as e:
+            logger.warning(f"Phrase mining failed (non-blocking): {e}")
+            mine_result = {"phrases": []}
+            report["phrase_miner"] = {"error": str(e)}
+
+        # --- 2. Phrase suppression ---
+        try:
+            phrase_configs = load_phrase_config(
+                auto_path=configs_dir / "hot_phrases.auto.yaml",
+                manual_path=configs_dir / "hot_phrases.yaml" if (configs_dir / "hot_phrases.yaml").exists() else None,
+            )
+            if phrase_configs:
+                texts, suppress_report = suppress_phrases(texts, phrase_configs)
+                report["phrase_suppression"] = suppress_report
+                logger.info(
+                    "Phrase suppression: %d total replacements",
+                    suppress_report["total_replacements"],
+                )
+        except Exception as e:
+            logger.warning(f"Phrase suppression failed (non-blocking): {e}")
+            report["phrase_suppression"] = {"error": str(e)}
+
+        # --- 3. Dialogue tag trimming ---
+        try:
+            texts, dialogue_report = trim_dialogue_scenes(texts)
+            report["dialogue_trimming"] = dialogue_report
+            logger.info(
+                "Dialogue trimming: %d tags trimmed across %d scenes",
+                dialogue_report["tags_trimmed"],
+                dialogue_report["scenes_modified"],
+            )
+        except Exception as e:
+            logger.warning(f"Dialogue trimming failed (non-blocking): {e}")
+            report["dialogue_trimming"] = {"error": str(e)}
+
+        # --- 4. Emotion diversification ---
+        try:
+            texts, emotion_report = diversify_emotion_scenes(texts)
+            report["emotion_diversification"] = emotion_report
+            logger.info(
+                "Emotion diversification: %d replaced across %d scenes",
+                emotion_report["total_replaced"],
+                emotion_report["scenes_modified"],
+            )
+        except Exception as e:
+            logger.warning(f"Emotion diversification failed (non-blocking): {e}")
+            report["emotion_diversification"] = {"error": str(e)}
+
+        # --- 5. Cliche cluster detection (report only, no modification) ---
+        try:
+            cluster_report = detect_clusters(texts)
+            report["cliche_clusters"] = {
+                "flagged": cluster_report["flagged_count"],
+                "total_checked": cluster_report["total_clusters"],
+                "details": {
+                    k: {"hits": v["total_hits"], "threshold": v["threshold"]}
+                    for k, v in cluster_report["clusters"].items()
+                    if v["flagged"]
+                },
+            }
+            if cluster_report["flagged_count"] > 0:
+                logger.warning(
+                    "Cliche clusters flagged: %s",
+                    ", ".join(cluster_report["flagged_names"]),
+                )
+        except Exception as e:
+            logger.warning(f"Cliche cluster detection failed (non-blocking): {e}")
+            report["cliche_clusters"] = {"error": str(e)}
+
+        # --- Write modified texts back to scenes ---
+        modified_count = 0
+        for i, scene in enumerate(scenes_list):
+            if i < len(texts) and texts[i] != scene.get("content", ""):
+                scene["content"] = texts[i]
+                scene["quality_polished"] = True
+                modified_count += 1
+
+        report["scenes_modified"] = modified_count
+        logger.info("Quality polish complete: %d scenes modified", modified_count)
+
+        # Store report in state for run_report
+        if not hasattr(self.state, "quality_polish_report"):
+            self.state.quality_polish_report = {}
+        self.state.quality_polish_report = report
+
+        return report, 0  # No tokens used (deterministic)
 
     async def _stage_quality_meters(self) -> tuple:
         """Run deterministic quality meters (no LLM needed). Non-blocking."""
@@ -10251,7 +10404,7 @@ Respond with JSON:
                     continue
                 history = sc.get("structure_scores_history", [])
                 if len(history) >= 2:
-                    repair_deltas.append(history[-1] - history[0])
+                    repair_deltas.append(sum(history[-1].values()) - sum(history[0].values()))
             if repair_deltas:
                 avg_repair_delta = sum(repair_deltas) / len(repair_deltas)
 
@@ -10265,6 +10418,8 @@ Respond with JSON:
         # Add high concept info if available
         if self.state.high_concept_fingerprint:
             run_report["high_concept_fingerprint"] = self.state.high_concept_fingerprint
+        if hasattr(self.state, 'quality_polish_report') and self.state.quality_polish_report:
+            run_report["quality_polish"] = self.state.quality_polish_report
         if hasattr(self.state, 'quality_meter_report') and self.state.quality_meter_report:
             run_report["quality_meters"] = self.state.quality_meter_report
         if metrics_delta:

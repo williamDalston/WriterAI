@@ -1,0 +1,26 @@
+# Hot phrase miner configuration (model-agnostic)
+# These settings control automatic repeated phrase detection.
+# Tune per book length — defaults are for ~80k word novels.
+
+min_n: 3
+max_n: 7
+
+# Minimum occurrences to flag
+min_total_count: 8
+min_scene_count: 4
+
+# Noise filtering: minimum non-stopword ratio
+min_content_ratio: 0.40
+
+max_phrases: 50
+max_examples: 3
+
+# Optional: ignore ultra-common phrases for your voice
+ignore_phrases: []
+# Example:
+#   - i don't know
+#   - i don't want to
+
+ignore_regex: []
+# Example:
+#   - '^i\s'   # careful: too aggressive for first-person books

@@ -1,0 +1,76 @@
+# Cliche cluster detector — category-based, not phrase-based.
+# Catches formulaic patterns even when surface phrasing varies across models.
+# Each cluster is a semantic family of tropes.
+
+clusters:
+  physiological_cardiac:
+    label: "Heart racing/pounding"
+    patterns:
+      - "\\bheart\\s+(?:races|raced|racing|pounds|pounded|pounding|thuds|thudded|thudding|hammers|hammered|hammering)\\b"
+      - "\\bpulse\\s+(?:quickens|quickened|races|raced|spikes|spiked)\\b"
+      - "\\bheart\\s+skips?\\s+a\\s+beat\\b"
+    threshold: 10
+
+  physiological_respiratory:
+    label: "Breath catching/holding"
+    patterns:
+      - "\\bbreath\\s+(?:catches|caught|hitches|hitched)\\b"
+      - "\\bhold(?:s|ing)?\\s+(?:my|her|his|their)\\s+breath\\b"
+      - "\\blet(?:s|ting)?\\s+out\\s+a\\s+breath\\b"
+      - "\\b(?:take|took|taking)\\s+a\\s+deep\\s+breath\\b"
+      - "\\bexhale(?:s|d)?\\s+(?:slowly|sharply|deeply)\\b"
+    threshold: 15
+
+  physiological_gastric:
+    label: "Stomach churning/dropping"
+    patterns:
+      - "\\bstomach\\s+(?:churns?|churned|drops?|dropped|flips?|flipped|twists?|twisted|knots?|knotted)\\b"
+      - "\\bgut\\s+(?:twists?|twisted|clenches?|clenched|tightens?|tightened)\\b"
+      - "\\bnausea\\s+(?:rises?|rising|washes?|prickles?)\\b"
+    threshold: 8
+
+  physiological_throat:
+    label: "Swallowing hard / lump in throat"
+    patterns:
+      - "\\b(?:swallow|swallowed|swallowing)\\s+hard\\b"
+      - "\\blump\\s+in\\s+(?:my|her|his|their)\\s+throat\\b"
+      - "\\bthroat\\s+(?:tightens?|tightened|constricts?|constricted)\\b"
+    threshold: 8
+
+  physiological_tremor:
+    label: "Hands trembling/shaking"
+    patterns:
+      - "\\bhands?\\s+(?:tremble|trembles|trembled|trembling|shake|shakes|shook|shaking)\\b"
+      - "\\bfingers?\\s+(?:tremble|trembles|trembled|trembling)\\b"
+    threshold: 8
+
+  tension_bridge:
+    label: "Tension/air between us"
+    patterns:
+      - "\\bthe\\s+air\\s+between\\s+us\\b"
+      - "\\btension\\s+(?:hangs?|hung|hanging|crackles?|crackling|simmers?)\\b"
+      - "\\bsilence\\s+(?:stretches?|stretched|hangs?|hung)\\b"
+    threshold: 10
+
+  dialogue_crutch:
+    label: "We need to talk / I need to say"
+    patterns:
+      - "\\bwe\\s+need\\s+to\\s+talk\\b"
+      - "\\bthere's\\s+something\\s+I\\s+need\\s+to\\s+(?:say|tell)\\b"
+    threshold: 6
+
+  whisper_default:
+    label: "Barely above a whisper"
+    patterns:
+      - "\\bbarely\\s+above\\s+a\\s+whisper\\b"
+      - "\\bvoice\\s+barely\\s+above\\b"
+      - "\\bvoice\\s+(?:drops?|dropped|dropping)\\s+to\\s+a\\s+whisper\\b"
+    threshold: 8
+
+  ocular_reaction:
+    label: "Eyes widening / tears pricking"
+    patterns:
+      - "\\beyes?\\s+(?:widen|widened|widening|narrow|narrowed|narrowing)\\b"
+      - "\\btears?\\s+(?:prick|pricked|pricking|sting|stinging|well|welled|welling)\\b"
+      - "\\bvision\\s+(?:blurs?|blurred|blurring)\\b"
+    threshold: 10

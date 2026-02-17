@@ -1,0 +1,255 @@
+generated: true
+rules:
+  min_total: 8
+  min_scenes: 4
+phrases:
+- phrase: he says softly
+  total: 26
+  scenes: 22
+  severity: high
+  keep_first: 2
+- phrase: between us like
+  total: 21
+  scenes: 19
+  severity: high
+  keep_first: 2
+- phrase: my voice steady
+  total: 21
+  scenes: 18
+  severity: high
+  keep_first: 2
+- phrase: what lies ahead
+  total: 20
+  scenes: 17
+  severity: high
+  keep_first: 2
+- phrase: whatever comes next
+  total: 20
+  scenes: 17
+  severity: high
+  keep_first: 2
+- phrase: air between us
+  total: 18
+  scenes: 15
+  severity: high
+  keep_first: 2
+- phrase: voice barely above
+  total: 18
+  scenes: 18
+  severity: high
+  keep_first: 2
+- phrase: barely above a whisper
+  total: 17
+  scenes: 16
+  severity: high
+  keep_first: 2
+- phrase: voice barely above a
+  total: 17
+  scenes: 17
+  severity: high
+  keep_first: 2
+- phrase: we need to talk
+  total: 17
+  scenes: 15
+  severity: high
+  keep_first: 2
+- phrase: he nods slowly
+  total: 16
+  scenes: 15
+  severity: high
+  keep_first: 2
+- phrase: the air between us
+  total: 16
+  scenes: 13
+  severity: high
+  keep_first: 2
+- phrase: take a deep breath
+  total: 16
+  scenes: 14
+  severity: high
+  keep_first: 2
+- phrase: steady despite the
+  total: 15
+  scenes: 14
+  severity: high
+  keep_first: 2
+- phrase: he says quietly
+  total: 15
+  scenes: 15
+  severity: high
+  keep_first: 2
+- phrase: i take a deep breath
+  total: 15
+  scenes: 13
+  severity: high
+  keep_first: 2
+- phrase: voice barely above a whisper
+  total: 15
+  scenes: 15
+  severity: high
+  keep_first: 2
+- phrase: beneath the surface
+  total: 14
+  scenes: 13
+  severity: high
+  keep_first: 2
+- phrase: to face whatever
+  total: 14
+  scenes: 13
+  severity: high
+  keep_first: 2
+- phrase: my voice barely
+  total: 14
+  scenes: 13
+  severity: high
+  keep_first: 2
+- phrase: voice steady but
+  total: 14
+  scenes: 12
+  severity: high
+  keep_first: 2
+- phrase: meeting his gaze
+  total: 14
+  scenes: 12
+  severity: high
+  keep_first: 2
+- phrase: voice steady despite
+  total: 14
+  scenes: 14
+  severity: high
+  keep_first: 2
+- phrase: he says finally
+  total: 13
+  scenes: 11
+  severity: high
+  keep_first: 2
+- phrase: back towards the
+  total: 13
+  scenes: 12
+  severity: high
+  keep_first: 2
+- phrase: deep breath and
+  total: 13
+  scenes: 10
+  severity: high
+  keep_first: 2
+- phrase: the cool evening
+  total: 11
+  scenes: 7
+  severity: high
+  keep_first: 2
+- phrase: tension between us
+  total: 13
+  scenes: 13
+  severity: high
+  keep_first: 2
+- phrase: his voice barely
+  total: 12
+  scenes: 11
+  severity: high
+  keep_first: 2
+- phrase: eyes searching mine
+  total: 12
+  scenes: 12
+  severity: high
+  keep_first: 2
+- phrase: voice steady despite the
+  total: 12
+  scenes: 12
+  severity: high
+  keep_first: 2
+- phrase: between us like a
+  total: 12
+  scenes: 12
+  severity: high
+  keep_first: 2
+- phrase: a deep breath and
+  total: 11
+  scenes: 10
+  severity: high
+  keep_first: 2
+- phrase: whatever lies ahead
+  total: 11
+  scenes: 11
+  severity: high
+  keep_first: 2
+- phrase: to move forward
+  total: 11
+  scenes: 11
+  severity: high
+  keep_first: 2
+- phrase: his voice steady
+  total: 11
+  scenes: 11
+  severity: high
+  keep_first: 2
+- phrase: his eyes searching
+  total: 11
+  scenes: 11
+  severity: high
+  keep_first: 2
+- phrase: hangs between us
+  total: 11
+  scenes: 11
+  severity: high
+  keep_first: 2
+- phrase: he says firmly
+  total: 9
+  scenes: 7
+  severity: high
+  keep_first: 1
+- phrase: distance between us
+  total: 10
+  scenes: 8
+  severity: high
+  keep_first: 2
+- phrase: i take another
+  total: 10
+  scenes: 9
+  severity: high
+  keep_first: 2
+- phrase: feeling the weight
+  total: 10
+  scenes: 9
+  severity: high
+  keep_first: 2
+- phrase: feeling the weight of
+  total: 10
+  scenes: 9
+  severity: high
+  keep_first: 2
+- phrase: shivers down my spine
+  total: 10
+  scenes: 9
+  severity: high
+  keep_first: 2
+- phrase: ever so slightly
+  total: 10
+  scenes: 10
+  severity: high
+  keep_first: 2
+- phrase: shadows across the
+  total: 10
+  scenes: 10
+  severity: high
+  keep_first: 2
+- phrase: cool evening air
+  total: 9
+  scenes: 6
+  severity: high
+  keep_first: 1
+- phrase: the cool evening air
+  total: 9
+  scenes: 6
+  severity: high
+  keep_first: 1
+- phrase: the amalfi coast
+  total: 10
+  scenes: 10
+  severity: high
+  keep_first: 2
+- phrase: he steps closer
+  total: 10
+  scenes: 10
+  severity: high
+  keep_first: 2
