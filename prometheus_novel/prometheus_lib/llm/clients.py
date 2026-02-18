@@ -951,7 +951,7 @@ class AnthropicClient(BaseLLMClient):
 
 
 # Ollama/local model names - no API cost
-OLLAMA_MODEL_PREFIXES = ("ollama:", "llama", "mistral", "qwen", "phi", "gemma", "codellama", "dolphin", "neural", "openhermes", "nous", "deepseek", "yi-")
+OLLAMA_MODEL_PREFIXES = ("ollama:", "llama", "mistral", "qwen", "phi", "gemma", "codellama", "dolphin", "neural", "openhermes", "nous", "deepseek", "yi-", "gpt-oss")
 
 
 def is_ollama_model(model_name: str) -> bool:

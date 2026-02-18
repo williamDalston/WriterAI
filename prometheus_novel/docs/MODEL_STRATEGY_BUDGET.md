@@ -133,6 +133,12 @@ stage_model_map:
 
 **Optional experiment (scenes needing stronger reasoning):** Try GPT-OSS 20B at Q4 with a capped context window. In your Ollama modelfile, set `num_ctx 8192` to fit larger scenes while staying within VRAM.
 
+**Limits & quantization for local runs:**
+- `model_tuning.stage_max_tokens`: Override per-stage output caps (e.g. scene_drafting: 4500 for GPT-OSS 20B).
+- `defense.thresholds`: For local (no cost), relax `budget_max_defense_ratio` to 0.90 and `budget_max_retries_per_stage` to 5.
+- Ollama client timeout: 300s default; slower 20B models may need more—currently not configurable per-model.
+- `budget_usd: 0`: Budget guard is skipped when 0; set `enhancements.budget_guard.enabled: false` for clarity.
+
 ---
 
 ## Appendix: Code References

@@ -9,11 +9,18 @@ influences: ''
 key_locations: ''
 key_plot_points: ''
 model_defaults:
-  api_model: qwen2.5:14b
-  critic_model: qwen2.5:14b
-  fallback_model: qwen2.5:14b
-  local_model: qwen2.5:14b
-  structure_gate_model: qwen3:14b  # Same VRAM, better reasoning for structure scoring
+  api_model: gpt-oss-20b-8k
+  critic_model: gpt-oss-20b-8k
+  fallback_model: gpt-oss-20b-8k
+  local_model: gpt-oss-20b-8k
+  structure_gate_model: gpt-oss-20b-8k
+
+model_tuning:
+  stage_max_tokens:
+    scene_drafting: 4500    # GPT-OSS 20B needs runway for ~750–833 word scenes
+    scene_expansion: 3000
+    master_outline: 4096
+
 motifs: ''
 other_characters: ''
 premise: ''
@@ -25,7 +32,7 @@ stage_model_map:
   beat_sheet: api_model
   high_concept: api_model
   self_refine: critic_model
-  write_scene: api_model
+  scene_drafting: api_model
   structure_gate: structure_gate_model
 status: seeded
 subplots: ''
@@ -47,6 +54,15 @@ synopsis: 'In a world where dark secrets lurk beneath the surface, an unlikely h
   change everything forever. Nothing will ever be the same once the truth is revealed.'
 target_length: novella (30k)
 themes: Truth, identity, betrayal, love
+
+# Local model: no $ budget; relax defense ratio (retries are free)
+enhancements:
+  budget_guard:
+    enabled: false   # budget_usd: 0 — nothing to guard
+defense:
+  thresholds:
+    budget_max_defense_ratio: 0.90   # Local: allow more retries (no cost)
+    budget_max_retries_per_stage: 5  # Give gpt-oss more runway
 title: The Last Truth
 tone: Dark, suspenseful, emotionally charged
 world_rules: ''
