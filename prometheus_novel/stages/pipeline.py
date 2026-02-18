@@ -3653,11 +3653,14 @@ class PipelineOrchestrator:
                     logger.info(f"Using override model '{model_type}' for stage: {stage_name}")
                     return self.llm_clients[model_type]
 
-            # stage_model_map: stage -> api_model|critic_model|fallback_model
-            # Maps to gpt/claude/gemini (api->gpt, critic->claude, fallback->gemini)
+            # stage_model_map: stage -> api_model|critic_model|fallback_model|structure_gate_model
+            # structure_gate_model = dedicated model for structure scoring (e.g. qwen3:14b, same VRAM, better reasoning)
             if stage_name in stage_model_map:
                 key = stage_model_map[stage_name]
-                bucket = {"api_model": "gpt", "critic_model": "claude", "fallback_model": "gemini"}.get(key, "gpt")
+                bucket = {
+                    "api_model": "gpt", "critic_model": "claude", "fallback_model": "gemini",
+                    "structure_gate_model": "structure"
+                }.get(key, "gpt")
                 if bucket in self.llm_clients:
                     logger.info(f"Using stage_model_map '{key}' ({bucket}) for stage: {stage_name}")
                     return self.llm_clients[bucket]
@@ -7454,6 +7457,46 @@ Minor walk-ons: "a vendor," "the waiter" — fine. Named characters not listed: 
 Within the first 50 words, orient the reader: include at least 2 of 3 — TIME (morning/evening/later), PLACE (courtyard/office/terrace), WHO IS PRESENT (Marco, Sofia, etc.).
 Do NOT open with a disembodied action ("My elbow sends a crate tumbling") without saying where we are and who's there."""
 
+    def _build_grounding_detail_block(
+        self,
+        scene_info: dict,
+        scene_index: int,
+        motif_map: Optional[Dict[str, Any]],
+    ) -> str:
+        """Build dynamic GROUNDING DETAIL block from planning data. Uses grounding_palette
+        and scene differentiator when available; falls back to generic guidance."""
+        palette = (motif_map or {}).get("grounding_palette") or []
+        differentiator = scene_info.get("differentiator", "").strip()
+
+        lines = [
+            "=== GROUNDING DETAIL (required — but UNIQUE each scene) ===",
+            "Every scene needs ONE imperfect, unglamorous sensory detail that grounds",
+            "the setting in reality. But it MUST be a DIFFERENT detail each scene.",
+        ]
+
+        if palette:
+            # Use story-specific palette; pick one for this scene index to rotate
+            idx = scene_index % len(palette)
+            suggested = palette[idx]
+            lines.append(f"FOR THIS SCENE, prefer (or a close variant): \"{suggested}\"")
+            if differentiator:
+                lines.append(f"Alternatively, the scene's differentiator can ground: \"{differentiator}\"")
+            lines.append("Other options from this story's palette (use ONE, rotate):")
+            for i, p in enumerate(palette[:10]):
+                if i != idx:
+                    lines.append(f"- {p}")
+        else:
+            # Fallback: generic guidance
+            lines.append("INVENT something specific to THIS location and moment:")
+            lines.append("- A texture underfoot, a smell that doesn't belong, a sound that interrupts")
+            lines.append("- Something broken, stained, wrong, or out of place")
+            lines.append("- A specific brand name, a price tag, a mundane object")
+            if differentiator:
+                lines.append(f"This scene's differentiator may serve as grounding: \"{differentiator}\"")
+
+        lines.append("DO NOT reuse details from previous scenes. Each scene = fresh observation.")
+        return "\n".join(lines)
+
     def _build_voice_under_pressure_block(self, pov_char: str, tension_level: int, config: dict) -> str:
         """When tension high: character must still sound like themselves, not collapse to generic."""
         if tension_level < 7:
@@ -7920,6 +7963,10 @@ Hook in the first 100 words.
                 roster_reminder = self._build_roster_reminder_block(scene_info, chapter, pov_char)
                 scene_transition_block = self._build_scene_transition_grounding_block(scene_position)
                 voice_pressure_block = self._build_voice_under_pressure_block(pov_char, tension_level, config)
+                scene_index = len(scenes)  # Global scene index for rotating grounding palette
+                grounding_block = self._build_grounding_detail_block(
+                    scene_info, scene_index, getattr(self.state, "motif_map", None)
+                )
 
                 prompt = f"""Write Chapter {chapter_num}, Scene {scene_num}: "{scene_name}"
 POSITION: Scene {scene_position + 1} of {total_scenes_in_chapter} in this chapter.
@@ -8080,14 +8127,7 @@ LOCATION: {location}
 
 {f"AESTHETIC PALETTE: {aesthetic}" if aesthetic else ""}
 
-=== GROUNDING DETAIL (required — but UNIQUE each scene) ===
-Every scene needs ONE imperfect, unglamorous sensory detail that grounds
-the setting in reality. But it MUST be a DIFFERENT detail each scene.
-INVENT something specific to THIS location and moment:
-- A texture underfoot, a smell that doesn't belong, a sound that interrupts
-- Something broken, stained, wrong, or out of place
-- A specific brand name, a price tag, a mundane object
-DO NOT reuse details from previous scenes. Each scene = fresh observation.
+{grounding_block}
 
 === CRAFT ELEMENTS ===
 {f"PHYSICAL ACTIONS: {physical_motion}" if physical_motion else ""}
@@ -10583,9 +10623,15 @@ For each major motif, provide:
 Also provide:
 - "motif_collisions": Moments where two motifs should intersect or conflict
 - "central_question_arc": How the motifs collectively answer the central question
+- "grounding_palette": 8–12 concrete sensory/object details that fit THIS story's setting, genre, and aesthetic.
+  Each is a specific grounding device (imperfect, unglamorous) for scenes to use—ONE per scene, rotated.
+  Examples by genre: Italian wedding→€3.50 flip-flop sticker, duct-taped dolly, Illy cup in mortar crack, chipped terracotta.
+  Fantasy→weather-worn carving, torn map corner, candle stub. Romance→misaligned place card, smudged lipstick on glass.
+  Vary: textures, smells, sounds, price tags, broken/wrong/out-of-place things, mundane branded objects.
+  NO generic "price tag" or "chalkboard"—each must be story-specific.
 
 Respond in JSON format:
-{{"motifs": [...], "motif_collisions": [...], "central_question_arc": "..."}}"""
+{{"motifs": [...], "motif_collisions": [...], "central_question_arc": "...", "grounding_palette": ["...", "...", ...]}}"""
 
         if client:
             response = await client.generate(prompt, max_tokens=3000, temperature=0.5, json_mode=True)
@@ -10593,10 +10639,10 @@ Respond in JSON format:
                 motif_map = extract_json_robust(response.content if response else None, expect_array=False)
             except Exception as e:
                 logger.warning(f"Motif embedding JSON parse failed: {e}")
-                motif_map = {"motifs": [], "motif_collisions": [], "central_question_arc": ""}
+                motif_map = {"motifs": [], "motif_collisions": [], "central_question_arc": "", "grounding_palette": []}
             total_tokens = response.input_tokens + response.output_tokens
         else:
-            motif_map = {"motifs": [], "motif_collisions": [], "central_question_arc": ""}
+            motif_map = {"motifs": [], "motif_collisions": [], "central_question_arc": "", "grounding_palette": []}
             total_tokens = 50
 
         # Store motif map on state so master_outline can reference it
@@ -11649,7 +11695,12 @@ OUTPUT the text with only problematic sentences fixed:"""
                 from quality.craft_scorecard import compute_craft_scorecard
                 craft_cfg = self.state.config.get("enhancements", {}).get("craft_scorecard", {})
                 if craft_cfg.get("enabled", True):
-                    craft_data = compute_craft_scorecard(scenes, self.state.config)
+                    # Merge grounding_palette from motif_map so editorial craft uses story-specific suggestions
+                    config_for_craft = dict(self.state.config or {})
+                    motif_map = getattr(self.state, "motif_map", None)
+                    if motif_map and isinstance(motif_map, dict) and motif_map.get("grounding_palette"):
+                        config_for_craft = {**config_for_craft, "grounding_palette": motif_map["grounding_palette"]}
+                    craft_data = compute_craft_scorecard(scenes, config_for_craft)
                     if "skipped" not in craft_data:
                         output_dir = Path(project_path) / "output"
                         output_dir.mkdir(parents=True, exist_ok=True)

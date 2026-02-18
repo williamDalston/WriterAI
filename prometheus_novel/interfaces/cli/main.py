@@ -270,12 +270,15 @@ def cmd_generate(args):
     api_model = model_defaults.get("api_model", "qwen2.5:7b")
     critic_model = model_defaults.get("critic_model", api_model)
     fallback_model = model_defaults.get("fallback_model", api_model)
+    structure_gate_model = model_defaults.get("structure_gate_model")
 
     llm_clients = {}
     default_client = get_client(api_model)
     llm_clients["gpt"] = default_client
     llm_clients["claude"] = get_client(critic_model)
     llm_clients["gemini"] = get_client(fallback_model)
+    if structure_gate_model:
+        llm_clients["structure"] = get_client(structure_gate_model)
 
     local_tag = "Ollama" if is_ollama_model(api_model) else "API"
     print_info(f"Model: {api_model} ({local_tag})")
@@ -283,6 +286,8 @@ def cmd_generate(args):
         print_info(f"Critic: {critic_model}")
     if fallback_model != api_model:
         print_info(f"Fallback: {fallback_model}")
+    if structure_gate_model:
+        print_info(f"Structure gate: {structure_gate_model}")
 
     project_path = config_path.parent
     orchestrator = PipelineOrchestrator(

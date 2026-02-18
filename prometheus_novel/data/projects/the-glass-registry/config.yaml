@@ -45,6 +45,7 @@ model_defaults:
   critic_model: qwen2.5:14b
   fallback_model: qwen2.5:14b
   local_model: qwen2.5:14b
+  structure_gate_model: qwen3:14b  # Same VRAM, better reasoning for structure scoring
 motifs: Salt (truth that stings), Glass (clarity that cuts), Blackbird calls (warnings
   / omens), A ticking countdown clock (time running out on identity)
 other_characters: '- Noor Amari: black-market "mirror tech" operator, charming, dangerous,
@@ -70,6 +71,7 @@ stage_model_map:
   high_concept: api_model
   self_refine: critic_model
   write_scene: api_model
+  structure_gate: structure_gate_model
 status: seeded
 strategic_guidance:
   aesthetic_guide: '- Fog, glass, salt, cold light, rusted metal, distant horns, surveillance

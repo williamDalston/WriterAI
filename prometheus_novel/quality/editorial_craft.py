@@ -79,7 +79,10 @@ def _chapters_from_scenes(scenes: List[Dict]) -> Dict[int, str]:
     return {ch: "\n\n".join(texts) for ch, texts in by_ch.items()}
 
 
-def motif_saturation_meter(scenes: List[Dict]) -> Dict[str, Any]:
+def motif_saturation_meter(
+    scenes: List[Dict],
+    grounding_palette: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """Flag motif categories appearing in >60% of chapters or >3x total for specific devices."""
     chapters = _chapters_from_scenes(scenes)
     total_chapters = len(chapters)
@@ -88,6 +91,14 @@ def motif_saturation_meter(scenes: List[Dict]) -> Dict[str, Any]:
 
     violations = []
     per_motif: Dict[str, Dict] = {}
+
+    # Dynamic grounding suggestions from planning, or generic fallback
+    vary_msg = "use different grounding devices"
+    if grounding_palette and len(grounding_palette) >= 3:
+        examples = ", ".join(grounding_palette[:5])
+        vary_msg = f"use different grounding devices such as: {examples}"
+    else:
+        vary_msg = "use different grounding devices (child's drawing, dented railing, chalkboard menu)"
 
     for name, pat in MOTIF_PATTERNS.items():
         ch_count = sum(1 for text in chapters.values() if pat.search(text))
@@ -100,7 +111,7 @@ def motif_saturation_meter(scenes: List[Dict]) -> Dict[str, Any]:
                 "type": "motif_saturation",
                 "motif": name,
                 "message": f"{name} appears in {ch_count}/{total_chapters} chapters ({pct_chapters*100:.0f}%). "
-                           "Consider varying: use different grounding devices (child's drawing, dented railing, chalkboard menu).",
+                           f"Consider varying: {vary_msg}.",
             })
         if name == "PRICE_TAGS" and total_count > 3:
             violations.append({
@@ -349,7 +360,8 @@ def run_editorial_craft_checks(
     all_violations = []
     report = {}
 
-    m = motif_saturation_meter(scenes_list)
+    grounding_palette = config.get("grounding_palette") or (config.get("motif_map") or {}).get("grounding_palette")
+    m = motif_saturation_meter(scenes_list, grounding_palette=grounding_palette)
     report["motif_saturation"] = m
     all_violations.extend(m.get("violations", []))
 

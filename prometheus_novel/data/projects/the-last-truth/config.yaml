@@ -9,10 +9,11 @@ influences: ''
 key_locations: ''
 key_plot_points: ''
 model_defaults:
-  api_model: qwen2.5:7b
-  critic_model: qwen2.5:7b
-  fallback_model: qwen2.5:7b
-  local_model: qwen2.5:7b
+  api_model: qwen2.5:14b
+  critic_model: qwen2.5:14b
+  fallback_model: qwen2.5:14b
+  local_model: qwen2.5:14b
+  structure_gate_model: qwen3:14b  # Same VRAM, better reasoning for structure scoring
 motifs: ''
 other_characters: ''
 premise: ''
@@ -25,6 +26,7 @@ stage_model_map:
   high_concept: api_model
   self_refine: critic_model
   write_scene: api_model
+  structure_gate: structure_gate_model
 status: seeded
 subplots: ''
 synopsis: 'In a world where dark secrets lurk beneath the surface, an unlikely hero

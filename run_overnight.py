@@ -42,12 +42,15 @@ async def run_novel():
 
     model_defaults = config.get("model_defaults", {})
     api_model = model_defaults.get("api_model", "qwen2.5:14b")
+    structure_gate_model = model_defaults.get("structure_gate_model")
 
     logger.info(f"{'='*60}")
     logger.info(f"OVERNIGHT NOVEL GENERATION")
     logger.info(f"Title: {config.get('title', 'Untitled')}")
     logger.info(f"Target: {config.get('target_length', 'standard (60k)')}")
     logger.info(f"Model: {api_model}")
+    if structure_gate_model:
+        logger.info(f"Structure gate: {structure_gate_model}")
     logger.info(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"{'='*60}")
 
@@ -58,6 +61,8 @@ async def run_novel():
         "claude": default_client,
         "gemini": default_client,
     }
+    if structure_gate_model:
+        llm_clients["structure"] = get_client(structure_gate_model)
 
     # Create orchestrator
     orchestrator = PipelineOrchestrator(

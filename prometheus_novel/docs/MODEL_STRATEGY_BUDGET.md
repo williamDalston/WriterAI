@@ -114,6 +114,27 @@ The pipeline follows **DEFENSE_ARCHITECTURE** (24 stages, 7 phases). Current `ST
 
 ---
 
+## 8. Local Model Recommendations (Ollama)
+
+When running fully local with Ollama:
+
+**Structure gate:** Swap `qwen2.5:14b` → `qwen3:14b` for the structure_gate stage. Same VRAM, better reasoning for JSON scoring/repair. Drop-in via Ollama:
+
+```yaml
+model_defaults:
+  api_model: qwen2.5:14b
+  critic_model: qwen2.5:14b
+  fallback_model: qwen2.5:14b
+  structure_gate_model: qwen3:14b
+
+stage_model_map:
+  structure_gate: structure_gate_model
+```
+
+**Optional experiment (scenes needing stronger reasoning):** Try GPT-OSS 20B at Q4 with a capped context window. In your Ollama modelfile, set `num_ctx 8192` to fit larger scenes while staying within VRAM.
+
+---
+
 ## Appendix: Code References
 
 | Item | Location |

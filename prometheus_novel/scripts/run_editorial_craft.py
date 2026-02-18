@@ -11,6 +11,7 @@ Usage:
 import json
 import sys
 from pathlib import Path
+from typing import Tuple
 
 if sys.platform == "win32":
     if hasattr(sys.stdout, "reconfigure"):
@@ -21,13 +22,18 @@ sys.path.insert(0, str(PROJECT_ROOT))
 DEFAULT_PROJECT = PROJECT_ROOT / "data/projects/burning-vows-30k"
 
 
-def load_scenes_from_project(proj: Path) -> list:
-    """Load scenes from pipeline_state.json."""
+def load_scenes_from_project(proj: Path) -> Tuple[list, dict]:
+    """Load scenes and config (including grounding_palette) from pipeline_state.json."""
     state_file = proj / "pipeline_state.json"
     if not state_file.exists():
-        return []
+        return [], {}
     data = json.loads(state_file.read_text(encoding="utf-8"))
-    return data.get("scenes", [])
+    scenes = data.get("scenes", [])
+    config = data.get("config", {})
+    motif_map = data.get("motif_map") or {}
+    if motif_map.get("grounding_palette"):
+        config = {**config, "grounding_palette": motif_map["grounding_palette"]}
+    return scenes, config
 
 
 def load_scenes_from_docx(path: Path) -> list:
@@ -73,13 +79,14 @@ def main():
         if not docx_path.is_absolute():
             docx_path = (base / args.docx).resolve()
         scenes = load_scenes_from_docx(docx_path)
+        config = {}
         out_dir = docx_path.parent
     else:
         proj = Path(args.path or str(DEFAULT_PROJECT))
         if not proj.is_absolute():
             cand = base / args.path if args.path else DEFAULT_PROJECT
             proj = cand.resolve() if cand.exists() else (PROJECT_ROOT / "data/projects" / (args.path or "burning-vows-30k"))
-        scenes = load_scenes_from_project(proj)
+        scenes, config = load_scenes_from_project(proj)
         out_dir = proj / "output"
 
     if not scenes:
@@ -88,7 +95,7 @@ def main():
 
     from quality.editorial_craft import run_editorial_craft_checks
 
-    report = run_editorial_craft_checks(scenes, {})
+    report = run_editorial_craft_checks(scenes, config)
 
     out_path = Path(args.output) if args.output else out_dir / "editorial_craft_report.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
