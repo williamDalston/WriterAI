@@ -389,6 +389,26 @@ def check_emo_flatline(scenes: List[Dict]) -> List[str]:
     return []
 
 
+def check_truncation(content: str) -> List[str]:
+    """Flag scenes that appear to cut off mid-sentence or mid-thought."""
+    if not content or len(content.strip()) < 50:
+        return []
+    text = content.strip()
+    last_para = text.split("\n\n")[-1].strip() if "\n\n" in text else text
+    if not last_para:
+        return []
+    # Ends with trailing em-dash or ellipsis (strong signal of cut-off)
+    if last_para.endswith("—"):
+        return ["TRUNCATION: scene ends with trailing em-dash — likely cut off mid-sentence"]
+    if last_para.endswith("..."):
+        return ["TRUNCATION: scene ends with ellipsis — may be incomplete"]
+    # No sentence-ending punctuation in last 30 chars (trails off)
+    tail = last_para[-30:].strip()
+    if len(tail) >= 15 and not re.search(r"[.!?\"']\s*$", last_para):
+        return ["TRUNCATION: scene lacks clear sentence closure — may be cut off"]
+    return []
+
+
 def check_dialogue_tidy(content: str, tension_level: int) -> List[str]:
     """Flag high-tension dialogue with no interrupt/dodge/callback."""
     if tension_level < 6:
@@ -984,33 +1004,49 @@ _DESCRIPTION_STARTS = re.compile(
 _DIALOGUE_MARKER = re.compile(r'["\u201c\u201d]')
 
 _GROUNDING_INSERTS = [
-    "A door slammed somewhere below.",
-    "Glass clinked against the table.",
-    "The floorboards creaked under shifting weight.",
-    "Outside, a car engine turned over.",
-    "Somewhere, a phone buzzed against wood.",
-    "Wind pushed through the half-open window.",
-    "Ice shifted in a glass no one was drinking.",
-    "Footsteps passed in the hallway and faded.",
-    "A chair scraped across the floor behind them.",
-    "The elevator chimed at the end of the corridor.",
-    "Water dripped from a faucet in the next room.",
-    "Keys jangled in a pocket no one reached for.",
+    "I reached for something solid and grabbed the edge of the table.",
+    "I reached for the glass and turned it slowly.",
+    "I stood and crossed to the railing.",
+    "I sat straighter and reached for the nearest solid thing.",
+    "I pushed the hair from my face and sat straighter.",
+    "I grabbed the fabric of my sleeve and twisted.",
+    "I turned my hands over, studying the lines.",
+    "I grabbed the nearest solid thing and held on.",
+    "I turned the ring on my finger without thinking.",
+    "I stepped back and shoved my hands into my pockets.",
+    "I sat with my spine against the wall, counting breaths.",
+    "I stood, walked two steps, and sat back down.",
 ]
 
 
 def _classify_paragraph(para: str) -> str:
-    """Classify paragraph as INTERNAL, DESCRIPTION, DIALOGUE, or ACTION."""
+    """Classify paragraph as INTERNAL, DESCRIPTION, DIALOGUE, or ACTION.
+
+    Aligned with quality_contract._tag_paragraph_type: defaults to DESCRIPTION
+    (reflective) so that unlabeled paragraphs count toward deflection detection.
+    """
     stripped = para.strip()
     if not stripped:
-        return "ACTION"
-    if _DIALOGUE_MARKER.search(stripped):
-        return "DIALOGUE"
-    if _INTERNAL_STARTS.match(stripped):
-        return "INTERNAL"
-    if _DESCRIPTION_STARTS.match(stripped):
         return "DESCRIPTION"
-    return "ACTION"
+    # Dialogue-heavy: 2+ quote chars
+    quote_count = stripped.count('"') + stripped.count('\u201c') + stripped.count('\u201d')
+    if quote_count >= 2 and len(stripped.split()) < 80:
+        return "DIALOGUE"
+    # Action: physical verbs / movement
+    if re.search(
+        r"\b(grabbed|pushed|ran|walked|turned|reached|stepped|stood|sat|threw|"
+        r"pulled|slammed|shoved|caught|pressed|moved|crossed|climbed|opened|closed)\b",
+        stripped, re.IGNORECASE,
+    ):
+        return "ACTION"
+    # Internal: thought/felt verbs
+    if re.search(
+        r"\b(I|she|he)\s+(knew|thought|felt|wondered|realized|wished|hoped|believed)\b",
+        stripped, re.IGNORECASE,
+    ):
+        return "INTERNAL"
+    # Default: description (counts as reflective for deflection detection)
+    return "DESCRIPTION"
 
 
 def apply_deflection_grounding(
@@ -1033,19 +1069,23 @@ def apply_deflection_grounding(
     insert_idx = 0
 
     i = 0
-    while i < len(paragraphs) - 1 and edits < max_edits:
-        if classifications[i] in ("INTERNAL", "DESCRIPTION") and \
-           classifications[i + 1] in ("INTERNAL", "DESCRIPTION"):
-            # Found a run — ground the 2nd paragraph
+    result = []
+    while i < len(paragraphs):
+        result.append(paragraphs[i])
+        if (i < len(paragraphs) - 1
+                and edits < max_edits
+                and classifications[i] in ("INTERNAL", "DESCRIPTION")
+                and classifications[i + 1] in ("INTERNAL", "DESCRIPTION")):
+            # Found a run — insert a standalone ACTION paragraph to break it
             grounding = _GROUNDING_INSERTS[insert_idx % len(_GROUNDING_INSERTS)]
-            paragraphs[i + 1] = grounding + " " + paragraphs[i + 1]
+            result.append(grounding)
             insert_idx += 1
             edits += 1
-            i += 2  # skip past the run
+            i += 1  # next paragraph will still be evaluated for further runs
         else:
             i += 1
 
-    return "\n\n".join(paragraphs)
+    return "\n\n".join(result)
 
 
 # === CONTINUITY BRIDGE INSERTER ===
@@ -1069,11 +1109,16 @@ def apply_bridge_insert(
     pov_name: str = "",
     scene_location: str = "",
     prev_location: str = "",
+    *,
+    avoid_preamble_meta: bool = False,
 ) -> str:
     """Insert a grounding bridge at scene start when location/time changes.
 
     Checks if scene's first paragraph already has time + location anchors.
     If anchors missing and location changed, prepends a bridge sentence.
+
+    When avoid_preamble_meta=True, skips "{pov} found herself in the {loc}"
+    (reader-visible AI artifact) and uses a neutral alternative instead.
     """
     if not prev_text or not text:
         return text
@@ -1115,8 +1160,15 @@ def apply_bridge_insert(
     # Build bridge
     who = pov_name if pov_name else "I"
     where = f"in the {scene_location}" if scene_location else ""
+    loc_label = scene_location.strip() if scene_location else ""
 
-    if where:
+    if avoid_preamble_meta:
+        # Avoid "Name found herself in the X" (audit: preamble meta-text)
+        if loc_label:
+            bridge = f"The {loc_label}."
+        else:
+            bridge = "The setting had changed."
+    elif where:
         bridge = f"{who} found herself {where}." if who != "I" else f"I found myself {where}."
     else:
         bridge = "The setting had changed."

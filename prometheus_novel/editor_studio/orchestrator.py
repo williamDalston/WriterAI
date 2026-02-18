@@ -19,6 +19,9 @@ from editor_studio.passes import (
     PASS_TENSION_COLLAPSE,
     PASS_GESTURE_DIVERSIFY,
     PASS_CAUSALITY,
+    PASS_TRUNCATION_COMPLETE,
+    PASS_OPENING_VARY,
+    PASS_CROSS_SCENE_TRANSITION,
 )
 
 # Overused physical tics to replace (from weakness report / editorial_craft)
@@ -118,6 +121,9 @@ PASS_TEMPERATURES = {
     "tension_collapse": 0.3,
     "causality": 0.2,
     "gesture_diversify": 0.3,
+    "truncation_complete": 0.3,
+    "opening_vary": 0.4,
+    "cross_scene_transition": 0.3,
     "voice": 0.5,
     "premium": 0.5,
 }
@@ -191,6 +197,7 @@ async def run_editor_studio(
     scenes: Optional[List[Dict]] = None,
     config: Optional[Dict] = None,
     contracts: Optional[List[Dict]] = None,
+    quality_contract_report: Optional[Dict[str, Any]] = None,
     overused_phrases: Optional[List[str]] = None,
     characters: Optional[List[Any]] = None,
     genre: Optional[str] = None,
@@ -205,6 +212,8 @@ async def run_editor_studio(
         scenes: Optional in-memory scenes (skip disk load when provided)
         config: Optional config dict
         contracts: Optional quality_contract contracts list
+        quality_contract_report: Optional full report (contracts, opening_move_violations, batch_warnings)
+            for truncation, opening_vary, cross_scene_transition passes.
         overused_phrases: Optional manuscript-specific overused phrases for gesture_diversify.
             When provided, replaces OVERUSED_GESTURES (dynamic per-book detection).
         characters: Optional list (from pipeline state) for voice context in prompts.
@@ -250,14 +259,44 @@ async def run_editor_studio(
                 config = yaml.safe_load(f) or config
 
     # Load quality contract for targeting
+    qc_full = quality_contract_report
     if contracts is not None:
-        warnings_by_scene = _map_contract_to_scenes(contracts)
+        contracts_list = contracts
+    elif qc_full:
+        contracts_list = qc_full.get("contracts", [])
     else:
-        warnings_by_scene = {}
-        if contract_file.exists():
-            with open(contract_file, encoding="utf-8") as f:
-                qc = json.load(f)
-            warnings_by_scene = _map_contract_to_scenes(qc.get("contracts", []))
+        contracts_list = []
+    warnings_by_scene = _map_contract_to_scenes(contracts_list)
+    if not warnings_by_scene and contract_file.exists():
+        with open(contract_file, encoding="utf-8") as f:
+            qc = json.load(f)
+        warnings_by_scene = _map_contract_to_scenes(qc.get("contracts", []))
+        if not qc_full:
+            qc_full = qc
+
+    # Parse opening_move_violations: "ch02_s01 repeats Ch1 opening type (UNKNOWN)" -> {ch02_s01: UNKNOWN}
+    opening_vary_map: Dict[str, str] = {}
+    for v in (qc_full or {}).get("opening_move_violations", []):
+        m = re.search(r"^(ch\d+_s\d+)\s+repeats.*\((\w+)\)", v, re.IGNORECASE)
+        if m:
+            opening_vary_map[m.group(1).lower()] = m.group(2)
+
+    # Parse batch_warnings for CROSS_CONTINUITY: scene_id -> (prev, curr) for transition
+    cross_scene_map: Dict[str, List[Tuple[str, str]]] = {}
+    for w in (qc_full or {}).get("batch_warnings", []):
+        m = re.search(r"(?:CROSS_CONTINUITY_LOC|CROSS_CONTINUITY_TIME).*?(ch\d+_s\d+)", w, re.IGNORECASE)
+        if m:
+            sid = m.group(1).lower()
+            # Extract context from "shifts location (X -> Y)" or "jumps backwards (X -> Y)"
+            ctx = re.search(r"\(([^)]*->[^)]*)\)", w)
+            if ctx:
+                part = ctx.group(1)
+                halves = part.split("->", 1)
+                prev = halves[0].strip() if halves else "previous scene"
+                curr = halves[1].strip() if len(halves) > 1 else "this scene"
+            else:
+                prev, curr = "previous scene", "this scene"
+            cross_scene_map.setdefault(sid, []).append((prev, curr))
 
     # Resolve client
     llm = client or _get_client(config)
@@ -287,6 +326,9 @@ async def run_editor_studio(
         "tension_collapse",
         "causality",
         "gesture_diversify",
+        "truncation_complete",
+        "opening_vary",
+        "cross_scene_transition",
         "voice",
         "premium",
     ]
@@ -329,6 +371,13 @@ async def run_editor_studio(
                     for phrase in gesture_phrases
                 )
             }
+        elif pass_name == "truncation_complete":
+            target_ids = {s for s, w in warnings_by_scene.items() if any("TRUNCATION" in x for x in w)}
+            target_indices = {i for i, s in enumerate(scenes_list) if _scene_id(s) in target_ids}
+        elif pass_name == "opening_vary":
+            target_indices = {i for i, s in enumerate(scenes_list) if _scene_id(s).lower() in opening_vary_map}
+        elif pass_name == "cross_scene_transition":
+            target_indices = {i for i, s in enumerate(scenes_list) if _scene_id(s).lower() in cross_scene_map}
         elif pass_name == "voice":
             # Broad pass: top 10 scenes by tension
             by_tension = sorted(
@@ -395,6 +444,15 @@ async def run_editor_studio(
                 phrase = found[0] if found else (gesture_phrases[0] if gesture_phrases else "hand through his hair")
                 count = content_lower.count(phrase.lower())
                 task = PASS_GESTURE_DIVERSIFY.format(phrase=phrase, count=count)
+            elif pass_name == "truncation_complete":
+                task = PASS_TRUNCATION_COMPLETE
+            elif pass_name == "opening_vary":
+                prev_opening = opening_vary_map.get(sid.lower(), "UNKNOWN")
+                task = PASS_OPENING_VARY.format(prev_opening=prev_opening)
+            elif pass_name == "cross_scene_transition":
+                pairs = cross_scene_map.get(sid.lower(), [])
+                prev_c, curr_c = pairs[0] if pairs else ("previous scene", "this scene")
+                task = PASS_CROSS_SCENE_TRANSITION.format(prev_context=prev_c, curr_context=curr_c)
             elif pass_name == "premium":
                 task = PASS_6_PREMIUM
             else:

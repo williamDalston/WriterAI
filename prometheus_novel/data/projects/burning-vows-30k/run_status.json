@@ -1,6 +1,6 @@
 {
-  "timestamp": "2026-02-17T21:54:26.385043",
-  "last_stage": "output_validation",
+  "timestamp": "2026-02-18T00:18:17.982383",
+  "last_stage": "quality_polish",
   "last_status": "completed",
   "completed_stages": [
     "high_concept",
@@ -27,16 +27,19 @@
     "final_deai",
     "quality_meters",
     "quality_audit",
-    "output_validation"
+    "output_validation",
+    "quality_polish",
+    "targeted_refinement",
+    "developmental_audit"
   ],
-  "total_stages": 25,
+  "total_stages": 28,
   "total_tokens": 2108583,
   "total_cost_usd": 21.0858,
   "scene_count": 39,
   "incidents": 0,
   "budget": {
-    "defense_tokens": 110984,
-    "generation_tokens": 1745143,
+    "defense_tokens": 0,
+    "generation_tokens": 0,
     "rewritten_scenes": 0
   }
 }

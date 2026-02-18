@@ -3,27 +3,62 @@ rules:
   min_total: 8
   min_scenes: 4
 phrases:
-- phrase: close enough that
-  total: 11
-  scenes: 9
+- phrase: lena castillo found
+  total: 21
+  scenes: 21
   severity: high
   keep_first: 2
-- phrase: between us like
-  total: 8
+- phrase: castillo found herself
+  total: 21
+  scenes: 21
+  severity: high
+  keep_first: 2
+- phrase: lena castillo found herself
+  total: 21
+  scenes: 21
+  severity: high
+  keep_first: 2
+- phrase: castillo found herself in
+  total: 21
+  scenes: 21
+  severity: high
+  keep_first: 2
+- phrase: lena castillo found herself in
+  total: 21
+  scenes: 21
+  severity: high
+  keep_first: 2
+- phrase: castillo found herself in the
+  total: 21
+  scenes: 21
+  severity: high
+  keep_first: 2
+- phrase: lena castillo found herself in the
+  total: 21
+  scenes: 21
+  severity: high
+  keep_first: 2
+- phrase: three years ago
+  total: 10
   scenes: 8
   severity: high
+  keep_first: 2
+- phrase: pressed my temple
+  total: 9
+  scenes: 9
+  severity: high
   keep_first: 1
-- phrase: hand through his hair
-  total: 8
-  scenes: 8
-  severity: medium
+- phrase: i pressed my temple
+  total: 9
+  scenes: 9
+  severity: high
   keep_first: 1
-- phrase: the prayer card
+- phrase: giannas heels click
   total: 3
   scenes: 1
   severity: medium
   keep_first: 1
-- phrase: the courthouse stamp
+- phrase: the prayer card
   total: 3
   scenes: 1
   severity: medium

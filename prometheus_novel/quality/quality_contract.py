@@ -414,9 +414,11 @@ def run_quality_contract(
                 check_generic_verbs,
                 check_filter_overuse,
                 check_dialogue_tidy,
+                check_truncation,
                 _classify_ending,
             )
             all_warnings.extend(check_continuity_tripwires(content))
+            all_warnings.extend(check_truncation(content))
             all_warnings.extend(check_pronoun_clarity(content))
             all_warnings.extend(check_stakes_articulation(content, tension_level))
             all_warnings.extend(check_generic_verbs(content))

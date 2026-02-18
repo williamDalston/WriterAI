@@ -2876,6 +2876,7 @@ PROSE_STAGES = {
     "continuity_fix", "continuity_recheck", "voice_human_pass", "continuity_fix_2",
     "dialogue_polish", "prose_polish", "chapter_hooks", "final_deai",
     "targeted_refinement",
+    "developmental_audit",  # Can modify scenes when fixes_enabled
 }
 
 # Stages where full critic gate runs (retry on failure)
@@ -3183,6 +3184,7 @@ class PipelineOrchestrator:
         "quality_polish",           # Deterministic: phrase suppression + dialogue trim + emotion diversify
         "quality_meters",           # Deterministic quality meters (no LLM, produces quality_contract)
         "targeted_refinement",      # LLM: deflection, stakes, rhythm, tension_collapse, causality, gesture, etc.
+        "developmental_audit",      # Structure, pacing, character arcs, theme, genre beats, line-level
         "quality_audit",
         "output_validation"
     ]
@@ -3215,6 +3217,7 @@ class PipelineOrchestrator:
         "quality_polish": "gpt",             # Deterministic (no LLM call)
         "quality_meters": "gpt",             # Deterministic (no LLM call), cheapest placeholder
         "targeted_refinement": "claude",     # Targeted LLM fixes (deflection, stakes, gesture, etc.)
+        "developmental_audit": "claude",     # Developmental audits + optional fixes
         "quality_audit": "gemini",           # Long context for full audit
         "output_validation": "gpt"
     }
@@ -3252,6 +3255,7 @@ class PipelineOrchestrator:
         "quality_polish": 0.2,
         "quality_meters": 0.2,
         "targeted_refinement": 0.4,
+        "developmental_audit": 0.3,
         "quality_audit": 0.2,
         "output_validation": 0.2
     }
@@ -4002,6 +4006,7 @@ class PipelineOrchestrator:
             "quality_polish": self._stage_quality_polish,
             "quality_meters": self._stage_quality_meters,
             "targeted_refinement": self._stage_targeted_refinement,
+            "developmental_audit": self._stage_developmental_audit,
             "quality_audit": self._stage_quality_audit,
             "output_validation": self._stage_output_validation
         }
@@ -11307,10 +11312,15 @@ OUTPUT the text with only problematic sentences fixed:"""
                 prev_text = texts[i - 1] if i > 0 else ""
                 prev_sc = scenes_list[i - 1] if i > 0 and (i - 1) < len(scenes_list) else {}
                 prev_loc = prev_sc.get("location", "")
-                # Bridge insert: patch scene opening when location changes
+                # Bridge insert: patch scene opening when location changes.
+                # avoid_preamble_meta=True uses "The {location}." instead of "{pov} found herself in the..."
+                avoid = getattr(
+                    self.policy.quality_polish, "avoid_preamble_bridge", True
+                ) if self.policy and hasattr(self.policy, "quality_polish") else True
                 t_bridged = apply_bridge_insert(
                     t, prev_text, pov_name=pov_name,
                     scene_location=scene_loc, prev_location=prev_loc,
+                    avoid_preamble_meta=avoid,
                 )
                 if t_bridged != t:
                     bridge_edits += 1
@@ -11367,6 +11377,33 @@ OUTPUT the text with only problematic sentences fixed:"""
                 scene["quality_polished"] = True
                 modified_count += 1
 
+        # --- 9. Editorial cleanup: strip grounding artifacts, fix POV pronouns, remove Elena hallucination ---
+        try:
+            from quality.editorial_cleanup import run_editorial_cleanup
+            cleanup_report = run_editorial_cleanup(
+                scenes_list,
+                strip_grounding=True,
+                fix_pov=True,
+                remove_elena=True,
+            )
+            report["editorial_cleanup"] = cleanup_report
+            if cleanup_report["scenes_modified"] > 0:
+                logger.info(
+                    "Editorial cleanup: %d grounding stripped, %d POV fixed, Elena removed=%s, %d scenes",
+                    cleanup_report["grounding_removed"],
+                    cleanup_report["pov_fixed"],
+                    cleanup_report["elena_removed"],
+                    cleanup_report["scenes_modified"],
+                )
+        except Exception as e:
+            logger.warning("Editorial cleanup failed (non-blocking): %s", e)
+            report["editorial_cleanup"] = {"error": str(e)}
+
+        # Final modified count: scenes whose content changed from original
+        modified_count = sum(
+            1 for i, s in enumerate(scenes_list)
+            if i < len(original_texts) and (s.get("content") or "") != (original_texts[i] or "")
+        )
         report["scenes_modified"] = modified_count
         logger.info("Quality polish complete: %d scenes modified", modified_count)
 
@@ -11517,6 +11554,7 @@ OUTPUT the text with only problematic sentences fixed:"""
     async def _stage_targeted_refinement(self) -> tuple:
         """Run Editor Studio passes: deflection, stakes, rhythm, gesture, etc.
         Uses quality_contract from quality_meters to target scenes. Modifies scenes in-place.
+        Backs up pipeline_state.json before runs to allow recovery from cascade corruption.
         """
         tr_cfg = self.state.config.get("enhancements", {}).get("targeted_refinement", {})
         if tr_cfg.get("enabled") is False:
@@ -11529,6 +11567,18 @@ OUTPUT the text with only problematic sentences fixed:"""
         if not project_path or not Path(project_path).exists():
             logger.warning("targeted_refinement: no project_path, skipping")
             return {"skipped": True, "reason": "no_project_path"}, 0
+
+        # Backup state before 85+ LLM calls — single bad rewrite can cascade
+        if tr_cfg.get("backup_before", True):
+            import shutil
+            state_file = Path(project_path) / "pipeline_state.json"
+            if state_file.exists():
+                backup_path = state_file.with_suffix(".json.pre_targeted_refinement")
+                try:
+                    shutil.copy2(state_file, backup_path)
+                    logger.info("targeted_refinement: backed up state to %s", backup_path.name)
+                except Exception as e:
+                    logger.warning("targeted_refinement: backup failed (continuing): %s", e)
 
         scenes = [s for s in (self.state.scenes or []) if isinstance(s, dict)]
         if not scenes:
@@ -11564,6 +11614,7 @@ OUTPUT the text with only problematic sentences fixed:"""
             except Exception as e:
                 logger.debug("Phrase mining for gesture_diversify failed (using fallback): %s", e)
 
+        qc_report = getattr(self.state, "quality_contract_report", None) or {"contracts": contracts}
         report = await run_editor_studio(
             project_path,
             passes_enabled=passes_enabled,
@@ -11571,6 +11622,7 @@ OUTPUT the text with only problematic sentences fixed:"""
             scenes=scenes,
             config=self.state.config,
             contracts=contracts,
+            quality_contract_report=qc_report,
             overused_phrases=overused_phrases,
             characters=getattr(self.state, "characters", None),
             genre=self.state.config.get("genre", ""),
@@ -11586,6 +11638,88 @@ OUTPUT the text with only problematic sentences fixed:"""
             logger.info("targeted_refinement: %d scenes modified", modified)
 
         self.state.targeted_refinement_report = report
+        return report, 0
+
+    async def _stage_developmental_audit(self) -> tuple:
+        """Run developmental audits: structure, pacing, character arcs, theme, genre, line-level.
+        Optionally applies fixes for PASSIVE_HOTSPOT, THEME_ABSENT_LATE.
+        """
+        from quality.developmental_audit import run_developmental_audit
+        from quality.developmental_fixes import run_developmental_fixes
+
+        da_cfg = self.state.config.get("enhancements", {}).get("developmental_audit", {})
+        if da_cfg.get("enabled") is False:
+            logger.info("developmental_audit disabled via config")
+            return {"skipped": True, "reason": "disabled"}, 0
+
+        scenes = [s for s in (self.state.scenes or []) if isinstance(s, dict)]
+        outline = self.state.master_outline or []
+        characters = getattr(self.state, "characters", None) or []
+
+        audit_report = run_developmental_audit(
+            scenes=scenes,
+            outline=outline,
+            characters=characters,
+            config=self.state.config,
+        )
+
+        if audit_report.get("skipped"):
+            return audit_report, 0
+
+        # Fresh eyes requires async LLM — run and merge
+        if da_cfg.get("fresh_eyes", True):
+            client = self.get_client_for_stage("developmental_audit")
+            from quality.developmental_audit import audit_fresh_eyes, merge_fresh_eyes_into_report
+            fresh_result = await audit_fresh_eyes(client, scenes, outline, self.state.config)
+            merge_fresh_eyes_into_report(audit_report, fresh_result)
+
+        fix_report = {}
+        if da_cfg.get("fixes_enabled", True) and not audit_report.get("pass"):
+            client = self.get_client_for_stage("developmental_audit")
+            fix_report = await run_developmental_fixes(
+                scenes=scenes,
+                audit_report=audit_report,
+                client=client,
+                config=self.state.config,
+                dry_run=da_cfg.get("dry_run", False),
+            )
+            if fix_report.get("scenes_modified", 0) > 0:
+                logger.info(
+                    "developmental_audit: applied %d fixes across %d scenes",
+                    fix_report.get("fixes_applied", 0),
+                    fix_report.get("scenes_modified", 0),
+                )
+
+        report = {
+            "audit": audit_report,
+            "fixes": fix_report,
+        }
+        self.state.developmental_audit_report = report
+
+        # Write to output dir
+        project_path = getattr(self.state, "project_path", None) or Path(
+            self.state.config.get("_project_path", "")
+        )
+        if project_path and Path(project_path).exists():
+            output_dir = Path(project_path) / "output"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                da_path = output_dir / "developmental_audit.json"
+                export = {
+                    "pass": audit_report.get("pass", True),
+                    "findings": audit_report.get("findings", []),
+                    "findings_by_type": audit_report.get("findings_by_type", []),
+                    "audits": {k: {"pass": v.get("pass"), "findings": v.get("findings", [])}
+                               for k, v in audit_report.get("audits", {}).items()},
+                    "fixes_applied": fix_report.get("fixes_applied", 0),
+                    "scenes_modified": fix_report.get("scenes_modified", 0),
+                }
+                with open(da_path, "w", encoding="utf-8") as f:
+                    json.dump(export, f, indent=2, default=str, ensure_ascii=False)
+                logger.info("Developmental audit written to %s", da_path)
+            except Exception as e:
+                logger.warning("Failed to write developmental_audit.json: %s", e)
+
         return report, 0
 
     async def _stage_quality_audit(self) -> tuple:
@@ -12262,6 +12396,8 @@ Respond with JSON:
             run_report["quality_meters"] = self.state.quality_meter_report
         if hasattr(self.state, 'targeted_refinement_report') and self.state.targeted_refinement_report:
             run_report["targeted_refinement"] = self.state.targeted_refinement_report
+        if hasattr(self.state, 'developmental_audit_report') and self.state.developmental_audit_report:
+            run_report["developmental_audit"] = self.state.developmental_audit_report
         if hasattr(self.state, 'outline_diversity_report') and self.state.outline_diversity_report:
             run_report["outline_diversity"] = self.state.outline_diversity_report
         if metrics_delta:

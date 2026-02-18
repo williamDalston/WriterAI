@@ -113,3 +113,35 @@ Vary sentence rhythm—break up any run of 3+ similar-length sentences with one 
 
 Do NOT add length. One or two micro-edits. Refine what's there.
 Output the FULL section."""
+
+PASS_TRUNCATION_COMPLETE = """=== TASK: Complete truncated scene ===
+This scene appears to cut off mid-sentence or lack clear closure.
+
+Complete the final sentence(s) naturally. Match the tone and POV. Do NOT add a new plot beat or paragraph—only finish what's already begun.
+
+Output the FULL scene with your completion."""
+
+PASS_OPENING_VARY = """=== TASK: Vary chapter opening ===
+This is the first scene of a new chapter. It currently opens the same way as the previous chapter ({prev_opening}).
+
+Change the OPENING 1–3 sentences to use a different hook:
+- If previous was internal/reflective → open with DIALOGUE, ACTION, or concrete SETTING
+- If previous was dialogue → open with IN_MEDIAS_RES (physical action) or INTERNAL (thought)
+- If previous was setting → open with DIALOGUE or ACTION
+
+Do NOT change the rest of the scene. Only replace or reshape the opening.
+Output the FULL scene with your change."""
+
+PASS_CROSS_SCENE_TRANSITION = """=== TASK: Add cross-scene transition ===
+The reader is jumping from the previous scene to this one without a bridge.
+
+Previous context: {prev_context}
+This scene starts in: {curr_context}
+
+Add 1–2 transition sentences at the VERY START of this scene that:
+- Bridge the time/location/emotional shift
+- Orient the reader (where we are, when, who's present)
+- Feel natural, not expositional
+
+Do NOT change the rest of the scene. Only ADD at the beginning.
+Output the FULL scene with your addition."""
