@@ -3046,9 +3046,19 @@ CREATIVE_STOP_SEQUENCES = [
     "\n[Scene continues",
 ]
 
-# Conflict dialogue mode: injected into dialogue_polish prompt for tension >= 6
-CONFLICT_DIALOGUE_CONSTRAINTS = """
+# Bad dialogue tags blacklist (merged into voice_human_pass from dialogue_polish)
+BAD_DIALOGUE_TAGS_BLACKLIST = """
+BAD DIALOGUE TAGS (replace with action beat or "said"):
+- NEVER: "said with a smile", "said with a grin", "said with a laugh" -> She smiled. "Line."
+- NEVER: "my voice carried", "her voice was soft", "his voice was firm" -> words convey tone
+- NEVER: "my eyes sparkled", "her eyes danced", "his eyes darkened" -> use physical beat
+- NEVER: "I breathed", "she exhaled", "he whispered" (when not actually whispering) -> "said"
+- NEVER: "I admitted", "she confessed", "he revealed" -> let the line do the work
+- PREFERRED: "said", no tag (beat instead), or action tag
+"""
 
+# Conflict dialogue mode: injected into voice_human_pass for tension >= 6
+CONFLICT_DIALOGUE_CONSTRAINTS = """
 === CONFLICT DIALOGUE MODE (high tension) ===
 - At least ONE interrupted line per confrontation (em-dash: "I never said\u2014")
 - At least ONE evasive/deflecting answer (character changes subject, answers a different question, or weaponizes silence)
@@ -3438,23 +3448,17 @@ class PipelineOrchestrator:
         "continuity_audit",
         "continuity_fix",
         "continuity_recheck",   # Tight loop: re-audit only fixed scenes, max 2 iterations
-        "self_refinement",
 
-        # === REFINEMENT PHASE (Destructive - before polish) ===
-        # Single consolidated pass: de-AI + voice + emotional texture
+        # === REFINEMENT PHASE (Single heavy rewrite - POLISH_CONSOLIDATION_PLAN) ===
+        # voice_human_pass = master stage (absorbs self_refinement, dialogue_polish, prose_polish)
         "voice_human_pass",
         # Lightweight continuity check after destructive edits
         "continuity_audit_2",
         "continuity_fix_2",
         "pov_enforcer",         # Deterministic: re-apply POV pronoun fixes after destructive passes
 
-        # === POLISH PHASE (Additive - order matters!) ===
-        # 1. Dialogue first (doesn't touch prose)
-        "dialogue_polish",
-        # 2. Prose polish (line-level, strict preservation)
-        "prose_polish",
-        # 3. Chapter hooks LAST (nothing touches hooks after this)
-        "chapter_hooks",
+        # === POLISH PHASE (Scoped only - no full-scene rewrites) ===
+        "chapter_hooks",        # First/last 2-3 paragraphs only
 
         # === VALIDATION PHASE ===
         # Safety net: surgical AI tell removal (protects hooks)
@@ -4075,6 +4079,17 @@ class PipelineOrchestrator:
         )
 
         stages_to_run = stages or self.STAGES
+
+        # Legacy polish stack (POLISH_CONSOLIDATION_PLAN rollback): inject deprecated stages
+        legacy = (self.state.config or {}).get("enhancements", {}).get("legacy_polish_stack", False)
+        if legacy and stages is None:
+            if "self_refinement" not in stages_to_run:
+                idx = stages_to_run.index("voice_human_pass") if "voice_human_pass" in stages_to_run else 0
+                stages_to_run = list(stages_to_run)[:idx] + ["self_refinement"] + list(stages_to_run)[idx:]
+            if "dialogue_polish" not in stages_to_run:
+                idx = stages_to_run.index("chapter_hooks") if "chapter_hooks" in stages_to_run else len(stages_to_run)
+                stages_to_run = list(stages_to_run)[:idx] + ["dialogue_polish", "prose_polish"] + list(stages_to_run)[idx:]
+            logger.info("Legacy polish stack enabled: self_refinement, dialogue_polish, prose_polish injected")
 
         # When resuming, skip already-completed stages based on checkpoint data.
         # Exception: when user explicitly requested a stage subset (--stage or --start-stage),
@@ -5209,8 +5224,9 @@ Respond as a JSON array of character objects."""
 
         chars_text = "\n".join(char_summaries)
 
-        prompt = f"""For each character below, create a voice profile with EXACTLY these 5 fields.
-These profiles will be injected into dialogue prompts to ensure each character sounds unique.
+        prompt = f"""For each character below, create a voice profile with EXACTLY these 8 fields.
+These profiles will be injected into dialogue and scene drafting prompts to ensure each
+character sounds unique and perceives the world distinctly.
 
 === CHARACTERS ===
 {chars_text}
@@ -5221,15 +5237,25 @@ These profiles will be injected into dialogue prompts to ensure each character s
 3. "forbidden_phrases": array of 3-7 AI-sounding phrases this character would NEVER say
 4. "rhythm_rule": one sentence describing their speech pattern
 5. "conflict_tell": one sentence describing how they behave in confrontation
+6. "sensory_focus": array of exactly 3 senses this character notices first
+   (pick from: "smell", "sound", "texture", "temperature", "visual_detail", "taste",
+    "spatial", "body_tension", "light", "motion"). A chef notices smell/taste/texture.
+    A musician notices sound/rhythm/silence. A soldier notices spatial/motion/body_tension.
+7. "taboo_words": array of 3-5 words this character would NEVER think or say
+   (the opposite of their personality — e.g., a hardened detective never says "adorable",
+    a gentle nurse never says "annihilate")
+8. "defense_mechanism": exactly one of: "sarcasm", "intellectualization", "aggression",
+   "withdrawal", "humor", "deflection", "over-explaining"
+   (how they protect themselves emotionally under pressure)
 
 === EXAMPLE ===
-{{"Elena": {{"sentence_length": "medium", "signature_words": ["okay", "fine", "listen", "safe", "right"], "forbidden_phrases": ["I couldn't help but", "a sense of", "my mind raced with"], "rhythm_rule": "Starts cautious, ends decisive; interrupts herself when scared.", "conflict_tell": "Deflects with practicality, then snaps with one clean truth."}}}}
+{{"Elena": {{"sentence_length": "medium", "signature_words": ["okay", "fine", "listen", "safe", "right"], "forbidden_phrases": ["I couldn't help but", "a sense of", "my mind raced with"], "rhythm_rule": "Starts cautious, ends decisive; interrupts herself when scared.", "conflict_tell": "Deflects with practicality, then snaps with one clean truth.", "sensory_focus": ["sound", "temperature", "texture"], "taboo_words": ["whatever", "chill", "relax"], "defense_mechanism": "over-explaining"}}}}
 
 Return a JSON object with character names as keys. No commentary."""
 
         try:
             response = await client.generate(
-                prompt, max_tokens=2000, temperature=0.5,
+                prompt, max_tokens=3000, temperature=0.5,
                 system_prompt="You are a dialogue coach. Output ONLY valid JSON. No markdown.",
                 stop=PLANNING_STOP_SEQUENCES, timeout=300)
             tokens = response.input_tokens + response.output_tokens
@@ -5291,6 +5317,15 @@ Return a JSON object with character names as keys. No commentary."""
                 lines.append(f"  Rhythm: {rr}")
             if ct:
                 lines.append(f"  In conflict: {ct}")
+            sf = vp.get("sensory_focus", [])
+            if sf:
+                lines.append(f"  Sensory focus: {', '.join(sf[:3])} (prioritize these senses in narration)")
+            tw = vp.get("taboo_words", [])
+            if tw:
+                lines.append(f"  Taboo words (NEVER use in this POV): {', '.join(tw[:5])}")
+            dm = vp.get("defense_mechanism", "")
+            if dm:
+                lines.append(f"  Defense mechanism: {dm} (how they protect themselves under pressure)")
 
         return "\n".join(lines)
 
@@ -10768,12 +10803,98 @@ FIXED SCENE:"""
                     + "\n".join(f"- {f}" for f in rep_flags) + "\n"
                 )
 
+            # DIALOGUE_TIDY: when 4+ dialogue lines with no interrupt/deflection
+            dialogue_tidy_block = ""
+            from quality.quiet_killers import check_dialogue_tidy
+            tidy_warnings = check_dialogue_tidy(scene.get("content", ""), tension)
+            if any("DIALOGUE_TIDY" in w for w in tidy_warnings):
+                dialogue_tidy_block = (
+                    "\n=== DIALOGUE COMPRESSION (MANDATORY) ===\n"
+                    "This scene has 4+ dialogue lines but NO interruption or deflection. "
+                    "You MUST add: (1) at least one interrupted line (em-dash: \"I never—\"), "
+                    "(2) at least one evasive/deflecting answer, (3) at least one physical "
+                    "beat between exchanges. Real high-tension dialogue is messy.\n"
+                )
+
+            # Scene ending enforcement (deterministic — use classifier, don't let LLM decide)
+            ending_block = ""
+            content_str = scene.get("content", "") or ""
+            paragraphs = [p.strip() for p in content_str.split("\n\n") if p.strip()]
+            if len(paragraphs) >= 2:
+                from quality.quiet_killers import _classify_ending
+                last_para = paragraphs[-1]
+                ending_type = _classify_ending(last_para)
+                if ending_type in ("SUMMARY", "ATMOSPHERE"):
+                    ending_block = (
+                        "\n=== SCENE ENDING ENFORCEMENT (CRITICAL) ===\n"
+                        "The scene ends on SUMMARY or ATMOSPHERE. Replace the ending so it "
+                        "closes on: DIALOGUE, DECISION, or PHYSICAL ACTION. End on something "
+                        "that happened—not what it meant. Example: end on a line of dialogue, "
+                        "a choice made, or a concrete action.\n"
+                    )
+
+            # Character pronoun anchors (prevent POV collapse during rewrite)
+            pronoun_anchors = ""
+            char_genders = self._build_character_genders()
+            if char_genders:
+                lines = []
+                for char in (self.state.characters or []) if self.state else []:
+                    if not isinstance(char, dict):
+                        continue
+                    name = (char.get("name") or "").strip().split()[0]
+                    if not name:
+                        continue
+                    g = char_genders.get(name.lower())
+                    if g == "female":
+                        lines.append(f"{name}=she/her")
+                    elif g == "male":
+                        lines.append(f"{name}=he/him")
+                if lines:
+                    pronoun_anchors = (
+                        "\n=== CHARACTER PRONOUN ANCHORS (hard constraint) ===\n"
+                        + ", ".join(lines) + "\n"
+                    )
+
+            # avoid_list from config (from self_refinement)
+            avoid_block = ""
+            avoid_list = config.get("avoid", "")
+            if avoid_list and str(avoid_list).strip():
+                avoid_block = f"\n=== RESTRICTIONS (remove if present) ===\n{avoid_list}\n"
+
+            # Optional dialogue_bank, cultural_notes (from strategic_guidance)
+            dialogue_bank = guidance.get("dialogue_bank", "")
+            cultural_notes = guidance.get("cultural_notes", "")
+            optional_dialogue_block = ""
+            if dialogue_bank or cultural_notes:
+                parts = []
+                if dialogue_bank:
+                    parts.append(f"=== DIALOGUE BANK ===\n{dialogue_bank}")
+                if cultural_notes:
+                    parts.append(f"=== CULTURAL/SETTING NOTES ===\n{cultural_notes}")
+                optional_dialogue_block = "\n" + "\n".join(parts) + "\n"
+
+            # strict_preservation_mode (no structure mutation)
+            vh_cfg = config.get("enhancements", {}).get("voice_human_pass", {})
+            strict_mode = vh_cfg.get("strict_preservation_mode", True)
+            strict_block = ""
+            if strict_mode:
+                strict_block = (
+                    "\n=== STRICT PRESERVATION MODE ===\n"
+                    "NO scene reordering. NO character deletion. NO added subplots. "
+                    "NO tone inversion. ONLY refinement of existing content.\n"
+                )
+
+            # Conflict dialogue for high tension
+            conflict_block = ""
+            if tension >= 6:
+                conflict_block = "\n" + CONFLICT_DIALOGUE_CONSTRAINTS
+
             prompt = f"""You are a destructive revision editor. Your job: make this scene
 read like a human wrote it. Not "good AI." Not "polished AI." HUMAN.
 
 This is a REVISION pass. Keep plot, characters, and scene structure intact.
 Change HOW it's written, not WHAT happens.
-
+{strict_block}{pronoun_anchors}
 === HARD RULES (break these = fail) ===
 1. POV: FIRST PERSON ("I") only. If any sentence uses third person
    ("{pov} felt", "{pov} thought", "she noticed"), rewrite as "I".
@@ -10782,8 +10903,13 @@ Change HOW it's written, not WHAT happens.
 3. NO REPEATED TICS: If a physical action (hair taming, jaw clenching,
    finger tightening) or catchphrase appears more than once, keep only
    the first. Replace repeats with different body language.
-{anchor_block}{stakes_block}{repetition_block}
+{anchor_block}{stakes_block}{repetition_block}{dialogue_tidy_block}{ending_block}{avoid_block}{optional_dialogue_block}
+
+{PRESERVATION_CONSTRAINTS}
+
+{BAD_DIALOGUE_TAGS_BLACKLIST}
 {REWRITE_STYLE_CONTRACT}
+{conflict_block}
 
 === VOICE ===
 STYLE: {writing_style}
@@ -12468,6 +12594,16 @@ OUTPUT the text with only problematic sentences fixed:"""
             logger.info("targeted_refinement disabled via config")
             return {"skipped": True, "reason": "disabled"}, 0
 
+        # POLISH_CONSOLIDATION_PLAN: Never auto-run after successful voice pass.
+        # Only run when quality_meters flagged issues, or manual request (auto_run=true).
+        auto_run = tr_cfg.get("auto_run", False)
+        if not auto_run:
+            qmr = getattr(self.state, "quality_meter_report", None) or {}
+            all_pass = qmr.get("all_pass", True)
+            if all_pass:
+                logger.info("targeted_refinement: skipped (quality_meters passed, auto_run=false)")
+                return {"skipped": True, "reason": "quality_passed"}, 0
+
         project_path = getattr(self.state, "project_path", None) or Path(
             self.state.config.get("_project_path", "")
         )
@@ -12522,6 +12658,7 @@ OUTPUT the text with only problematic sentences fixed:"""
                 logger.debug("Phrase mining for gesture_diversify failed (using fallback): %s", e)
 
         qc_report = getattr(self.state, "quality_contract_report", None) or {"contracts": contracts}
+        triage_data = getattr(self.state, "quality_triage", None) or []
         report = await run_editor_studio(
             project_path,
             passes_enabled=passes_enabled,
@@ -12534,6 +12671,7 @@ OUTPUT the text with only problematic sentences fixed:"""
             characters=getattr(self.state, "characters", None),
             genre=self.state.config.get("genre", ""),
             skip_persist=True,
+            quality_triage=triage_data,
         )
 
         if report.get("errors"):

@@ -204,6 +204,7 @@ async def run_editor_studio(
     characters: Optional[List[Any]] = None,
     genre: Optional[str] = None,
     skip_persist: bool = False,
+    quality_triage: Optional[List[Dict]] = None,
 ) -> Dict[str, Any]:
     """Run Editor Studio passes on a completed manuscript.
 
@@ -391,20 +392,46 @@ async def run_editor_studio(
         elif pass_name == "cross_scene_transition":
             target_indices = {i for i, s in enumerate(scenes_list) if _scene_id(s).lower() in cross_scene_map}
         elif pass_name == "voice":
-            # Broad pass: top 10 scenes by tension
-            by_tension = sorted(
-                [(i, s) for i, s in enumerate(scenes_list) if s.get("content")],
-                key=lambda x: int(x[1].get("tension_level", 0)),
-                reverse=True,
-            )
-            target_indices = {i for i, _ in by_tension[:10]}
+            # Selective: use triage data if available, else top 10 by tension
+            if quality_triage:
+                _heavy_ids = {t["scene_id"] for t in quality_triage if t.get("needs_heavy_polish")}
+                target_indices = {i for i, s in enumerate(scenes_list) if _scene_id(s) in _heavy_ids and s.get("content")}
+                if not target_indices:
+                    # Fallback to tension-based if triage found nothing
+                    by_tension = sorted(
+                        [(i, s) for i, s in enumerate(scenes_list) if s.get("content")],
+                        key=lambda x: int(x[1].get("tension_level", 0)),
+                        reverse=True,
+                    )
+                    target_indices = {i for i, _ in by_tension[:10]}
+                else:
+                    logger.info("Pass voice: selective polish — %d/%d scenes (triage-driven)", len(target_indices), len(scenes_list))
+            else:
+                by_tension = sorted(
+                    [(i, s) for i, s in enumerate(scenes_list) if s.get("content")],
+                    key=lambda x: int(x[1].get("tension_level", 0)),
+                    reverse=True,
+                )
+                target_indices = {i for i, _ in by_tension[:10]}
         elif pass_name == "premium":
-            # Opening (first 500-800 words), final chapter, midpoint — high ROI
-            last_ch = max(int(s.get("chapter", 1)) for s in scenes_list) if scenes_list else 1
-            target_indices = {0, len(scenes_list) // 2}
-            for i, s in enumerate(scenes_list):
-                if int(s.get("chapter", 0)) == last_ch:
-                    target_indices.add(i)
+            # Selective: use triage data if available, else structural positions
+            if quality_triage:
+                _heavy_ids = {t["scene_id"] for t in quality_triage if t.get("needs_heavy_polish")}
+                target_indices = {i for i, s in enumerate(scenes_list) if _scene_id(s) in _heavy_ids and s.get("content")}
+                # Always include opening, midpoint, final chapter
+                last_ch = max(int(s.get("chapter", 1)) for s in scenes_list) if scenes_list else 1
+                target_indices.add(0)
+                target_indices.add(len(scenes_list) // 2)
+                for i, s in enumerate(scenes_list):
+                    if int(s.get("chapter", 0)) == last_ch:
+                        target_indices.add(i)
+                logger.info("Pass premium: selective polish — %d/%d scenes (triage + structural)", len(target_indices), len(scenes_list))
+            else:
+                last_ch = max(int(s.get("chapter", 1)) for s in scenes_list) if scenes_list else 1
+                target_indices = {0, len(scenes_list) // 2}
+                for i, s in enumerate(scenes_list):
+                    if int(s.get("chapter", 0)) == last_ch:
+                        target_indices.add(i)
         else:
             target_ids = set()
             if pass_name != "gesture_diversify":

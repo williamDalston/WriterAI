@@ -173,6 +173,19 @@ output_validation
 
 ---
 
+## Config Options (New)
+
+```yaml
+enhancements:
+  legacy_polish_stack: false   # true = run self_refinement, dialogue_polish, prose_polish (rollback)
+  voice_human_pass:
+    strict_preservation_mode: true   # No structure mutation (default: true)
+  targeted_refinement:
+    auto_run: false   # Only run when quality_meters fail (default: false)
+```
+
+---
+
 ## Rollback Plan
 
 Keep the removed stage functions in codebase but unused. Add config flag:
@@ -320,14 +333,14 @@ Per-character state doc updated per chapter:
 ## Implementation Additions
 
 6. **voice_human_pass refinements**
-   - [ ] Add character pronoun anchors (Maya=she/her, etc.) from characters list
-   - [ ] Add strict_preservation_mode block when enabled
-   - [ ] Structure prompt with priority order (P1–P7) explicitly labeled
-   - [ ] Keep ending classification deterministic; inject block only when classifier returns SUMMARY/ATMOSPHERE
+   - [x] Add character pronoun anchors (Maya=she/her, etc.) from characters list
+   - [x] Add strict_preservation_mode block when enabled
+   - [x] Structure prompt with priority order (P1–P7) explicitly labeled
+   - [x] Keep ending classification deterministic; inject block only when classifier returns SUMMARY/ATMOSPHERE
 
 7. **targeted_refinement gate**
-   - [ ] Add `quality_score < threshold` check; skip when meters pass
-   - [ ] Add config: `enhancements.targeted_refinement.auto_run: false` (default: only on quality failure or manual)
+   - [x] Add `quality_score < threshold` check; skip when meters pass
+   - [x] Add config: `enhancements.targeted_refinement.auto_run: false` (default: only on quality failure or manual)
 
 8. **Repetition gate (pre-polish)**
    - [ ] Add or tighten repetition-density gate after scene_drafting
