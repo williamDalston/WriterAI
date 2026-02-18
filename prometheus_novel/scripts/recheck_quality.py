@@ -1,5 +1,11 @@
-"""Re-run quality_contract on fixed manuscript and compare warning counts."""
+"""Re-run quality_contract on fixed manuscript and compare warning counts.
 
+Usage:
+    python -m prometheus_novel.scripts.recheck_quality [project_path]
+    python -m prometheus_novel.scripts.recheck_quality data/projects/burning-vows-30k
+"""
+
+import argparse
 import json
 import sys
 import os
@@ -11,10 +17,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from quality.quality_contract import run_quality_contract
 from quality.quiet_killers import classify_scene_function
 
-PROJECT = Path(__file__).parent.parent / "data" / "projects" / "burning-vows-30k"
-STATE_FILE = PROJECT / "pipeline_state.json"
-OLD_CONTRACT = PROJECT / "output" / "quality_contract.json"
-NEW_CONTRACT = PROJECT / "output" / "quality_contract_post_fix.json"
+PROJECT_ROOT = Path(__file__).parent.parent
+DEFAULT_PROJECT = PROJECT_ROOT / "data" / "projects" / "burning-vows-30k"
 
 
 def count_warnings(contracts):
@@ -27,36 +31,51 @@ def count_warnings(contracts):
 
 
 def main():
-    with open(STATE_FILE, encoding="utf-8") as f:
+    parser = argparse.ArgumentParser(description="Re-run quality_contract and compare warning counts")
+    parser.add_argument("project_path", nargs="?", default=str(DEFAULT_PROJECT), help="Project path (default: burning-vows-30k)")
+    args = parser.parse_args()
+
+    project = Path(args.project_path)
+    if not project.is_absolute():
+        project = PROJECT_ROOT / project
+    if not project.exists():
+        print(f"[ERROR] Project not found: {project}")
+        return 1
+
+    state_file = project / "pipeline_state.json"
+    old_contract = project / "output" / "quality_contract.json"
+    new_contract = project / "output" / "quality_contract_post_fix.json"
+
+    with open(state_file, encoding="utf-8") as f:
         state = json.load(f)
 
     scenes = [s for s in state.get("scenes", []) if isinstance(s, dict)]
     outline = state.get("master_outline", [])
 
-    # Run quality contract on all scenes
     result = run_quality_contract(scenes, outline)
     contracts = result.get("contracts", [])
 
-    # Save new contract
-    output = result
-    with open(NEW_CONTRACT, "w", encoding="utf-8") as f:
-        json.dump(output, f, indent=2, ensure_ascii=False)
+    new_contract.parent.mkdir(parents=True, exist_ok=True)
+    with open(new_contract, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, ensure_ascii=False)
 
-    # Compare with old
     new_counts = count_warnings(contracts)
     new_total = sum(new_counts.values())
 
     old_counts = {}
     old_total = 0
-    if OLD_CONTRACT.exists():
-        with open(OLD_CONTRACT, encoding="utf-8") as f:
+    old_contracts = []
+    if old_contract.exists():
+        with open(old_contract, encoding="utf-8") as f:
             old_data = json.load(f)
-        old_counts = count_warnings(old_data.get("contracts", []))
+        old_contracts = old_data.get("contracts", [])
+        old_counts = count_warnings(old_contracts)
         old_total = sum(old_counts.values())
 
     print("=" * 60)
     print("QUALITY CONTRACT COMPARISON")
     print("=" * 60)
+    print(f"Project: {project}")
     print(f"\n{'Warning Type':<30} {'Before':>8} {'After':>8} {'Delta':>8}")
     print("-" * 56)
     all_types = sorted(set(list(old_counts.keys()) + list(new_counts.keys())))
@@ -69,12 +88,12 @@ def main():
     print("-" * 56)
     print(f"{'TOTAL':<30} {old_total:>8} {new_total:>8} {new_total - old_total:>+8}")
 
-    # Clean scenes
-    clean_before = sum(1 for c in old_data.get("contracts", []) if not c.get("warnings"))
+    clean_before = sum(1 for c in old_contracts if not c.get("warnings"))
     clean_after = sum(1 for c in contracts if not c.get("warnings"))
     print(f"\nClean scenes (0 warnings):     {clean_before} -> {clean_after}")
-    print(f"Saved to: {NEW_CONTRACT}")
+    print(f"Saved to: {new_contract}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

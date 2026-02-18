@@ -1,0 +1,29 @@
+# Replacement banks for phrase suppression (dynamic, no code changes).
+#
+# Loaded at runtime. Add/edit phrases here—no code deploy needed.
+# Project override: copy to <project>/phrase_replacement_banks.yaml to customize per novel.
+# Used when a phrase (from miner or supplemental) has no explicit replacements.
+
+banks:
+  # Physical reaction clichés — "against my ribs" overuse (audit: 24+ in BV30k)
+  "against my ribs":
+    - in my chest
+    - behind my sternum
+    - under my breastbone
+    - beneath my collarbone
+    - deep in my chest
+  "against my throat":
+    - in my throat
+    - at the base of my throat
+    - behind my jaw
+    - high in my chest
+  "hammered against my":
+    - pounded in my
+    - raced in my
+    - thumped in my
+    - beat hard in my
+  "pressed against my ribs":
+    - pressed into my chest
+    - dug into my side
+    - bit into my skin
+    - pushed against my sternum

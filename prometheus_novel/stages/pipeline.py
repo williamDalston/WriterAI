@@ -2641,6 +2641,11 @@ STOCK ROMANCE CLICHES (hard blacklist):
 - "a comfortable silence", "unspoken understanding"
 - "breath I didn't know I was holding"
 
+PHYSICAL REACTION CLICHÉS (avoid repetition — use once per manuscript max, then vary):
+- "against my ribs", "pressed against my ribs", "hammered against my ribs/throat/wrists"
+- "heart hammered", "pulse hammered" (vary: pounded, raced, thumped, beat)
+- "breath caught", "breath catches" (vary: lungs stall, air locks, forget to breathe)
+
 DRAMATIC CLICHE PHRASES (hard blacklist — the "no turning back" family):
 - "no turning back", "there was no going back", "past the point of no return"
 - "nothing would ever be the same", "everything had changed"
@@ -3156,6 +3161,7 @@ class PipelineOrchestrator:
 
         # === DRAFTING PHASE ===
         "scene_drafting",
+        "roster_gate",         # Deterministic: block/flag hallucinated characters
         "scene_expansion",
         "structure_gate",       # Gate A: structure/tension scorecard before continuity
         "continuity_audit",
@@ -3169,6 +3175,7 @@ class PipelineOrchestrator:
         # Lightweight continuity check after destructive edits
         "continuity_audit_2",
         "continuity_fix_2",
+        "pov_enforcer",         # Deterministic: re-apply POV pronoun fixes after destructive passes
 
         # === POLISH PHASE (Additive - order matters!) ===
         # 1. Dialogue first (doesn't touch prose)
@@ -3210,6 +3217,8 @@ class PipelineOrchestrator:
         "voice_human_pass": "claude",        # Consolidated de-AI + voice
         "continuity_audit_2": "gemini",      # Lightweight post-refinement check
         "continuity_fix_2": "claude",        # Facts-only fix, no style changes
+        "roster_gate": "gpt",                # Deterministic (no LLM)
+        "pov_enforcer": "gpt",               # Deterministic (no LLM)
         "dialogue_polish": "claude",         # Dialogue authenticity
         "chapter_hooks": "claude",
         "prose_polish": "claude",
@@ -3250,6 +3259,8 @@ class PipelineOrchestrator:
         "continuity_fix": 0.4,
         "continuity_audit_2": 0.2,
         "continuity_fix_2": 0.3,
+        "roster_gate": 0.0,           # Deterministic
+        "pov_enforcer": 0.0,          # Deterministic
         "self_refinement": 0.5,
         "final_deai": 0.3,
         "quality_polish": 0.2,
@@ -3999,6 +4010,8 @@ class PipelineOrchestrator:
             "voice_human_pass": self._stage_voice_human_pass,
             "continuity_audit_2": self._stage_continuity_audit_2,
             "continuity_fix_2": self._stage_continuity_fix_2,
+            "roster_gate": self._stage_roster_gate,
+            "pov_enforcer": self._stage_pov_enforcer,
             "dialogue_polish": self._stage_dialogue_polish,
             "prose_polish": self._stage_prose_polish,
             "chapter_hooks": self._stage_chapter_hooks,
@@ -7407,6 +7420,57 @@ RULES:
         lines.append("These facts are IMMUTABLE. Never invent alternate names, change relationships, or contradict backstory.")
         return "\n".join(lines)
 
+    def _build_roster_reminder_block(self, scene_info: dict, chapter: dict, pov_char: str) -> str:
+        """Build CHARACTER ROSTER block — only use characters from outline/roster. Prevents hallucination."""
+        roster = set()
+        for ch in (self.state.master_outline or []):
+            if not isinstance(ch, dict):
+                continue
+            for sc in ch.get("scenes", []):
+                if isinstance(sc, dict) and sc.get("pov"):
+                    roster.add(sc["pov"].split()[0].lower())
+        for c in (self.state.characters or []):
+            if isinstance(c, dict) and c.get("name"):
+                roster.add(c["name"].split()[0].lower())
+        for key in ("protagonist", "antagonist"):
+            val = (self.state.config or {}).get(key, "")
+            if val:
+                roster.add(str(val).split()[0].lower())
+        names = sorted(n for n in roster if len(n) > 2 and n not in ("the", "and", "for"))[:12]
+        if not names:
+            return ""
+        return f"""
+=== CHARACTER ROSTER (ONLY USE THESE) ===
+Allowed named characters: {", ".join(n.title() for n in names)}
+Do NOT introduce new named characters. If someone speaks or acts, they must be in this list.
+Minor walk-ons: "a vendor," "the waiter" — fine. Named characters not listed: FORBIDDEN."""
+
+    def _build_scene_transition_grounding_block(self, scene_position: int) -> str:
+        """When not first scene in chapter: require TIME/PLACE/CAST in first 50 words."""
+        if scene_position == 0:
+            return ""
+        return """
+=== SCENE TRANSITION (you are mid-chapter) ===
+Within the first 50 words, orient the reader: include at least 2 of 3 — TIME (morning/evening/later), PLACE (courtyard/office/terrace), WHO IS PRESENT (Marco, Sofia, etc.).
+Do NOT open with a disembodied action ("My elbow sends a crate tumbling") without saying where we are and who's there."""
+
+    def _build_voice_under_pressure_block(self, pov_char: str, tension_level: int, config: dict) -> str:
+        """When tension high: character must still sound like themselves, not collapse to generic."""
+        if tension_level < 7:
+            return ""
+        writing_style = (config or {}).get("writing_style", "")
+        if "legal" in writing_style.lower() or "lawyer" in str(config.get("protagonist", "")).lower():
+            return f"""
+=== VOICE UNDER PRESSURE ===
+{pov_char} is under stress. She does NOT become vague or generic. Her voice SHARPENS — more clipped, procedural, legal framing.
+WRONG: "Three years ago." I swallowed hard. "Custody case. Connected to Dante's family."
+RIGHT: "Three years ago I took a case. Opposing counsel was connected to Dante's family. Case number — I can still recite it."
+In crisis, {pov_char} sounds MORE like herself, not less."""
+        return f"""
+=== VOICE UNDER PRESSURE ===
+{pov_char} is under stress. Do NOT flatten their voice. Characters sound MORE distinct under pressure — vocabulary, sentence rhythm, verbal tics must persist.
+In crisis, {pov_char} should sound like {pov_char}, not like Generic Anxious Narrator."""
+
     def _get_used_details_tracker(self, scenes: List[Dict]) -> str:
         """Extract repeated sensory details, physical tics, and catchphrases
         from previously written scenes so the next scene can avoid them.
@@ -7853,6 +7917,9 @@ Hook in the first 100 words.
 
                 # Build entity anchor (mandatory facts at top of prompt)
                 entity_anchor = self._build_entity_anchor(scene_info, chapter, pov_char)
+                roster_reminder = self._build_roster_reminder_block(scene_info, chapter, pov_char)
+                scene_transition_block = self._build_scene_transition_grounding_block(scene_position)
+                voice_pressure_block = self._build_voice_under_pressure_block(pov_char, tension_level, config)
 
                 prompt = f"""Write Chapter {chapter_num}, Scene {scene_num}: "{scene_name}"
 POSITION: Scene {scene_position + 1} of {total_scenes_in_chapter} in this chapter.
@@ -7865,6 +7932,9 @@ YOU ARE {pov_char.upper()}. You are writing AS {pov_char}, in first person. "I" 
 - When describing the POV character's body/actions, use "I" and "my": "my throat tightened," "I crossed my arms" — never "her throat" or "she crossed."
 
 {entity_anchor}
+{roster_reminder}
+{scene_transition_block}
+{voice_pressure_block}
 
 === MASTER CRAFT PRINCIPLES ===
 1. SHOW vs TELL:
@@ -7889,8 +7959,9 @@ YOU ARE {pov_char.upper()}. You are writing AS {pov_char}, in first person. "I" 
 
 === CAUSALITY (trigger → response → consequence) ===
 - Every paragraph must have an explicit causal link to the previous.
-- If a paragraph begins with "And," "But," "Still," "Then," it must clearly reference the prior beat.
-- Never use "somehow," "suddenly," "it hit me," "for a moment" without a concrete stimulus in the previous 1-2 sentences.
+- If a paragraph begins with "And," "But," "Still," "Then," "So," — it MUST reference the prior beat by name/pronoun: "And that look" / "But his silence" / "Still, the stone under my palm".
+- NEVER use "somehow," "suddenly," "it hit me," "for a moment," "something about him" without a concrete stimulus in the previous 1-2 sentences.
+- Connector words (And/But/Still/Then/So) require prior anchor. If you can't point to it, rewrite the opener.
 
 === CONCRETE SPECIFICITY (anchor diversity) ===
 - Each scene must introduce at least one new concrete anchor from: OBJECT (handheld thing), PLACE DETAIL (spatial constraint),
@@ -10281,6 +10352,55 @@ Output the scene with ONLY the factual fix applied:"""
         self.state.scenes = fixed_scenes
         return {"fixes_applied": fixes_applied}, total_tokens
 
+    async def _stage_roster_gate(self) -> tuple:
+        """Check character roster; optionally block if hallucinated characters detected."""
+        try:
+            from quality.character_roster import check_character_roster
+        except ImportError:
+            return {"skipped": True, "reason": "character_roster not available"}, 0
+
+        roster_violations = check_character_roster(
+            self.state.scenes or [],
+            self.state.master_outline or [],
+            self.state.characters or [],
+            self.state.config or {},
+            min_dialogue_for_flag=2,
+        )
+
+        cfg = (self.state.config or {}).get("enhancements", {}).get("roster_gate", {})
+        block = cfg.get("block_on_violation", False)
+        max_allowed = int(cfg.get("max_violations", 0))
+
+        if block and len(roster_violations) > max_allowed:
+            scene_ids = [v.get("scene_id", "?") for v in roster_violations]
+            msg = (
+                f"Roster gate: {len(roster_violations)} scene(s) have hallucinated characters. "
+                f"Fix or add to roster: {scene_ids}"
+            )
+            logger.error(msg)
+            raise ValueError(msg)
+
+        self.state.roster_violations = roster_violations
+        if roster_violations:
+            logger.warning("Roster gate: %d violation(s) (non-blocking)", len(roster_violations))
+        return {"violations": roster_violations, "count": len(roster_violations)}, 0
+
+    async def _stage_pov_enforcer(self) -> tuple:
+        """Re-apply deterministic POV pronoun fixes after destructive passes."""
+        fixed_count = 0
+        for scene in (self.state.scenes or []):
+            if not isinstance(scene, dict) or not scene.get("content"):
+                continue
+            pov = (scene.get("pov") or self.state.config.get("protagonist", "") or "").split()[0]
+            if not pov:
+                continue
+            content = scene["content"]
+            new_content = self._micro_pov_pronoun_fix(content, pov)
+            if new_content != content:
+                scene["content"] = new_content
+                fixed_count += 1
+        return {"scenes_fixed": fixed_count}, 0
+
     async def _stage_dialogue_polish(self) -> tuple:
         """Polish dialogue for authenticity, subtext, and character voice."""
         client = self.get_client_for_stage("dialogue_polish")
@@ -11108,16 +11228,25 @@ OUTPUT the text with only problematic sentences fixed:"""
         if is_pass_enabled(policy, "phrase_suppression"):
             try:
                 metaphor_path = configs_dir / "hot_phrases_metaphor.yaml"
+                supplemental_paths = [p for p in [metaphor_path] if p.exists()]
+                proj_path = Path(project_path) if project_path else None
+                if proj_path and (proj_path / "hot_phrases_supplemental.yaml").exists():
+                    supplemental_paths.append(proj_path / "hot_phrases_supplemental.yaml")
                 phrase_configs = load_phrase_config(
                     auto_path=configs_dir / "hot_phrases.auto.yaml",
                     manual_path=configs_dir / "hot_phrases.yaml" if (configs_dir / "hot_phrases.yaml").exists() else None,
-                    supplemental_paths=[metaphor_path] if metaphor_path.exists() else None,
+                    supplemental_paths=supplemental_paths if supplemental_paths else None,
                 )
+                from quality.phrase_suppressor import load_replacement_banks
+                bank_paths = [configs_dir / "phrase_replacement_banks.yaml"]
+                if proj_path and (proj_path / "phrase_replacement_banks.yaml").exists():
+                    bank_paths.append(proj_path / "phrase_replacement_banks.yaml")
+                replacement_bank = load_replacement_banks(*bank_paths)
                 if phrase_configs:
                     before = list(texts)
                     suppress_ceiling = CeilingTracker(ceiling_rules)
                     texts, suppress_report = suppress_phrases(
-                        texts, phrase_configs, ceiling=suppress_ceiling,
+                        texts, phrase_configs, replacement_bank=replacement_bank or None, ceiling=suppress_ceiling,
                     )
                     suppress_report["ceiling"] = suppress_ceiling.report()
                     report["phrase_suppression"] = suppress_report

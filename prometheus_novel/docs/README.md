@@ -2,6 +2,8 @@
 
 This directory contains documentation, runbooks, and failure scenarios for the PROMETHEUS-NOVEL 1.0 project.
 
+**Scripts index:** See [`../scripts/SCRIPTS.md`](../scripts/SCRIPTS.md) for a complete index of scripts (pipeline-wired, CLI commands, standalone utilities). Use it to find the right tool for editorial cleanup, audit, export, etc.
+
 ## Project Overview
 (Briefly describe the project's goal and high-level architecture)
 

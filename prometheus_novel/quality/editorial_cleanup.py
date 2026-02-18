@@ -80,13 +80,14 @@ _GROUNDING_PARAGRAPHS = [
 ]
 
 
-# Preamble meta-text: "Lena Castillo found herself in the...", "Lena found herself in the..."
+# Preamble meta-text: "Lena Castillo found herself in the...", "Lena found herself walking..."
 _PREAMBLE_PATTERN = re.compile(
-    r"^[A-Za-z]+(?:\s+[A-Za-z]+)?\s+found\s+(?:her|him)self\s+in\s+(?:the\s+)?[^.]+\.[ \t]*",
+    r"^[A-Za-z]+(?:\s+[A-Za-z]+)?\s+found\s+(?:her|him)self\s+"
+    r"(?:in\s+(?:the\s+)?[^.]+\.|[a-z]+ing\s+[^.]+\.[ \t]*)",
     re.IGNORECASE,
 )
 _PREAMBLE_I_PATTERN = re.compile(
-    r"^I\s+found\s+myself\s+in\s+(?:the\s+)?[^.]+\.[ \t]*",
+    r"^I\s+found\s+myself\s+(?:in\s+(?:the\s+)?[^.]+\.|[a-z]+ing\s+[^.]+\.[ \t]*)",
     re.IGNORECASE,
 )
 

@@ -1,10 +1,12 @@
-"""Strip preamble artifacts and filter words from Burning Vows 30k.
+"""DEPRECATED: Use run_editorial_cleanup instead.
 
-P0: Remove "Lena Castillo found herself in the ..." sentence prefixes
-P2: Fix double periods (subsumed by P0 in most cases, but also standalone)
-P3: Remove filter words ("I could feel/see/hear" → direct sensation)
+This script is superseded by:
+    python -m prometheus_novel.scripts.run_editorial_cleanup data/projects/burning-vows-30k
+    writerai editorial-cleanup -p data/projects/burning-vows-30k
 
-Operates on pipeline_state.json (source of truth), then recompiles .md.
+The run_editorial_cleanup script handles preambles, grounding, POV, filter words,
+double periods, and recompiles .md + .docx. Editorial cleanup also runs
+automatically at the end of quality_polish in the pipeline.
 """
 
 import json
@@ -234,4 +236,10 @@ def main():
 
 
 if __name__ == "__main__":
+    import warnings
+    warnings.warn(
+        "strip_preambles_and_filters is deprecated. Use: python -m prometheus_novel.scripts.run_editorial_cleanup data/projects/burning-vows-30k",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     main()

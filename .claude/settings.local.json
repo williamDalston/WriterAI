@@ -31,7 +31,8 @@
       "Bash(curl.exe:*)",
       "Bash(tee:*)",
       "Bash(set:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(del \"c:\\\\Users\\\\farad\\\\OneDrive\\\\Desktop\\\\Apps\\\\writerai - Copy\\\\prometheus_novel\\\\scripts\\\\md_to_kdp_docx.py\")"
     ]
   }
 }

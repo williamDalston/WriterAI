@@ -4,8 +4,43 @@
 # Cap each and rotate through alternatives for variety.
 #
 # Legal metaphors (objection/sustained/leading the witness) — expand beyond the top 3
+#
+# Physical reaction clichés — "against my ribs" and similar overused across romance AI prose.
+# Keep first occurrence, replace rest with varied alternatives.
 
 phrases:
+  # Physical reaction repetition (audit: Burning Vows had 20+ "against my ribs"-type)
+  - phrase: "against my ribs"
+    keep_first: 1
+    total: 0
+    replacements:
+      - "in my chest"
+      - "behind my sternum"
+      - "under my breastbone"
+      - "beneath my collarbone"
+  - phrase: "against my throat"
+    keep_first: 1
+    total: 0
+    replacements:
+      - "in my throat"
+      - "at the base of my throat"
+      - "high in my chest"
+  - phrase: "hammered against my"
+    keep_first: 1
+    total: 0
+    replacements:
+      - "pounded in my"
+      - "raced in my"
+      - "thumped in my"
+      - "beat hard in my"
+  - phrase: "pressed against my ribs"
+    keep_first: 1
+    total: 0
+    replacements:
+      - "pressed into my chest"
+      - "dug into my side"
+      - "bit into my skin"
+
   - phrase: "Objection."
     keep_first: 2
     total: 0

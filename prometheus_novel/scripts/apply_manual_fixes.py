@@ -1,16 +1,21 @@
 """Apply deterministic quality fixes to an existing manuscript.
 
-Runs the 5 quality transforms we built (no LLM calls, $0 cost):
+Runs the 5 quality transforms (no LLM calls, $0 cost):
 1. classify_scene_profile — label each scene with mode + risk
 2. apply_deflection_grounding — break reflective runs in high-tension scenes
 3. apply_bridge_insert — patch scene openings when location changes
 4. apply_final_line_rewrite — mode-aware ending rewrites
 5. Gesture diversification — replace overused physical tics
 
+Note: These transforms run in the pipeline via quality_polish. Use this script
+for one-off runs or when you need to apply fixes without a full pipeline run.
+
 Usage:
-    python scripts/apply_manual_fixes.py
+    python -m prometheus_novel.scripts.apply_manual_fixes [project_path]
+    python -m prometheus_novel.scripts.apply_manual_fixes data/projects/burning-vows-30k
 """
 
+import argparse
 import json
 import re
 import sys
@@ -29,9 +34,8 @@ from quality.quiet_killers import (
     apply_final_line_rewrite,
 )
 
-PROJECT = Path(__file__).parent.parent / "data" / "projects" / "burning-vows-30k"
-STATE_FILE = PROJECT / "pipeline_state.json"
-CONTRACT_FILE = PROJECT / "output" / "quality_contract.json"
+PROJECT_ROOT = Path(__file__).parent.parent
+DEFAULT_PROJECT = PROJECT_ROOT / "data" / "projects" / "burning-vows-30k"
 
 # ── Gesture replacements (position-specific to avoid monotony) ──
 GESTURE_REPLACEMENTS = {
@@ -145,17 +149,32 @@ def apply_gesture_fixes_manuscript(scenes: list, stats: dict) -> None:
 
 
 def main():
-    print("=" * 60)
-    print("MANUAL FIX SCRIPT — Burning Vows 30k")
-    print("=" * 60)
+    parser = argparse.ArgumentParser(description="Apply deterministic quality fixes (grounding, bridge, gesture diversify)")
+    parser.add_argument("project_path", nargs="?", default=str(DEFAULT_PROJECT), help="Project path")
+    args = parser.parse_args()
 
-    with open(STATE_FILE, encoding="utf-8") as f:
+    project = Path(args.project_path)
+    if not project.is_absolute():
+        project = PROJECT_ROOT / project
+    if not project.exists():
+        print(f"[ERROR] Project not found: {project}")
+        return 1
+
+    state_file = project / "pipeline_state.json"
+    contract_file = project / "output" / "quality_contract.json"
+
+    print("=" * 60)
+    print("MANUAL FIX SCRIPT")
+    print("=" * 60)
+    print(f"Project: {project}")
+
+    with open(state_file, encoding="utf-8") as f:
         state = json.load(f)
 
     scenes = [s for s in state.get("scenes", []) if isinstance(s, dict)]
     outline = state.get("master_outline", [])
-    tension_map = load_tension_map(CONTRACT_FILE, outline)
-    warning_map = load_warning_map(CONTRACT_FILE)
+    tension_map = load_tension_map(contract_file, outline)
+    warning_map = load_warning_map(contract_file)
 
     stats = {
         "scenes_total": len(scenes),
@@ -234,7 +253,7 @@ def main():
 
     # ── Save ──
     state["scenes"] = scenes
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
+    with open(state_file, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
 
     # ── Report ──
@@ -245,7 +264,7 @@ def main():
     print(f"Bridge inserts:        {stats['bridge_inserts']}")
     print(f"Final line rewrites:   {stats['final_line_rewrites']}")
     print(f"Gesture replacements:  {stats['gesture_replacements']}")
-    print(f"\nSaved to: {STATE_FILE}")
+    print(f"\nSaved to: {state_file}")
 
     # ── Recompile .md ──
     config_path = PROJECT / "config.yaml"

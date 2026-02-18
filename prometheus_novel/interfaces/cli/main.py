@@ -529,6 +529,105 @@ def cmd_editor_studio(args):
     return 0
 
 
+def cmd_editorial_cleanup(args):
+    """Run deterministic editorial cleanup (preambles, grounding, POV, filter words, etc.)."""
+    print_banner()
+    project_path = _resolve_project_path(args)
+    if not project_path or not project_path.exists():
+        print_error("Project not found. Use -p/--project or -c/--config.")
+        return 1
+
+    import subprocess
+    dry_run = ["--dry-run"] if getattr(args, "dry_run", False) else []
+    # cwd must be parent of prometheus_novel so "python -m prometheus_novel.scripts..." resolves
+    cwd = PROJECT_ROOT.parent if PROJECT_ROOT.name == "prometheus_novel" else PROJECT_ROOT
+    result = subprocess.run(
+        [sys.executable, "-m", "prometheus_novel.scripts.run_editorial_cleanup", str(project_path)] + dry_run,
+        cwd=cwd,
+    )
+    return result.returncode
+
+
+def cmd_audit(args):
+    """Run developmental and fresh-eyes audit on manuscript."""
+    print_banner()
+    project_path = _resolve_project_path(args)
+    if not project_path or not project_path.exists():
+        print_error("Project not found. Use -p/--project or -c/--config.")
+        return 1
+
+    print(f"\n{Colors.HEADER}Manuscript Audit{Colors.END}\n")
+    print_info(f"Project: {project_path}")
+
+    import sys
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+    # Run developmental audit (deterministic)
+    from quality.developmental_audit import run_developmental_audit
+
+    state_file = project_path / "pipeline_state.json"
+    if not state_file.exists():
+        print_error("pipeline_state.json not found")
+        return 1
+
+    with open(state_file, encoding="utf-8") as f:
+        state = json.load(f)
+    config_path = project_path / "config.yaml"
+    config = {}
+    if config_path.exists():
+        with open(config_path, encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+
+    r = run_developmental_audit(
+        state.get("scenes", []),
+        state.get("master_outline", []),
+        state.get("characters", []),
+        config,
+    )
+    print(f"\n{Colors.CYAN}Developmental Audit{Colors.END}: Pass={r.get('pass', True)} | Findings: {len(r.get('findings', []))}")
+    for f in (r.get("findings") or [])[:10]:
+        print_info(f"  [{f.get('type','')}] {f.get('scene_id','')}: {(f.get('message','') or '')[:60]}...")
+
+    out_dir = project_path / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    da_path = out_dir / "developmental_audit.json"
+    with open(da_path, "w", encoding="utf-8") as f:
+        json.dump(r, f, indent=2, ensure_ascii=False)
+    print_info(f"Saved: {da_path.name}")
+
+    # Run fresh eyes if not --skip-llm
+    if not getattr(args, "skip_llm", False):
+        import asyncio
+        from quality.developmental_audit import audit_fresh_eyes
+        from prometheus_lib.llm.clients import get_client
+        model = (config.get("model_defaults") or {}).get("critic_model") or "claude-sonnet-4-20250514"
+        print_info(f"\nRunning Fresh Eyes audit (model: {model})...")
+        client = get_client(model)
+        fe = asyncio.run(audit_fresh_eyes(client, state.get("scenes", []), state.get("master_outline", []), config))
+        if not fe.get("skipped"):
+            findings = fe.get("findings", [])
+            print(f"\n{Colors.CYAN}Fresh Eyes{Colors.END}: {len(findings)} findings")
+            for f in findings[:10]:
+                print_info(f"  {f.get('code','')} [{f.get('scene_id','')}]: {(f.get('message','') or '')[:55]}...")
+            fe_path = out_dir / "fresh_eyes_audit.json"
+            with open(fe_path, "w", encoding="utf-8") as f:
+                json.dump(fe, f, indent=2, ensure_ascii=False)
+            print_info(f"Saved: {fe_path.name}")
+    print_success("\nAudit complete.")
+    return 0
+
+
+def _resolve_project_path(args):
+    """Resolve project path from -p, -c, or default."""
+    if getattr(args, "project", None):
+        p = Path(args.project)
+        return p if p.is_absolute() else PROJECT_ROOT / p
+    if getattr(args, "config", None):
+        cp = Path(args.config)
+        return cp.parent if cp.exists() else None
+    return PROJECT_ROOT / "data" / "projects" / "burning-vows-30k"
+
+
 def cmd_serve(args):
     """Start the web server."""
     print_banner()
@@ -819,6 +918,24 @@ def main():
     )
     studio_parser.add_argument("--dry-run", dest="dry_run", action="store_true", help="Show what would run, no changes")
 
+    # editorial-cleanup command - deterministic cleanup (preambles, grounding, POV, filter words)
+    cleanup_parser = subparsers.add_parser(
+        "editorial-cleanup",
+        help="Deterministic cleanup: preambles, grounding artifacts, POV, filter words. Recompiles .md + .docx.",
+    )
+    cleanup_parser.add_argument("--project", "-p", help="Project path (e.g. data/projects/burning-vows-30k)")
+    cleanup_parser.add_argument("--config", "-c", help="Path to config.yaml (project = parent dir)")
+    cleanup_parser.add_argument("--dry-run", dest="dry_run", action="store_true", help="Report changes, don't write")
+
+    # audit command - developmental + fresh-eyes audit
+    audit_parser = subparsers.add_parser(
+        "audit",
+        help="Run developmental and fresh-eyes audit on manuscript. Saves to output/.",
+    )
+    audit_parser.add_argument("--project", "-p", help="Project path")
+    audit_parser.add_argument("--config", "-c", help="Path to config.yaml")
+    audit_parser.add_argument("--skip-llm", dest="skip_llm", action="store_true", help="Skip fresh-eyes (LLM) audit")
+
     # audiobook command - generate ACX-compliant audiobook MP3s
     audio_parser = subparsers.add_parser("audiobook", help="Generate ACX-compliant audiobook MP3s")
     audio_parser.add_argument("--config", "-c", required=True, help="Path to project config.yaml")
@@ -847,6 +964,8 @@ def main():
         "bookops": cmd_bookops,
         "cover": cmd_cover,
         "editor-studio": cmd_editor_studio,
+        "editorial-cleanup": cmd_editorial_cleanup,
+        "audit": cmd_audit,
         "audiobook": cmd_audiobook,
     }
 

@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("editorial_craft")
 
-# Motif categories for saturation check
+# Motif categories for saturation check (Editorial Craft Gaps #2)
 MOTIF_PATTERNS = {
     "CITRUS": re.compile(r"\b(lemon|lemons|lemon-scented|citrus|orange zest|grapefruit|bergamot)\b", re.IGNORECASE),
     "SALT": re.compile(r"\b(salt air|salt spray|salt on|salty|salt of|salt-bleached)\b", re.IGNORECASE),
@@ -24,6 +24,8 @@ MOTIF_PATTERNS = {
     "MOTHS_LIGHT": re.compile(r"\b(moth|moths)\b.*\b(light|lantern|lamp|bulb)\b|\b(light|lantern).*\b(moth)", re.IGNORECASE),
     "COFFEE_STAINS": re.compile(r"\b(coffee ring|coffee stain|ring of|dried.*cup|cup.*stain)\b", re.IGNORECASE),
     "STICKY_SURFACES": re.compile(r"\b(sticky|tacky|residue|ring of.*dried)\b", re.IGNORECASE),
+    "SCAR_TOUCHING": re.compile(r"\b(scar|scarred).*(touch|brush|finger|thumb)|(touch|brush|finger).*(scar)\b", re.IGNORECASE),
+    "HAIR_TUCKING": re.compile(r"\b(tuck(?:ed|ing)?\s+.*(?:hair|curl).*behind)\b", re.IGNORECASE),
 }
 
 # Per-character gesture patterns (character -> [(pattern, label), ...])
@@ -37,6 +39,7 @@ GESTURE_PATTERNS = {
     "marco": [
         (re.compile(r"\b(ran\s+(?:his|my)\s+hand\s+through\s+(?:his|my)\s+hair)\b", re.IGNORECASE), "hair_run"),
         (re.compile(r"\b((?:his|my)\s+jaw\s+(?:work(?:ed|ing)|tighten(?:ed|ing)))\b", re.IGNORECASE), "jaw_work"),
+        (re.compile(r"\bleaving\s+it\s+(?:ruffled|rumpled)\b", re.IGNORECASE), "leaving_ruffled"),
     ],
 }
 
@@ -52,6 +55,15 @@ SIMILE_PATTERNS = [
 _CADENCE_LYRICAL = re.compile(r"\b(moment|connection|promise|truth|heart|soul|walls?|armor|barrier)\b.*[.!?]$", re.IGNORECASE)
 _CADENCE_SENSORY = re.compile(r"\b(warmth|cool|heat|skin|breath|touch|fingers|lips)\b.*[.!?]$", re.IGNORECASE)
 _CADENCE_ABRUPT = re.compile(r"^[^.!?]{1,35}[.!?]\s*$", re.MULTILINE)  # Short sentence
+
+# Tense detection (Editorial Craft Gaps #6) — approximate via common verb patterns
+_PRESENT_VERBS = re.compile(r"\b(am|is|are|was|were)\b|\b(\w+)(?:s|es)\s+(?:\w+\s+)*\b|\b(I|we|you|they)\s+(\w+)\b", re.IGNORECASE)
+_PAST_VERBS = re.compile(r"\b(was|were|had|did)\b|\b(\w+ed)\b|\b(\w+)(?:t|d)\s+", re.IGNORECASE)
+# Simplified: count " -ed " words vs " -s " (3rd person present) and "is/are" vs "was/were"
+_PAST_SIMPLE = re.compile(r"\b\w+ed\b", re.IGNORECASE)
+_PRESENT_S = re.compile(r"\b(he|she|it|marco|lena|sofia|dante|gianna)\s+\w+s\b", re.IGNORECASE)
+_IS_ARE = re.compile(r"\b(is|are)\b", re.IGNORECASE)
+_WAS_WERE = re.compile(r"\b(was|were)\b", re.IGNORECASE)
 
 
 def _chapters_from_scenes(scenes: List[Dict]) -> Dict[int, str]:
@@ -211,6 +223,61 @@ def chapter_length_meter(scenes: List[Dict]) -> Dict[str, Any]:
     return {"violations": violations, "per_chapter": lengths, "mean": round(mean_len, 0), "pass": len(violations) == 0}
 
 
+def tense_consistency_meter(scenes: List[Dict]) -> Dict[str, Any]:
+    """Flag scenes with ambiguous or mixed tense. Editorial Craft Gaps #6."""
+    violations = []
+    per_scene = {}
+    for s in (scenes or []):
+        if not isinstance(s, dict):
+            continue
+        content = s.get("content", "")
+        past_ed = len(_PAST_SIMPLE.findall(content))
+        present_s = len(_PRESENT_S.findall(content))
+        is_are = len(_IS_ARE.findall(content))
+        was_were = len(_WAS_WERE.findall(content))
+        past_score = past_ed + was_were
+        present_score = present_s + is_are
+        total = past_score + present_score
+        sid = s.get("scene_id") or f"ch{int(s.get('chapter',0)):02d}_s{int(s.get('scene_number',0)):02d}"
+
+        if total < 5:
+            per_scene[sid] = {"dominant": "unknown"}
+            continue
+
+        pct_past = past_score / total
+        pct_present = present_score / total
+        per_scene[sid] = {"pct_past": round(pct_past, 2), "pct_present": round(pct_present, 2)}
+
+        if pct_past >= 0.6:
+            per_scene[sid]["dominant"] = "past"
+        elif pct_present >= 0.6:
+            per_scene[sid]["dominant"] = "present"
+        else:
+            per_scene[sid]["dominant"] = "ambiguous"
+            violations.append({
+                "type": "tense_ambiguous",
+                "scene_id": sid,
+                "message": f"{sid} mixed tense ({pct_past*100:.0f}% past, {pct_present*100:.0f}% present). "
+                           "Establish dominant; exception for dialogue, flashbacks.",
+            })
+
+    if scenes:
+        all_content = "\n\n".join(s.get("content", "") for s in scenes if isinstance(s, dict) and s.get("content"))
+        total_past = len(_PAST_SIMPLE.findall(all_content)) + len(_WAS_WERE.findall(all_content))
+        total_present = len(_PRESENT_S.findall(all_content)) + len(_IS_ARE.findall(all_content))
+        total = total_past + total_present
+        if total > 20:
+            ms_pct = total_present / total
+            if 0.35 <= ms_pct <= 0.65:
+                violations.append({
+                    "type": "tense_manuscript_mixed",
+                    "message": f"Manuscript mixes past ({100-ms_pct*100:.0f}%) and present ({ms_pct*100:.0f}%). "
+                               "Consider config.narration.tense: present|past.",
+                })
+
+    return {"violations": violations, "per_scene": per_scene, "pass": len(violations) == 0}
+
+
 def paragraph_cadence_meter(scenes: List[Dict]) -> Dict[str, Any]:
     """Flag consecutive LYRICAL paragraph endings (>3) and low FLAT representation."""
     violations = []
@@ -301,6 +368,10 @@ def run_editorial_craft_checks(
     c = chapter_length_meter(scenes_list)
     report["chapter_length"] = c
     all_violations.extend(c.get("violations", []))
+
+    tns = tense_consistency_meter(scenes_list)
+    report["tense_consistency"] = tns
+    all_violations.extend(tns.get("violations", []))
 
     p = paragraph_cadence_meter(scenes_list)
     report["paragraph_cadence"] = p

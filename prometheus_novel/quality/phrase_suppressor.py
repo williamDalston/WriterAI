@@ -7,7 +7,8 @@ alternatives.
 
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
     from quality.ceiling import CeilingTracker
@@ -117,6 +118,33 @@ _DEFAULT_REPLACEMENTS: Dict[str, List[str]] = {
         "certainty",
     ],
 }
+
+
+def load_replacement_banks(*paths: Union[Path, str]) -> Dict[str, List[str]]:
+    """Load replacement banks from YAML files (dynamic config, no code changes).
+
+    Merges banks from all provided paths; later paths override earlier for same phrase.
+    Format: { banks: { "phrase": ["replacement1", ...], ... } }
+    Project override: <project>/phrase_replacement_banks.yaml
+    """
+    import yaml
+
+    bank: Dict[str, List[str]] = {}
+    for p in paths:
+        path = Path(p) if not isinstance(p, Path) else p
+        if not path.exists():
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            raw = data.get("banks") or data
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    if isinstance(v, list) and v:
+                        bank[str(k).strip()] = [str(x) for x in v]
+        except Exception as e:
+            logger.warning("Failed to load replacement banks from %s: %s", path, e)
+    return bank
 
 
 def suppress_phrases(
