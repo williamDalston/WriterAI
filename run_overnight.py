@@ -25,6 +25,8 @@ logger = logging.getLogger("overnight")
 # Add project root to path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
+# Pipeline internal imports use "from stages.X" — needs prometheus_novel/ on path
+sys.path.insert(0, str(project_root / "prometheus_novel"))
 
 
 async def run_novel():
