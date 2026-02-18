@@ -1,0 +1,45 @@
+{
+  "project_name": "burning-vows-30k",
+  "current_stage": 0,
+  "completed_stages": [],
+  "high_concept": null,
+  "high_concept_candidates": null,
+  "high_concept_fingerprint": null,
+  "world_bible": null,
+  "beat_sheet": null,
+  "characters": null,
+  "master_outline": null,
+  "scenes": null,
+  "continuity_issues": null,
+  "continuity_issues_2": null,
+  "motif_map": null,
+  "emotional_arc": null,
+  "voice_profiles": null,
+  "target_words": 30000,
+  "target_chapters": 13,
+  "total_tokens": 0,
+  "total_cost_usd": 0.0,
+  "artifact_metrics": {
+    "total_scenes_generated": 0,
+    "scenes_with_meta_text": 0,
+    "scenes_with_preamble": 0,
+    "scenes_with_duplicate_marker": 0,
+    "scenes_with_pov_drift": 0,
+    "scenes_retried": 0,
+    "per_stage": {}
+  },
+  "quality_meter_report": null,
+  "outline_diversity_report": null,
+  "_quality_iterations": 0,
+  "_prev_audit_snapshot": null,
+  "_continuity_fixed_indices": [],
+  "stage_results": [
+    {
+      "stage_name": "high_concept",
+      "status": "failed",
+      "duration_seconds": 17.375627040863037,
+      "tokens_used": 0,
+      "cost_usd": 0.0
+    }
+  ]
+}

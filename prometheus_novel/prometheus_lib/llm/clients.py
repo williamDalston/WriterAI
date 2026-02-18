@@ -320,15 +320,19 @@ class OpenAIClient(BaseLLMClient):
             try:
                 # Rate limit check inside retry loop (re-check on each attempt)
                 await rate_limit_check("openai")
+                # GPT-5+ / o-series: max_completion_tokens, no stop, temperature=1 only
+                _is_reasoning = self.model_name.startswith(("gpt-5", "o1", "o3"))
+                token_key = "max_completion_tokens" if _is_reasoning else "max_tokens"
                 create_kwargs = {
                     "model": self.model_name,
                     "messages": messages,
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
+                    token_key: max_tokens,
                     **kwargs
                 }
-                if stop:
-                    create_kwargs["stop"] = stop
+                if not _is_reasoning:
+                    create_kwargs["temperature"] = temperature
+                    if stop:
+                        create_kwargs["stop"] = stop
 
                 response = await asyncio.wait_for(
                     self.client.chat.completions.create(**create_kwargs),
@@ -405,14 +409,19 @@ class OpenAIClient(BaseLLMClient):
             return
 
         try:
-            stream = await self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                stream=True,
-                **kwargs
-            )
+            # GPT-5+ / o-series: max_completion_tokens, no stop, temperature=1 only
+            _is_reasoning = self.model_name.startswith(("gpt-5", "o1", "o3"))
+            token_key = "max_completion_tokens" if _is_reasoning else "max_tokens"
+            stream_kwargs = {
+                "model": self.model_name,
+                "messages": messages,
+                token_key: max_tokens,
+                "stream": True,
+                **kwargs,
+            }
+            if not _is_reasoning:
+                stream_kwargs["temperature"] = temperature
+            stream = await self.client.chat.completions.create(**stream_kwargs)
 
             async for chunk in stream:
                 if chunk.choices and chunk.choices[0].delta.content:

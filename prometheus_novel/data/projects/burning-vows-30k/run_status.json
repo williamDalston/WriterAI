@@ -1,0 +1,16 @@
+{
+  "timestamp": "2026-02-17T18:59:58.241458",
+  "last_stage": "high_concept",
+  "last_status": "failed",
+  "completed_stages": [],
+  "total_stages": 0,
+  "total_tokens": 0,
+  "total_cost_usd": 0.0,
+  "scene_count": 0,
+  "incidents": 1,
+  "budget": {
+    "defense_tokens": 0,
+    "generation_tokens": 0,
+    "rewritten_scenes": 0
+  }
+}
