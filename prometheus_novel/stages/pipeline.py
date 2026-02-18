@@ -39,6 +39,7 @@ from quality.ceiling import CeilingRules, CeilingTracker
 from quality.policy import load_policy as _load_quality_policy_legacy, is_pass_enabled
 from policy import load_policy as load_central_policy, Policy
 from prometheus_lib.utils.error_handling import CreditsExhaustedError
+from prometheus_lib.llm.clients import count_tokens, get_context_limit
 from quality.loop_guard import check_replacement_loops
 
 logger = logging.getLogger(__name__)
@@ -1593,6 +1594,58 @@ def _repair_pov_context_errors(text: str, protagonist_gender: str = "",
     return text
 
 
+def _repair_gender_pronoun_drift(text: str, character_genders: dict = None) -> str:
+    """Fix same-character gender pronoun swaps within a scene.
+
+    Catches: "Dr. Kline said he..." then later "Dr. Kline said she..." — picks the
+    correct gender from character_genders dict and normalizes all references.
+
+    Only repairs characters with a known gender in the dict. Requires >=2 wrong-gender
+    references to avoid false positives on possessive "her" (which can be object pronoun).
+    """
+    if not text or not character_genders:
+        return text
+
+    for name, gender in character_genders.items():
+        if gender not in ("male", "female"):
+            continue
+        esc = re.escape(name.split()[0])  # First name only
+        if not re.search(rf'\b{esc}\b', text):
+            continue
+
+        if gender == "male":
+            # Find "she/her" used near this male character's name — fix to "he/him/his"
+            # Pattern: [Name] ... she/her within 40 chars (same clause)
+            text = re.sub(
+                rf'(\b{esc}\b[^.!?]{{0,40}})\bshe\b',
+                lambda m: m.group(1) + 'he',
+                text, flags=re.IGNORECASE
+            )
+            text = re.sub(
+                rf'(\b{esc}\b[^.!?]{{0,15}})\bher\s+(voice|eyes|face|lips|head|hair|'
+                rf'gaze|smile|expression|hand|hands|arm|arms|shoulder|shoulders|'
+                rf'back|chest|breath|jaw|chin|cheek|neck|mouth|brow|throat)\b',
+                lambda m: m.group(1) + 'his ' + m.group(2),
+                text, flags=re.IGNORECASE
+            )
+        elif gender == "female":
+            # Find "he/him/his" used near this female character's name — fix to "she/her"
+            text = re.sub(
+                rf'(\b{esc}\b[^.!?]{{0,40}})\bhe\b',
+                lambda m: m.group(1) + 'she',
+                text, flags=re.IGNORECASE
+            )
+            text = re.sub(
+                rf'(\b{esc}\b[^.!?]{{0,15}})\bhis\s+(voice|eyes|face|lips|head|hair|'
+                rf'gaze|smile|expression|hand|hands|arm|arms|shoulder|shoulders|'
+                rf'back|chest|breath|jaw|chin|cheek|neck|mouth|brow|throat)\b',
+                lambda m: m.group(1) + 'her ' + m.group(2),
+                text, flags=re.IGNORECASE
+            )
+
+    return text
+
+
 def _strip_emotional_summaries(text: str) -> str:
     """Detect and remove paragraph-ending emotional summary sentences.
 
@@ -2047,6 +2100,151 @@ def _normalize_paragraph_for_dedup(text: str) -> str:
     return t
 
 
+def _detect_phrase_loops(text: str, tail_words: int = 400, min_phrase_len: int = 4,
+                         max_phrase_len: int = 10, repeat_threshold: int = 3) -> str:
+    """Detect generation glitches: same phrase repeating in a loop at scene end.
+
+    Catches patterns like 'I want to stay' x10 or 'The city was alive' x5 —
+    common LLM tail loops that semantic dedup (paragraph-level) misses.
+    Truncates at first occurrence of the loop and flags for tail regeneration.
+    """
+    if not text or len(text) < 200:
+        return text
+    # Normalize: lowercase, strip trailing punctuation for matching
+    words = [re.sub(r'[^\w\s]', '', w).strip() or w for w in text.lower().split()]
+    words = [w for w in words if w]
+    if len(words) < tail_words:
+        tail = words
+    else:
+        tail = words[-tail_words:]
+    # Extract phrase counts from tail (4–10 word n-grams)
+    from collections import Counter
+    phrase_counts = Counter()
+    for n in range(min_phrase_len, min(max_phrase_len + 1, len(tail) + 1)):
+        for i in range(len(tail) - n + 1):
+            phrase = " ".join(tail[i:i + n])
+            if len(phrase) > 12:  # Skip trivial 2-word phrases like "the end"
+                phrase_counts[phrase] += 1
+    # Find phrases that repeat 3+ times (glitch signal)
+    offenders = [p for p, c in phrase_counts.items() if c >= repeat_threshold and len(p) >= 12]
+    if not offenders:
+        return text
+    # Truncate at the first occurrence of the loop (in the tail)
+    offender = max(offenders, key=lambda p: phrase_counts[p])
+    offender_words = offender.split()
+    txt_words = [re.sub(r'[^\w\s]', '', w).strip() or w for w in text.lower().split()]
+    txt_words = [w for w in txt_words if w]
+    tail_start = max(0, len(txt_words) - tail_words)
+    truncate_word_idx = None
+    for i in range(tail_start, len(txt_words) - len(offender_words) + 1):
+        window = " ".join(txt_words[i:i + len(offender_words)])
+        if window == offender:
+            truncate_word_idx = i
+            break
+    if truncate_word_idx is None:
+        return text
+    # Rebuild kept text from original paragraphs to preserve structure/casing
+    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+    word_count, kept_paras = 0, []
+    for p in paragraphs:
+        pwords = p.split()
+        if word_count + len(pwords) >= truncate_word_idx:
+            if word_count < truncate_word_idx:
+                n_keep = truncate_word_idx - word_count
+                kept_paras.append(" ".join(pwords[:n_keep]))
+            break
+        kept_paras.append(p)
+        word_count += len(pwords)
+    kept_text = "\n\n".join(kept_paras).rstrip()
+    logger.info(
+        "Phrase loop detected: %r repeats %d× in tail. Truncating (kept %d chars).",
+        offender[:50], phrase_counts[offender], len(kept_text),
+    )
+    return kept_text + "\n\n[DEDUP_TAIL_TRUNCATED]"
+
+
+def _detect_full_scene_phrase_loops(
+    text: str, min_phrase_len: int = 4, max_phrase_len: int = 8,
+    repeat_threshold: int = 5,
+) -> tuple:
+    """Full-scene phrase frequency scanner — catches mid-scene degenerate loops.
+
+    Unlike _detect_phrase_loops (tail-only, 400 words), this scans the ENTIRE text
+    for any 4-8 word phrase repeating 5+ times. Returns (cleaned_text, offenders).
+    Removes all but the first occurrence of each looping phrase.
+
+    Catches: "I want to stay" x80, "The city was alive" x60, etc.
+    """
+    if not text or len(text.split()) < 100:
+        return text, []
+
+    from collections import Counter
+    words_raw = text.split()
+    words_lower = [re.sub(r'[^\w]', '', w).lower() for w in words_raw]
+    words_lower = [w if w else words_raw[i].lower() for i, w in enumerate(words_lower)]
+
+    # Count all n-grams across full text
+    phrase_counts = Counter()
+    for n in range(min_phrase_len, min(max_phrase_len + 1, len(words_lower))):
+        for i in range(len(words_lower) - n + 1):
+            phrase = " ".join(words_lower[i:i + n])
+            if len(phrase) > 15:  # Skip trivially short
+                phrase_counts[phrase] += 1
+
+    # Find offenders: phrases repeating above threshold
+    offenders = [(p, c) for p, c in phrase_counts.items()
+                 if c >= repeat_threshold and len(p.split()) >= min_phrase_len]
+    if not offenders:
+        return text, []
+
+    # Sort by frequency (worst first)
+    offenders.sort(key=lambda x: -x[1])
+
+    # Extract core repeating fragments (min_phrase_len words) from each offender
+    # for matching within individual sentences (n-grams can span sentence boundaries)
+    core_fragments = set()
+    for phrase, _ in offenders:
+        words = phrase.split()
+        for i in range(len(words) - min_phrase_len + 1):
+            frag = " ".join(words[i:i + min_phrase_len])
+            if len(frag) >= 12:
+                core_fragments.add(frag)
+
+    # Remove degenerate sentences containing core loop fragments
+    # Strategy: split into sentences, keep only first 2 occurrences of each fragment
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    kept_sentences = []
+    fragment_seen = {f: 0 for f in core_fragments}
+    max_keep = 2  # Keep first 2 occurrences, remove rest
+
+    for sent in sentences:
+        sent_lower = re.sub(r'[^\w\s]', '', sent.lower())
+        is_loop_sentence = False
+        for frag in core_fragments:
+            if frag in sent_lower:
+                fragment_seen[frag] += 1
+                if fragment_seen[frag] > max_keep:
+                    is_loop_sentence = True
+                    break
+        if not is_loop_sentence:
+            kept_sentences.append(sent)
+
+    if len(kept_sentences) < len(sentences):
+        removed = len(sentences) - len(kept_sentences)
+        worst_phrase, worst_count = offenders[0]
+        logger.warning(
+            "Full-scene phrase loop: %r repeated %d times. "
+            "Removed %d degenerate sentences.",
+            worst_phrase[:50], worst_count, removed,
+        )
+        cleaned = " ".join(kept_sentences)
+        # Re-join into paragraphs if double newlines existed
+        cleaned = re.sub(r'\s{3,}', '\n\n', cleaned)
+        return cleaned, offenders
+
+    return text, offenders
+
+
 def _detect_semantic_duplicates(text: str, threshold: float = 0.90) -> str:
     """Within-scene duplicate detection using normalized paragraph hashing.
 
@@ -2060,6 +2258,12 @@ def _detect_semantic_duplicates(text: str, threshold: float = 0.90) -> str:
     Previous approach used semantic embeddings at 0.75 threshold, which
     false-positived on paragraphs sharing characters/setting vocabulary.
     """
+    # Pass 0.5: Phrase-loop detector (catches "I want to stay" x10, "The city was alive" x5)
+    text = _detect_phrase_loops(text)
+    if "[DEDUP_TAIL_TRUNCATED]" in text:
+        return text
+    # Pass 0.6: Full-scene phrase frequency (catches mid-scene degenerate loops)
+    text, _ = _detect_full_scene_phrase_loops(text)
     if not text or len(text) < 500:
         return text
 
@@ -2724,13 +2928,17 @@ The ones from Tuesday. I keep thinking about those."
 She stared at him. "The burnt ones?"
 "Yeah." A pause. "Those."
 
-=== RULE 5: NO LOOPING (same feeling restated across paragraphs) ===
-If the scene establishes "baking = comfort" in paragraph 1, paragraphs 2-5
+=== RULE 5: NO LOOPING (same feeling OR same phrase restated) ===
+(a) Same feeling: If the scene establishes "baking = comfort" in paragraph 1, paragraphs 2-5
 should NOT circle back to that same idea. After you establish a theme ONCE:
 - Introduce a complication
 - Force a choice
 - Create a consequence
 - Or cut the paragraph entirely
+
+(b) Same phrase: NEVER repeat the exact same sentence or clause 2+ times in a row.
+Generation glitches produce loops like "I want to stay. I want to stay. I want to stay."
+or "The city was alive, and I was part of it" repeated. Each thought = ONE instance. Advance.
 
 === RULE 6: SENTENCE RHYTHM THROUGH VARIETY ===
 - SHORT for impact. Punch.
@@ -2765,6 +2973,29 @@ class StageStatus(Enum):
 
 
 # ============================================================================
+# REWRITE STYLE CONTRACT — injected into polish/rewrite stage prompts
+# Eliminates "LLM glaze" by enforcing concrete prose rules
+# ============================================================================
+REWRITE_STYLE_CONTRACT = """
+=== HARD STYLE RULES ===
+- No therapy-speak: ban "she felt," "he realized," "it was like," "something about,"
+  "a part of her," "she couldn't help but." Show through action, not declaration.
+- Limit abstract nouns: max 2 per paragraph (fear, truth, pain, guilt, hope, love,
+  shame, power, destiny, fate). Replace with concrete imagery.
+- Prefer verbs + concrete sensory cues over adjective stacking.
+  BAD: "The dark, cold, empty room felt oppressive."
+  GOOD: "Cold air bit her arms. The room smelled of dust and disuse."
+- Keep subtext: don't explain emotions, imply them through action/dialogue.
+  BAD: "She felt betrayed and angry." GOOD: "She set his key on the table."
+- Sentence length rhythm: alternate 6-12 word punches with 20-30 word builds.
+  Never 4+ consecutive same-length sentences.
+- No filter words in narration: ban "saw," "heard," "noticed," "realized," "felt,"
+  "watched," "observed." Use direct sensation instead.
+- Adverbs: cut unless they reverse expectation ("softly slammed" = keep,
+  "angrily punched" = cut, "quietly screamed" = keep).
+"""
+
+# ============================================================================
 # FORMAT CONTRACT — System prompt for all prose-generating stages
 # Prevents meta-text at generation time (not just cleanup)
 # ============================================================================
@@ -2778,6 +3009,9 @@ ABSOLUTE RULES:
 - NEVER output: alternatives ("Option A / Option B"), bracketed stage directions
 - NEVER output: "The rest remains unchanged" or any truncation marker
 - NEVER output: "[Scene continues...]" or "[Rest of scene unchanged]"
+- NEVER repeat the same phrase or sentence 2+ times in a row (no loops: "I want to stay" x5, "The city was alive" x3, etc.)
+- Maintain consistent POV pronouns within each paragraph — no mixing I/He/She in narration
+- Dialogue must contain specific objects, actions, or names — avoid pure philosophy or aphorisms
 - If unsure whether to explain or continue the scene: CONTINUE THE SCENE
 
 BAD (do not do this):
@@ -2819,9 +3053,14 @@ CONFLICT_DIALOGUE_CONSTRAINTS = """
 - At least ONE interrupted line per confrontation (em-dash: "I never said\u2014")
 - At least ONE evasive/deflecting answer (character changes subject, answers a different question, or weaponizes silence)
 - At least ONE line of subtext (what they say vs what they mean must diverge)
+- At least ONE strategic silence (character refuses to answer; fill with physical beats)
+- At least ONE moment where body language contradicts spoken words
 - Short volleys: 2-3 exchanges max before a physical beat, silence, or action break
 - NO emotional processing in dialogue tags ("he said, realizing..." \u2192 "he said.")
 - NO neat resolution within the scene \u2014 if conflict starts, it should leave residue
+- RULE: No character answers the central question directly on the first attempt.
+  First response should dodge, deflect, misdirect, or answer a different question.
+  Truth comes out through pressure, not volunteering.
 """
 
 # Retry prefix for critic gate failures
@@ -2872,6 +3111,38 @@ ISSUE_SPECIFIC_FEEDBACK = {
         "WRONG: 'Gianna narrows my eyes' — should be 'her eyes'. "
         "RULE: 'my' = ONLY the narrator's body. Other characters' body parts = her/his/their. "
         "Rewrite the scene with correct pronoun attribution."
+    ),
+    "mid_sentence_cutoff": (
+        "YOUR ERROR: Your output was cut off mid-sentence (it does not end with . ! ? or \"). "
+        "You MUST output the COMPLETE scene from start to finish. Every sentence must be "
+        "fully written. Do not stop mid-thought. If you are running out of space, conclude "
+        "the scene with a complete sentence. Output the full scene."
+    ),
+    "phrase_loop": (
+        "YOUR ERROR: You repeated the same phrase or sentence 3+ times in a row at the end "
+        "(e.g. 'I want to stay' x5, 'The city was alive' x3). This is a generation glitch. "
+        "NEVER repeat the same words. Each thought = ONE instance. Advance the narrative. "
+        "Rewrite the scene with NO repeated phrases — vary your wording, add new beats, "
+        "conclude with a different idea."
+    ),
+    "phrase_loop_full": (
+        "YOUR ERROR: You repeated the same phrase or sentence MANY times throughout the scene "
+        "(e.g. 'I want to stay' x60, 'The city was alive' x80). This is a degenerate loop. "
+        "NEVER repeat a sentence more than once. Each idea = ONE statement. Vary your "
+        "vocabulary, vary your sentence structure, advance the narrative with NEW beats. "
+        "Rewrite the entire scene with zero repeated phrases."
+    ),
+    "gender_pronoun_drift": (
+        "YOUR ERROR: You referred to the same character with BOTH 'he' and 'she' pronouns. "
+        "Each character has ONE gender. If a character is male, always use he/him/his. "
+        "If female, always use she/her/hers. Check every pronoun against the character's "
+        "established gender and fix all mismatches."
+    ),
+    "scene_collapse": (
+        "YOUR ERROR: Your output is significantly shorter than the original scene. "
+        "You must output the COMPLETE revised scene — every beat, every paragraph. "
+        "Do NOT summarize, condense, or cut content. Preserve the full scene length "
+        "while making your revisions. Output the entire scene from start to finish."
     ),
 }
 
@@ -3375,6 +3646,7 @@ class PipelineOrchestrator:
         "structure_gate_diminishing_threshold": 1,  # stop if improvement < this many points
         "micro_pass_budget_per_scene": 8000,          # max tokens per scene across all micro-passes
         "micro_pass_budget_total": 80000,             # max total tokens for all micro-passes combined
+        "rewrite_min_length_ratio": 0.85,             # output length guard: rewritten < 85% of original = fail
     }
 
     # Defense modes: observe (log only), protect (default — log + intervene), aggressive (stricter thresholds)
@@ -3410,6 +3682,7 @@ class PipelineOrchestrator:
         "structure_gate_diminishing_threshold": (0, 5),
         "micro_pass_budget_per_scene": (2000, 30000),
         "micro_pass_budget_total": (10000, 500000),
+        "rewrite_min_length_ratio": (0.50, 0.95),
     }
 
     # Aggressive mode multipliers: tighten percentage thresholds by this factor
@@ -3426,6 +3699,33 @@ class PipelineOrchestrator:
         "feedback_loop_wc_retention": 1.1, # require MORE retention
         "budget_max_defense_ratio": 1.3,   # allow more defense spending
     }
+
+    def _check_cost_kill_switch(self) -> bool:
+        """Cost kill switch: abort pipeline if cost exceeds budget.
+        Config: enhancements.cost_kill_switch.enabled, abort_at_pct (0.9 = abort at 90%).
+        When triggered: logs critical incident, exports clean draft, returns True to break loop.
+        """
+        cfg = (self.state.config or {}).get("enhancements", {}).get("cost_kill_switch", {})
+        if not cfg.get("enabled", True):
+            return False
+        budget_usd = float((self.state.config or {}).get("budget_usd", 0) or 0)
+        if budget_usd <= 0:
+            return False
+        abort_pct = float(cfg.get("abort_at_pct", 1.0))
+        threshold = budget_usd * abort_pct
+        if self.state.total_cost_usd >= threshold:
+            logger.error(
+                "COST KILL SWITCH: total cost $%.4f exceeds budget threshold $%.2f (%.0f%% of $%.2f). "
+                "Halting pipeline. Exporting clean draft.",
+                self.state.total_cost_usd, threshold, abort_pct * 100, budget_usd
+            )
+            _log_incident(
+                "cost_kill_switch", "budget_exceeded",
+                f"Cost ${self.state.total_cost_usd:.2f} >= ${threshold:.2f}",
+                severity="critical"
+            )
+            return True
+        return False
 
     def _get_threshold(self, key: str) -> float:
         """Get defense threshold from config or default, with bounds validation."""
@@ -3653,17 +3953,33 @@ class PipelineOrchestrator:
                     logger.info(f"Using override model '{model_type}' for stage: {stage_name}")
                     return self.llm_clients[model_type]
 
-            # stage_model_map: stage -> api_model|critic_model|fallback_model|structure_gate_model
-            # structure_gate_model = dedicated model for structure scoring (e.g. qwen3:14b, same VRAM, better reasoning)
+            # stage_model_map: stage -> api_model|critic_model|fallback_model|structure_gate_model|draft_model|rewrite_model
+            # draft_model/rewrite_model = ROADMAP_V2 #12 task-type routing
             if stage_name in stage_model_map:
                 key = stage_model_map[stage_name]
                 bucket = {
                     "api_model": "gpt", "critic_model": "claude", "fallback_model": "gemini",
-                    "structure_gate_model": "structure"
+                    "structure_gate_model": "structure",
+                    "draft_model": "draft", "rewrite_model": "rewrite",
                 }.get(key, "gpt")
                 if bucket in self.llm_clients:
                     logger.info(f"Using stage_model_map '{key}' ({bucket}) for stage: {stage_name}")
                     return self.llm_clients[bucket]
+
+        # Task-type routing: draft vs rewrite buckets (ROADMAP_V2 #12)
+        # If draft/rewrite clients exist and stage has no explicit map, infer from stage type
+        DRAFT_STAGES = {"high_concept", "world_building", "beat_sheet", "emotional_architecture",
+                        "character_profiles", "motif_embedding", "master_outline", "trope_integration",
+                        "scene_drafting", "scene_expansion"}
+        REWRITE_STAGES = {"self_refinement", "voice_human_pass", "dialogue_polish", "prose_polish",
+                         "chapter_hooks", "continuity_fix", "continuity_fix_2", "targeted_refinement",
+                         "developmental_audit", "final_deai"}
+        if "draft" in self.llm_clients and stage_name in DRAFT_STAGES:
+            logger.info(f"Using draft model for stage: {stage_name}")
+            return self.llm_clients["draft"]
+        if "rewrite" in self.llm_clients and stage_name in REWRITE_STAGES:
+            logger.info(f"Using rewrite model for stage: {stage_name}")
+            return self.llm_clients["rewrite"]
 
         # Use recommended model for stage
         recommended = self.STAGE_MODELS.get(stage_name, "gpt")
@@ -3845,6 +4161,10 @@ class PipelineOrchestrator:
                         self.state.current_stage = i + len(group_members)
                         self.state.save()
 
+                        # Cost kill switch: abort if budget exceeded
+                        if self._check_cost_kill_switch():
+                            break
+
                         if failed:
                             break
 
@@ -3872,6 +4192,10 @@ class PipelineOrchestrator:
                     self._write_run_status(stage_name, result)
 
                     await self._emit("on_stage_complete", stage_name, result)
+
+                    # Cost kill switch: abort if budget exceeded
+                    if self._check_cost_kill_switch():
+                        break
 
                     # Human-in-the-loop: pause for review if stage is in gates
                     review_gates = (self.state.config or {}).get("enhancements", {}).get("human_review_gates") or []
@@ -6516,6 +6840,29 @@ RULES:
         if word_count < 50:
             issues["too_short"] = True
 
+        # Mid-sentence cutoff: scene ends without proper sentence closure (truncation glitch)
+        if word_count >= 50:
+            tail = text.rstrip()
+            if tail:
+                last_char = tail[-1]
+                # Allow sentence terminators and closing quotes
+                if last_char not in '.!?"\u2019' and last_char != "'":
+                    # Trailing comma, dash, or mid-word = cutoff
+                    issues["mid_sentence_cutoff"] = tail[-60:]
+
+        # Phrase loop: same phrase repeating 3+ times in tail (generation glitch)
+        if word_count >= 100:
+            loop_checked = _detect_phrase_loops(text)
+            if "[DEDUP_TAIL_TRUNCATED]" in loop_checked:
+                issues["phrase_loop"] = True
+
+        # Full-scene phrase frequency: catches degenerate mid-scene loops
+        # (e.g., "I want to stay" x80, "The city was alive" x60)
+        if word_count >= 200 and "phrase_loop" not in issues:
+            _, full_offenders = _detect_full_scene_phrase_loops(text)
+            if full_offenders:
+                issues["phrase_loop_full"] = True
+
         # Language drift guard: Qwen/Ollama models sometimes switch to
         # Chinese (or other CJK scripts) mid-scene. Detect via absolute count
         # AND ratio to avoid false positives from quoted signs or names.
@@ -6572,6 +6919,31 @@ RULES:
                         f"POV pronoun confusion: {pov_confusion_hits} instance(s) of "
                         f"[character name] ... my [body part]"
                     )
+
+        # Gender pronoun drift: same character referred to with BOTH he/she
+        # Catches: "Dr. Kline said he..." then "Dr. Kline said she..." in same scene
+        if word_count >= 100:
+            _all_char_names = set()
+            for char in (self.state.characters or []):
+                if isinstance(char, dict):
+                    name = (char.get("name") or "").split()[0]
+                    if name and len(name) >= 2:
+                        _all_char_names.add(name)
+            char_genders_text = {}
+            for name in _all_char_names:
+                esc = re.escape(name)
+                he_refs = len(re.findall(
+                    rf'\b{esc}\b[^.!?]{{0,40}}\b(?:he|him|his)\b', text, re.IGNORECASE
+                ))
+                she_refs = len(re.findall(
+                    rf'\b{esc}\b[^.!?]{{0,40}}\b(?:she|her|hers)\b', text, re.IGNORECASE
+                ))
+                if he_refs >= 2 and she_refs >= 2:
+                    char_genders_text[name] = (he_refs, she_refs)
+            if char_genders_text:
+                issues["gender_pronoun_drift"] = True
+                drifted = ", ".join(f"{n} (he:{h}/she:{s})" for n, (h, s) in char_genders_text.items())
+                logger.warning(f"Gender pronoun drift: {drifted}")
 
         # Therapy-speak detector: dialogue that sounds like a therapy session
         if word_count >= 100:
@@ -6667,7 +7039,7 @@ RULES:
             metrics["per_stage"][stage_name] = {
                 "scenes": 0, "preamble": 0, "truncation": 0,
                 "alternate": 0, "analysis": 0, "pov_drift": 0,
-                "too_short": 0, "prompt_leak": 0, "retried": 0
+                "too_short": 0, "prompt_leak": 0, "mid_sentence_cutoff": 0, "scene_collapse": 0, "retried": 0
             }
 
         sm = metrics["per_stage"][stage_name]
@@ -6694,6 +7066,10 @@ RULES:
         if issues.get("prompt_leak"):
             sm["prompt_leak"] = sm.get("prompt_leak", 0) + 1
             metrics["scenes_with_meta_text"] += 1
+        if issues.get("mid_sentence_cutoff"):
+            sm["mid_sentence_cutoff"] = sm.get("mid_sentence_cutoff", 0) + 1
+        if issues.get("scene_collapse"):
+            sm["scene_collapse"] = sm.get("scene_collapse", 0) + 1
         if issues.get("language_drift"):
             sm["language_drift"] = sm.get("language_drift", 0) + 1
             metrics["scenes_with_language_drift"] = metrics.get("scenes_with_language_drift", 0) + 1
@@ -6860,6 +7236,21 @@ RULES:
         # Add stop sequences for creative stages (nonce sentinel + backups)
         kwargs.setdefault('stop', self._stop_sequences)
 
+        # Context window pre-flight: clamp max_tokens if prompt + output would exceed limit
+        max_tok = kwargs.get('max_tokens', 4096)
+        model_name = getattr(client, 'model_name', getattr(client, 'model', '')) or ''
+        config_limit = (self.state.config or {}).get('model_defaults', {}).get('model_context_limit')
+        ctx_limit = get_context_limit(model_name, config_limit)
+        prompt_text = prompt + "\n" + str(kwargs.get('system_prompt', ''))
+        prompt_tokens = count_tokens(prompt_text, model_name)
+        if prompt_tokens + max_tok > ctx_limit:
+            clamped = max(500, ctx_limit - prompt_tokens - 100)
+            logger.warning(
+                "Context pre-flight: prompt=%d + max=%d > limit=%d. Clamping max_tokens to %d.",
+                prompt_tokens, max_tok, ctx_limit, clamped,
+            )
+            kwargs['max_tokens'] = clamped
+
         # Generate
         response = await client.generate(prompt, **kwargs)
         total_tokens = response.input_tokens + response.output_tokens
@@ -6877,8 +7268,25 @@ RULES:
         validation = self._validate_scene_output(response.content, scene_meta)
         self._record_artifact_metrics(stage_name, scene_meta or {}, validation)
 
+        # Output length guard: catch silent scene collapse (rewrite shrinks >15%)
+        orig_wc = scene_meta.get("original_word_count") if scene_meta else None
+        if orig_wc is not None and orig_wc > 0:
+            min_retention = self._get_threshold("rewrite_min_length_ratio")
+            new_wc = validation.get("word_count", 0)
+            if new_wc < min_retention * orig_wc:
+                validation["issues"]["scene_collapse"] = {
+                    "original": orig_wc,
+                    "rewritten": new_wc,
+                    "retention": round(new_wc / orig_wc, 2),
+                }
+                validation["pass"] = False
+                logger.warning(
+                    "Output length guard: %s scene collapsed %.0f%% (orig=%d, new=%d). Retry.",
+                    stage_name, (1 - new_wc / orig_wc) * 100, orig_wc, new_wc,
+                )
+
         # If critic gate fails on fixable issues, retry once with issue-specific feedback
-        fixable_issues = {"preamble", "truncation_marker", "alternate_version", "analysis_commentary", "prompt_leak", "language_drift", "pov_pronoun_confusion"}
+        fixable_issues = {"preamble", "truncation_marker", "alternate_version", "analysis_commentary", "prompt_leak", "language_drift", "pov_pronoun_confusion", "mid_sentence_cutoff", "phrase_loop", "scene_collapse"}
         detected = set(validation.get("issues", {}).keys())
 
         # Budget guard: check retry budget before attempting
@@ -6918,7 +7326,7 @@ RULES:
                 issues = val.get("issues", {})
                 # Hard penalties (artifacts that ruin the output)
                 score -= 100 * len({"preamble", "truncation_marker", "alternate_version",
-                                     "analysis_commentary", "prompt_leak"} & set(issues.keys()))
+                                     "analysis_commentary", "prompt_leak", "mid_sentence_cutoff", "phrase_loop", "scene_collapse"} & set(issues.keys()))
                 # Soft penalties
                 if issues.get("too_short"):
                     score -= 30
@@ -7457,16 +7865,46 @@ Minor walk-ons: "a vendor," "the waiter" — fine. Named characters not listed: 
 Within the first 50 words, orient the reader: include at least 2 of 3 — TIME (morning/evening/later), PLACE (courtyard/office/terrace), WHO IS PRESENT (Marco, Sofia, etc.).
 Do NOT open with a disembodied action ("My elbow sends a crate tumbling") without saying where we are and who's there."""
 
+    def _count_motif_usage(self, scenes: list, palette: list) -> dict:
+        """Count how many times each palette item appears in already-written scenes.
+
+        Returns dict: palette_item_lower -> count
+        """
+        if not scenes or not palette:
+            return {}
+        usage = {}
+        for item in palette:
+            item_lower = item.lower()
+            # Extract 2-3 key words from each palette item for flexible matching
+            key_words = [w for w in re.findall(r'\b[a-z]{4,}\b', item_lower) if w not in
+                         ('with', 'that', 'this', 'from', 'into', 'about', 'through')][:3]
+            if not key_words:
+                continue
+            count = 0
+            for sc in scenes:
+                if not isinstance(sc, dict):
+                    continue
+                content_lower = (sc.get("content") or "").lower()
+                # Count if 2+ key words appear in the scene (flexible match)
+                hits = sum(1 for kw in key_words if kw in content_lower)
+                if hits >= min(2, len(key_words)):
+                    count += 1
+            usage[item_lower] = count
+        return usage
+
     def _build_grounding_detail_block(
         self,
         scene_info: dict,
         scene_index: int,
         motif_map: Optional[Dict[str, Any]],
+        scenes_so_far: list = None,
     ) -> str:
         """Build dynamic GROUNDING DETAIL block from planning data. Uses grounding_palette
-        and scene differentiator when available; falls back to generic guidance."""
+        and scene differentiator when available; falls back to generic guidance.
+        Tracks motif usage to prevent overuse (max 3 uses per palette item)."""
         palette = (motif_map or {}).get("grounding_palette") or []
         differentiator = scene_info.get("differentiator", "").strip()
+        max_uses_per_motif = 3  # Budget: each palette item can appear in at most 3 scenes
 
         lines = [
             "=== GROUNDING DETAIL (required — but UNIQUE each scene) ===",
@@ -7475,16 +7913,42 @@ Do NOT open with a disembodied action ("My elbow sends a crate tumbling") withou
         ]
 
         if palette:
-            # Use story-specific palette; pick one for this scene index to rotate
-            idx = scene_index % len(palette)
-            suggested = palette[idx]
-            lines.append(f"FOR THIS SCENE, prefer (or a close variant): \"{suggested}\"")
-            if differentiator:
-                lines.append(f"Alternatively, the scene's differentiator can ground: \"{differentiator}\"")
-            lines.append("Other options from this story's palette (use ONE, rotate):")
-            for i, p in enumerate(palette[:10]):
-                if i != idx:
-                    lines.append(f"- {p}")
+            # Track usage of each palette item across already-written scenes
+            usage = self._count_motif_usage(scenes_so_far or [], palette)
+
+            # Filter out overused items
+            available = [(i, p) for i, p in enumerate(palette)
+                         if usage.get(p.lower(), 0) < max_uses_per_motif]
+            exhausted = [(p, usage.get(p.lower(), 0)) for p in palette
+                         if usage.get(p.lower(), 0) >= max_uses_per_motif]
+
+            if exhausted:
+                logger.debug(
+                    "Motif budget: %d/%d palette items exhausted (used %d+ times)",
+                    len(exhausted), len(palette), max_uses_per_motif,
+                )
+
+            if available:
+                # Pick from available items using scene_index rotation
+                pick_idx = scene_index % len(available)
+                _, suggested = available[pick_idx]
+                lines.append(f"FOR THIS SCENE, prefer (or a close variant): \"{suggested}\"")
+                if differentiator:
+                    lines.append(f"Alternatively, the scene's differentiator can ground: \"{differentiator}\"")
+                lines.append("Other FRESH options from this story's palette (use ONE, rotate):")
+                for i, (_, p) in enumerate(available[:8]):
+                    if i != pick_idx:
+                        lines.append(f"- {p}")
+                if exhausted:
+                    lines.append(f"OVERUSED (do NOT use again): {', '.join(p for p, _ in exhausted[:5])}")
+            else:
+                # All palette items exhausted — force invention
+                lines.append("All story palette items have been used 3+ times already.")
+                lines.append("You MUST INVENT a completely new sensory detail for this scene:")
+                lines.append("- Something specific to THIS location that hasn't appeared before")
+                lines.append("- A texture, smell, sound, or visual that's unique to this moment")
+                if differentiator:
+                    lines.append(f"This scene's differentiator can inspire: \"{differentiator}\"")
         else:
             # Fallback: generic guidance
             lines.append("INVENT something specific to THIS location and moment:")
@@ -7496,6 +7960,65 @@ Do NOT open with a disembodied action ("My elbow sends a crate tumbling") withou
 
         lines.append("DO NOT reuse details from previous scenes. Each scene = fresh observation.")
         return "\n".join(lines)
+
+    def _build_pacing_directive(self, scene_function: str, tension_level: int) -> str:
+        """Build pacing ratio directive based on scene function and tension.
+
+        Prevents the model from defaulting to 80% atmosphere / 20% action.
+        Each scene type gets an explicit content ratio target.
+        """
+        func = (scene_function or "").upper()
+        tl = tension_level or 5
+
+        # High-tension action/conflict scenes
+        if func in ("CONFLICT", "PURSUIT") and tl >= 6:
+            return """=== PACING RATIO (FOLLOW THIS) ===
+This is a HIGH-TENSION scene. Content balance:
+- 50% ACTION + DIALOGUE (physical motion, confrontation, exchanges)
+- 25% SENSORY/SETTING (grounding details — but brief, punchy, not lingering)
+- 15% INTERNALIZATION (short, sharp thoughts — no philosophical rumination)
+- 10% DESCRIPTION (only what's necessary for spatial awareness)
+SHORT paragraphs. SHORT sentences during peak tension. Let white space breathe.
+Do NOT bury action under atmosphere. The reader should feel URGENCY."""
+
+        # Reveal / decision scenes
+        if func in ("REVEAL", "DECISION"):
+            return """=== PACING RATIO (FOLLOW THIS) ===
+This is a REVELATION/DECISION scene. Content balance:
+- 40% DIALOGUE (the reveal must come through conversation or discovery)
+- 25% INTERNALIZATION (the character processing what they've learned)
+- 20% ACTION (physical reactions, movement, decisions enacted)
+- 15% DESCRIPTION (setting context — but don't let atmosphere swamp the reveal)
+The DISCOVERY or CHOICE is the centerpiece. Build to it, don't bury it."""
+
+        # Bond / romance scenes
+        if func == "BOND" and tl <= 5:
+            return """=== PACING RATIO (FOLLOW THIS) ===
+This is a CHARACTER BOND scene. Content balance:
+- 40% DIALOGUE (real conversation — not philosophical monologues)
+- 25% ACTION (physical proximity, gestures, shared activities)
+- 20% SENSORY/SETTING (atmosphere that enhances intimacy)
+- 15% INTERNALIZATION (feelings — but show through physical sensation, not analysis)
+Characters must DO things together, not just talk about feelings."""
+
+        # Aftermath / recovery scenes
+        if func == "AFTERMATH" and tl <= 4:
+            return """=== PACING RATIO (FOLLOW THIS) ===
+This is a RECOVERY/AFTERMATH scene. Content balance:
+- 35% INTERNALIZATION (processing, but grounded in physical sensation)
+- 30% DIALOGUE (quiet conversations, checking in, planning next moves)
+- 20% ACTION (small physical acts — cleaning up, tending wounds, walking)
+- 15% DESCRIPTION (setting shift from chaos to stillness)
+Even quiet scenes need MOVEMENT. No character sits still and thinks for 800 words."""
+
+        # Default / setup — balanced
+        return """=== PACING RATIO (FOLLOW THIS) ===
+Content balance for this scene:
+- 35% DIALOGUE (conversations that advance plot or reveal character)
+- 25% ACTION (characters doing things — moving, working, reacting)
+- 25% SENSORY/SETTING (grounding, atmosphere — but CONCISE, not lingering)
+- 15% INTERNALIZATION (brief thoughts, not extended meditation)
+Every paragraph must ADVANCE the scene. No paragraph should be pure atmosphere."""
 
     def _build_voice_under_pressure_block(self, pov_char: str, tension_level: int, config: dict) -> str:
         """When tension high: character must still sound like themselves, not collapse to generic."""
@@ -7867,6 +8390,21 @@ Do NOT repeat: vow to talk later, reflect on complexity, almost-kiss-then-interr
                 dialogue_notes = scene_info.get('dialogue_notes', '')
                 theme_connection = scene_info.get('theme_connection', '')
                 extra_chars = scene_info.get('extra_characters', '')
+                # Scene function from outline (for pacing directive)
+                outline_function = scene_info.get('function', scene_info.get('scene_function', ''))
+                if not outline_function:
+                    # Infer from purpose keywords
+                    p_low = purpose.lower()
+                    if any(w in p_low for w in ('confront', 'fight', 'chase', 'escape', 'battle', 'attack')):
+                        outline_function = 'CONFLICT'
+                    elif any(w in p_low for w in ('reveal', 'discover', 'learn', 'uncover', 'find out')):
+                        outline_function = 'REVEAL'
+                    elif any(w in p_low for w in ('bond', 'connect', 'romance', 'intimate', 'together')):
+                        outline_function = 'BOND'
+                    elif any(w in p_low for w in ('aftermath', 'recover', 'process', 'grieve', 'heal')):
+                        outline_function = 'AFTERMATH'
+                    else:
+                        outline_function = ''
 
                 # Smart character pruning: only scene-relevant characters (saves tokens, reduces hallucination)
                 filtered_chars = self._filter_characters_for_scene(scene_info, chapter, pov_char)
@@ -7965,7 +8503,8 @@ Hook in the first 100 words.
                 voice_pressure_block = self._build_voice_under_pressure_block(pov_char, tension_level, config)
                 scene_index = len(scenes)  # Global scene index for rotating grounding palette
                 grounding_block = self._build_grounding_detail_block(
-                    scene_info, scene_index, getattr(self.state, "motif_map", None)
+                    scene_info, scene_index, getattr(self.state, "motif_map", None),
+                    scenes_so_far=scenes,
                 )
 
                 prompt = f"""Write Chapter {chapter_num}, Scene {scene_num}: "{scene_name}"
@@ -8150,6 +8689,8 @@ TENSION LEVEL: {tension_level}/10
 {f"EMOTIONAL ARC: {emotional_arc}" if emotional_arc else ""}
 {f"INTERNALIZATION MOMENTS: {internalization}" if internalization else ""}
 
+{self._build_pacing_directive(outline_function, tension_level)}
+
 {"=== SPICE ===" if spice_level else ""}
 {"HEAT LEVEL: " + str(spice_level) + "/5 - " + ("No romantic content" if spice_level == 0 else "Sexual tension only" if spice_level == 1 else "Kissing/touching" if spice_level == 2 else "Fade to black intimacy" if spice_level == 3 else "Explicit scene" if spice_level >= 4 else "") if spice_level else ""}
 {spice_info}
@@ -8283,6 +8824,31 @@ Write the complete scene as {pov_char} ("I"):"""
                 )
         except Exception as e:
             logger.debug("Entity consistency check failed (non-blocking): %s", e)
+
+        # --- Bond scene drift classifier (ROADMAP_V2 #8) ---
+        try:
+            bd_cfg = config.get("enhancements", {}).get("bond_drift_classifier", {}) or config.get("enhancements", {}).get("bond_drift", {})
+            if bd_cfg.get("enabled", False):
+                from quality.bond_drift_classifier import check_bond_drift
+                outline = self.state.master_outline or []
+                reports = check_bond_drift(scenes, outline)
+                drift_results = [r for r in reports if r.get("drifted")]
+                if drift_results:
+                    for dr in drift_results:
+                        logger.warning(
+                            "BOND_DRIFT: %s intended=%s actual=%s",
+                            dr.get("scene_id", "?"), dr.get("intended"), dr.get("actual")
+                        )
+                    proj = getattr(self.state, "project_path", None)
+                    if proj and Path(proj).exists():
+                        out_dir = Path(proj) / "output"
+                        out_dir.mkdir(parents=True, exist_ok=True)
+                        with open(out_dir / "bond_drift.json", "w", encoding="utf-8") as f:
+                            json.dump({"drifts": drift_results}, f, indent=2)
+                else:
+                    logger.info("Bond drift check: no drifts")
+        except Exception as e:
+            logger.debug("Bond drift check failed (non-blocking): %s", e)
 
         return scenes, total_tokens
 
@@ -8936,6 +9502,7 @@ Return the paragraph with exactly one *italic thought* added:"""
 
         Micro-passes can reintroduce '[Name] ... my [body]' errors. This pass
         re-runs the same regex fixes used in _postprocess to catch any regressions.
+        Also applies gender pronoun drift repair (he/she swaps for same character).
         """
         if not content:
             return content
@@ -8944,7 +9511,10 @@ Return the paragraph with exactly one *italic thought* added:"""
             # _repair_pov_context_errors expects protagonist gender (narrator = pov)
             protagonist_gender = pov_gender or ""
             char_genders = self._build_character_genders()
-            return _repair_pov_context_errors(content, protagonist_gender, char_genders)
+            content = _repair_pov_context_errors(content, protagonist_gender, char_genders)
+            # Also fix gender pronoun drift (e.g., "Dr. Kline" as both he/she)
+            content = _repair_gender_pronoun_drift(content, char_genders)
+            return content
         except Exception as e:
             logger.debug("POV pronoun re-fix failed (non-blocking): %s", e)
             return content
@@ -9623,6 +10193,8 @@ JSON:"""
 === RESTRICTIONS (remove if present) ===
 {avoid_list}
 
+{REWRITE_STYLE_CONTRACT}
+
 === REVISION PRIORITIES (in order) ===
 
 1. POV FIX: Find any third-person slip and convert to first person.
@@ -9655,10 +10227,12 @@ JSON:"""
 Output ONLY the revised scene—no notes, no commentary, no checklist:"""
 
             if client:
+                max_tok = self.get_max_tokens_for_stage("self_refinement", 5000)
+                orig_wc = count_words_accurate(scene.get("content", ""))
                 content, tokens = await self._generate_prose(
                     client, prompt, "self_refinement",
-                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
-                    max_tokens=2500, temperature=0.7)
+                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", ""), "original_word_count": orig_wc},
+                    max_tokens=max_tok, temperature=0.7)
                 refined_scenes.append({
                     **scene,
                     "content": content,
@@ -10166,6 +10740,34 @@ FIXED SCENE:"""
                     + "\n"
                 )
 
+            # Stakes injector: high-tension scenes without concrete stakes read hollow
+            stakes_block = ""
+            tension = int(scene.get("tension_level", 5))
+            if tension >= 8:
+                from quality.quiet_killers import check_stakes_articulation
+                stakes_warnings = check_stakes_articulation(scene.get("content", ""), tension)
+                if any("STAKELESS" in w for w in stakes_warnings):
+                    stakes_block = (
+                        "\n=== STAKES INJECTION (CRITICAL for tension ≥8) ===\n"
+                        "This scene has HIGH tension but no explicit stakes. Add at least ONE "
+                        "concrete statement of what is lost if this fails: reputation, safety, "
+                        "relationship, freedom, identity, future. Example: 'If I failed, my badge "
+                        "would be gone.' or 'Losing her trust meant losing everything.' "
+                        "Explicitly name the stakes — social, emotional, relational, reputational, "
+                        "or physical. High tension without stakes reads hollow.\n"
+                    )
+
+            # Repetition scanner: targeted flags (sentence openings, rhythm, abstract nouns, deflection)
+            repetition_block = ""
+            from quality.repetition_scanner import scan_scene_for_polish
+            rep_flags = scan_scene_for_polish(scene.get("content", ""), tension)
+            if rep_flags:
+                repetition_block = (
+                    "\n=== REPETITION / RHYTHM TARGETS ===\n"
+                    "Address these issues in your revision:\n"
+                    + "\n".join(f"- {f}" for f in rep_flags) + "\n"
+                )
+
             prompt = f"""You are a destructive revision editor. Your job: make this scene
 read like a human wrote it. Not "good AI." Not "polished AI." HUMAN.
 
@@ -10180,7 +10782,9 @@ Change HOW it's written, not WHAT happens.
 3. NO REPEATED TICS: If a physical action (hair taming, jaw clenching,
    finger tightening) or catchphrase appears more than once, keep only
    the first. Replace repeats with different body language.
-{anchor_block}
+{anchor_block}{stakes_block}{repetition_block}
+{REWRITE_STYLE_CONTRACT}
+
 === VOICE ===
 STYLE: {writing_style}
 TONE: {tone}
@@ -10253,10 +10857,12 @@ BEFORE YOU OUTPUT, check:
 Output the revised scene:"""
 
             if client:
+                max_tok = self.get_max_tokens_for_stage("voice_human_pass", 5000)
+                orig_wc = count_words_accurate(scene.get("content", ""))
                 content, tokens = await self._generate_prose(
                     client, prompt, "voice_human_pass",
-                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
-                    max_tokens=2500, temperature=0.7)
+                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", ""), "original_word_count": orig_wc},
+                    max_tokens=max_tok, temperature=0.7)
                 enhanced_scenes.append({
                     **scene,
                     "content": content,
@@ -10463,6 +11069,8 @@ Output the scene with ONLY the factual fix applied:"""
 
             prompt = f"""You are a dialogue specialist. Polish the dialogue in this scene for maximum authenticity.
 
+{REWRITE_STYLE_CONTRACT}
+
 === HARD RULES ===
 - POV: FIRST PERSON ("I") only. Never introduce third-person narration.
 - If a character catchphrase or verbal tic appears more than once in this
@@ -10545,11 +11153,29 @@ Focus ONLY on improving the dialogue and adding physical beats between lines:"""
             if tension >= 6:
                 prompt += CONFLICT_DIALOGUE_CONSTRAINTS
 
+            # Dialogue compression: when DIALOGUE_TIDY flagged, require interrupt/beat/deflection
+            dialogue_tidy_block = ""
+            from quality.quiet_killers import check_dialogue_tidy
+            tidy_warnings = check_dialogue_tidy(scene.get("content", ""), tension)
+            if any("DIALOGUE_TIDY" in w for w in tidy_warnings):
+                dialogue_tidy_block = (
+                    "\n=== DIALOGUE COMPRESSION (MANDATORY) ===\n"
+                    "This scene has 4+ dialogue lines but NO interruption or deflection. "
+                    "You MUST add: (1) at least one interrupted line (em-dash: \"I never—\"), "
+                    "(2) at least one evasive/deflecting answer (character changes subject or "
+                    "answers a different question), (3) at least one physical beat between "
+                    "exchanges (action, gesture, pause). Real high-tension dialogue is messy.\n"
+                )
+            if dialogue_tidy_block:
+                prompt += dialogue_tidy_block
+
             if client:
+                max_tok = self.get_max_tokens_for_stage("dialogue_polish", 4500)
+                orig_wc = count_words_accurate(scene.get("content", ""))
                 content, tokens = await self._generate_prose(
                     client, prompt, "dialogue_polish",
-                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
-                    max_tokens=2500, temperature=0.7)
+                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", ""), "original_word_count": orig_wc},
+                    max_tokens=max_tok, temperature=0.7)
                 polished_scenes.append({
                     **scene,
                     "content": content,
@@ -10733,10 +11359,12 @@ RULES:
 
 Output the complete scene with only the ending paragraphs rewritten:"""
 
+                    max_tok = self.get_max_tokens_for_stage("chapter_hooks", 3000)
+                    orig_wc = count_words_accurate(scene.get("content", ""))
                     content, tokens = await self._generate_prose(
                         client, prompt, "chapter_hooks",
-                        scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
-                        max_tokens=2500, temperature=0.75)
+                        scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", ""), "original_word_count": orig_wc},
+                        max_tokens=max_tok, temperature=0.75)
                     hooked_scenes.append({
                         **scene,
                         "content": content,
@@ -10761,10 +11389,12 @@ RULES:
 
 Output the complete scene with only the opening paragraphs rewritten:"""
 
+                    max_tok = self.get_max_tokens_for_stage("chapter_hooks", 3000)
+                    orig_wc = count_words_accurate(scene.get("content", ""))
                     content, tokens = await self._generate_prose(
                         client, prompt, "chapter_hooks",
-                        scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
-                        max_tokens=2500, temperature=0.75)
+                        scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", ""), "original_word_count": orig_wc},
+                        max_tokens=max_tok, temperature=0.75)
                     hooked_scenes.append({
                         **scene,
                         "content": content,
@@ -10797,12 +11427,40 @@ Output the complete scene with only the opening paragraphs rewritten:"""
                 polished_scenes.append(scene)
                 continue
             pov = scene.get("pov", "protagonist")
+            tension = int(scene.get("tension_level", 5))
+            repetition_block = ""
+            from quality.repetition_scanner import scan_scene_for_polish
+            rep_flags = scan_scene_for_polish(scene.get("content", ""), tension)
+            if rep_flags:
+                repetition_block = (
+                    "\n=== REPETITION / RHYTHM TARGETS ===\n"
+                    "Address these issues in your polish:\n"
+                    + "\n".join(f"- {f}" for f in rep_flags) + "\n\n"
+                )
+            ending_enforcement_block = ""
+            content_str = scene.get("content", "")
+            paragraphs = [p.strip() for p in content_str.split("\n\n") if p.strip()]
+            if len(paragraphs) >= 2:
+                from quality.quiet_killers import _classify_ending
+                last_para = paragraphs[-1]
+                ending_type = _classify_ending(last_para)
+                if ending_type in ("SUMMARY", "ATMOSPHERE"):
+                    ending_enforcement_block = (
+                        "\n=== SCENE ENDING ENFORCEMENT (CRITICAL) ===\n"
+                        "The current scene ends on SUMMARY or ATMOSPHERE (e.g. abstract reflection, "
+                        "weather, mood). Replace the ending so the scene closes on: DIALOGUE, "
+                        "DECISION, or PHYSICAL ACTION. End on something that happened—not what it "
+                        "meant or how it felt. Example: end on a line of dialogue, a choice made, "
+                        "or a concrete action the character takes.\n\n"
+                    )
 
             prompt = f"""You are a master prose editor performing the FINAL polish on a novel scene.
 This is the LAST pass before publication. Previous stages have established voice and removed
 AI tells. Your job is SUBTLE REFINEMENT only - do NOT undo prior work.
 
 {PRESERVATION_CONSTRAINTS}
+
+{REWRITE_STYLE_CONTRACT}
 
 === STRICT PRESERVATION MODE ===
 - DO NOT change sentence structures that work
@@ -10857,6 +11515,7 @@ INFLUENCES: {influences}
    - Does the scene close with resonance or hook?
    - Is the strongest moment positioned correctly?
 
+{repetition_block}{ending_enforcement_block}
 === SCENE TO POLISH ===
 {scene.get('content', '')}
 
@@ -10876,10 +11535,12 @@ If you accidentally introduced any, remove them.
 POLISHED SCENE:"""
 
             if client:
+                max_tok = self.get_max_tokens_for_stage("prose_polish", 4500)
+                orig_wc = count_words_accurate(scene.get("content", ""))
                 content, tokens = await self._generate_prose(
                     client, prompt, "prose_polish",
-                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
-                    max_tokens=2500, temperature=0.7)
+                    scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", ""), "original_word_count": orig_wc},
+                    max_tokens=max_tok, temperature=0.7)
                 polished_scenes.append({
                     **scene,
                     "content": content,
@@ -11427,6 +12088,24 @@ OUTPUT the text with only problematic sentences fixed:"""
         else:
             report["sensory_motif_swap"] = {"skipped": "disabled by policy"}
 
+        # --- 6b. Atmosphere budget suppression (concept-family dedup) ---
+        try:
+            from quality.atmosphere_budget import suppress_atmosphere_excess
+            before = list(texts)
+            # Convert texts to scene-like dicts for the function
+            atmo_scenes = [{"content": t, "scene_id": scenes_list[i].get("scene_id", f"s{i}") if i < len(scenes_list) else f"s{i}"} for i, t in enumerate(texts)]
+            atmo_scenes, atmo_report = suppress_atmosphere_excess(atmo_scenes)
+            texts = [s["content"] for s in atmo_scenes]
+            report["atmosphere_budget"] = atmo_report
+            if atmo_report.get("total_replaced", 0) > 0:
+                logger.info(
+                    "Atmosphere budget: replaced %d excess atmospheric phrases",
+                    atmo_report["total_replaced"],
+                )
+        except Exception as e:
+            logger.warning(f"Atmosphere budget suppression failed (non-blocking): {e}")
+            report["atmosphere_budget"] = {"error": str(e)}
+
         # --- 7. Quiet Killers transforms: filter removal, weak verb substitution, final-line rewrite ---
         try:
             from quality.quiet_killers import (
@@ -11624,6 +12303,23 @@ OUTPUT the text with only problematic sentences fixed:"""
             meter_report["quality_contract"] = qc_report
             self.state.quality_contract_report = qc_report
 
+            # Quality Triage: priority scoring for selective polish
+            try:
+                from quality.quality_triage import compute_triage
+                triage_results = compute_triage(
+                    contracts=qc_report.get("contracts", []),
+                    scenes=scenes,
+                )
+                self.state.quality_triage = triage_results
+                meter_report["quality_triage"] = {
+                    "total_scenes": len(triage_results),
+                    "heavy_polish": sum(1 for t in triage_results if t.get("needs_heavy_polish")),
+                    "avg_priority": round(sum(t["priority_score"] for t in triage_results) / max(len(triage_results), 1), 1),
+                }
+            except Exception as e:
+                logger.debug("Quality triage failed (non-blocking): %s", e)
+                self.state.quality_triage = []
+
             # Write quality_contract.json to output dir
             pp = getattr(self.state, "project_path", None) or Path(self.state.config.get("_project_path", ""))
             if pp and Path(pp).exists():
@@ -11639,6 +12335,17 @@ OUTPUT the text with only problematic sentences fixed:"""
                 with open(qc_path, "w", encoding="utf-8") as f:
                     json.dump(export, f, indent=2, ensure_ascii=False)
                 logger.info("Quality Contract written to %s", qc_path)
+
+                # Write quality_triage.json
+                _triage_data = getattr(self.state, "quality_triage", [])
+                if _triage_data:
+                    try:
+                        _triage_path = output_dir / "quality_triage.json"
+                        with open(_triage_path, "w", encoding="utf-8") as f:
+                            json.dump(_triage_data, f, indent=2, ensure_ascii=False)
+                        logger.info("Quality Triage written to %s", _triage_path)
+                    except Exception as e:
+                        logger.warning("Failed to write quality_triage.json: %s", e)
 
                 # Write quality_scorecard.json
                 sc_data = meter_report.get("scorecard", {})
@@ -11719,6 +12426,26 @@ OUTPUT the text with only problematic sentences fixed:"""
                             logger.debug("Regression snapshot failed (non-blocking): %s", e)
             except Exception as e:
                 logger.warning("Craft scorecard failed (non-blocking): %s", e)
+
+        # Voice heatmap (ROADMAP_V2 #10): flag flat scenes for polish targeting
+        if project_path and project_path.exists() and scenes:
+            try:
+                from quality.voice_heatmap import build_voice_heatmap
+                vh_cfg = (self.state.config or {}).get("enhancements", {}).get("voice_heatmap", {})
+                if vh_cfg.get("enabled", True):
+                    heatmap = build_voice_heatmap(scenes, self.state.config)
+                    if heatmap.get("flat_scenes"):
+                        output_dir = Path(project_path) / "output"
+                        output_dir.mkdir(parents=True, exist_ok=True)
+                        vh_path = output_dir / "voice_heatmap.json"
+                        with open(vh_path, "w", encoding="utf-8") as f:
+                            json.dump(heatmap, f, indent=2, ensure_ascii=False)
+                        logger.info("Voice heatmap written to %s (%d flat scenes flagged)", vh_path, len(heatmap["flat_scenes"]))
+                        meter_report["voice_heatmap"] = {"flat_count": len(heatmap["flat_scenes"]), "flat_ids": heatmap["flat_scenes"]}
+                    else:
+                        meter_report["voice_heatmap"] = {"flat_count": 0}
+            except Exception as e:
+                logger.debug("Voice heatmap failed (non-blocking): %s", e)
 
         # Store in state for run_report
         self.state.quality_meter_report = meter_report

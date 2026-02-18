@@ -238,6 +238,20 @@ class VoiceDifferentiationPolicy(BaseModel):
     min_lines_for_eval: int = 5
 
 
+class ManuscriptHealthPolicy(BaseModel):
+    """Config for the 5 structural health checks (POV, atmosphere, stakes, dialogue, endings)."""
+    pov_consistency_mode: str = "warn"  # warn | strict | off
+    atmosphere_budget_mode: str = "warn"
+    stakes_escalation_mode: str = "warn"
+    dialogue_concreteness_mode: str = "warn"
+    ending_variety_mode: str = "warn"
+    ending_max_consecutive: int = 2  # thriller preset: 1
+    ending_max_in_window: int = 3    # thriller preset: 2
+    abstract_dialogue_threshold: float = 0.40
+    consequence_deficit_threshold: float = 0.50
+    stakes_plateau_window: int = 3
+
+
 class ExportGatePolicy(BaseModel):
     """Pre-export validation gate."""
     enabled: bool = True
@@ -264,4 +278,7 @@ class Policy(BaseModel):
     )
     voice_differentiation: VoiceDifferentiationPolicy = Field(
         default_factory=VoiceDifferentiationPolicy,
+    )
+    manuscript_health: ManuscriptHealthPolicy = Field(
+        default_factory=ManuscriptHealthPolicy,
     )

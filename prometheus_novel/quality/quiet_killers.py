@@ -126,11 +126,41 @@ _EMO_KEYWORDS = {
 # === FINAL-LINE CLASSIFICATION ===
 _ENDING_ACTION = re.compile(
     r"\b(grabbed|walked|turned|closed|opened|pulled|pushed|stood|ran|"
-    r"slammed|reached|stepped|drove|left|dropped)\b.*[.!?]$",
+    r"slammed|reached|stepped|drove|left|dropped|locked|fired|"
+    r"threw|kicked|climbed|ducked|sprinted|bolted|charged)\b.*[.!?]$",
     re.IGNORECASE,
 )
-_ENDING_DIALOGUE = re.compile(r'["\'][^"\']*[.!?]["\']?\s*$', re.MULTILINE)
-_ENDING_REVELATION = re.compile(r"\b(knew|understood|realized)\s+", re.IGNORECASE)
+_ENDING_DIALOGUE = re.compile(r'["\u201c\'][^"\u201d\']*[.!?]["\u201d\']?\s*$', re.MULTILINE)
+_ENDING_REVELATION = re.compile(
+    r"\b(knew|understood|realized|recognized|discovered|saw\s+(?:it|the\s+truth)|"
+    r"finally\s+(?:understood|saw|knew)|the\s+pieces\s+(?:clicked|fell))\b",
+    re.IGNORECASE,
+)
+_ENDING_DECISION = re.compile(
+    r"\b(decided|chose|would\s+(?:have\s+to|need\s+to|not|never)|wouldn'?t|had\s+to|no\s+choice|made\s+up|"
+    r"going\s+to|committed|resolved|no\s+going\s+back|she\s+chose|he\s+chose|"
+    r"that\s+settled\s+it|mind\s+was\s+made)\b.*[.!?]$",
+    re.IGNORECASE,
+)
+_ENDING_THREAT = re.compile(
+    r"\b(coming\s+for|wouldn'?t\s+stop|next\s+time|warned|promised|"
+    r"was\s+already|watching|waiting\s+for|hunting|not\s+over|"
+    r"this\s+isn'?t\s+finished|they'?d\s+be\s+back|only\s+a\s+matter\s+of\s+time)\b.*[.!?]$",
+    re.IGNORECASE,
+)
+_ENDING_COST = re.compile(
+    r"\b(gone|lost|never\s+see|couldn'?t\s+take\s+(?:it\s+)?back|too\s+late|"
+    r"paid|price|empty|no\s+longer|wouldn'?t\s+come\s+back|"
+    r"that\s+was\s+the\s+cost|some\s+things\s+can'?t\s+be)\b.*[.!?]$",
+    re.IGNORECASE,
+)
+_ENDING_REVERSAL = re.compile(
+    r"\b(but\s+then|everything\s+changed|hadn'?t\s+expected|wrong\s+about|"
+    r"lied|wasn'?t\s+what|the\s+opposite|turned\s+out|the\s+truth\s+was|"
+    r"not\s+what\s+(?:she|he|they|it)\s+seemed|"
+    r"had\s+been\s+(?:wrong|lying|hiding))\b.*[.!?]$",
+    re.IGNORECASE,
+)
 _ENDING_SUMMARY = re.compile(
     r"\b(changed|forever|nothing would|everything had|moment that|"
     r"somehow that was enough|for now that was|and that was enough|"
@@ -142,7 +172,10 @@ _ENDING_SUMMARY = re.compile(
     re.IGNORECASE,
 )
 _ENDING_ATMOSPHERE = re.compile(
-    r"\b(sun set|rain fell|silence|darkness|light|wind)\b.*[.!?]$",
+    r"\b(sun set|rain fell|silence\s+(?:fell|filled|returned|hung|pressed|stretched)|"
+    r"darkness\s+(?:fell|closed|settled|pressed)|light\s+(?:faded|died|dimmed)|"
+    r"wind\s+(?:picked up|howled|died)|stars|moon|shadow|"
+    r"city\s+(?:hummed|pulsed|breathed)|neon\s+(?:flickered|pulsed|buzzed))\b.*[.!?]$",
     re.IGNORECASE,
 )
 
@@ -195,7 +228,12 @@ _PROPER_NAME = re.compile(r"(?<=[.!?\s])\s*([A-Z][a-z]{2,})")
 
 
 def _classify_ending(sentence: str) -> str:
-    """Classify last sentence as ACTION, DIALOGUE, REVELATION, SUMMARY, ATMOSPHERE."""
+    """Classify last sentence into ending type.
+
+    Types (checked in priority order):
+      DIALOGUE, ACTION, REVELATION, DECISION, THREAT, COST, REVERSAL,
+      SUMMARY, ATMOSPHERE, UNKNOWN.
+    """
     s = sentence.strip()
     if not s:
         return "UNKNOWN"
@@ -205,6 +243,14 @@ def _classify_ending(sentence: str) -> str:
         return "ACTION"
     if _ENDING_REVELATION.search(s):
         return "REVELATION"
+    if _ENDING_DECISION.search(s):
+        return "DECISION"
+    if _ENDING_THREAT.search(s):
+        return "THREAT"
+    if _ENDING_COST.search(s):
+        return "COST"
+    if _ENDING_REVERSAL.search(s):
+        return "REVERSAL"
     if _ENDING_SUMMARY.search(s):
         return "SUMMARY"
     if _ENDING_ATMOSPHERE.search(s):
@@ -865,6 +911,34 @@ _FINAL_LINE_BANK = {
         "Daylight crept across the floor like an apology.",
         "The kettle clicked off. Someone would have to get up.",
         "The room was quiet. Not empty-quiet. Full-quiet.",
+    ],
+    "threat": [
+        "The message was clear. Next time, there wouldn't be a warning.",
+        "She memorized the face. She'd need to.",
+        "Somewhere in the city, someone was already making the next move.",
+        "The lock wouldn't hold. Not against what was coming.",
+        "Three blocks away, a phone rang in an empty office.",
+    ],
+    "decision": [
+        "She pulled the drive free and pocketed it. No going back now.",
+        "The call connected. Three words. Then silence.",
+        "She chose. And the choosing changed everything that came after.",
+        "The badge hit the desk. The sound carried.",
+        "She deleted the message and closed the laptop.",
+    ],
+    "cost": [
+        "The chair across from her would stay empty now.",
+        "She could still feel where the badge had been.",
+        "Some answers aren't worth what they cost. She knew that now.",
+        "The door closed on a room that would never look the same.",
+        "What she'd lost wasn't coming back. She drove anyway.",
+    ],
+    "reversal": [
+        "Everything she thought she knew was wrong. Starting with him.",
+        "The file told a different story. A worse one.",
+        "She'd been looking in the wrong direction the whole time.",
+        "The ally turned out to be the architect.",
+        "The truth was simpler and uglier than she'd imagined.",
     ],
 }
 

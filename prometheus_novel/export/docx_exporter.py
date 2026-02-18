@@ -278,7 +278,7 @@ class KDPExporter:
 
         # Process scenes
         for i, scene in enumerate(scenes):
-            content = scene.get("content", "")
+            content = scene.get("content", "").replace("[DEDUP_TAIL_TRUNCATED]", "").strip()
 
             # Add scene break between scenes (except first)
             if i > 0:

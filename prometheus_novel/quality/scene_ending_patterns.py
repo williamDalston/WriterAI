@@ -47,12 +47,31 @@ _ENDING_QUIET = re.compile(
 _ENDING_DIALOGUE = re.compile(r'["\u201c][^"\u201d]*[.!?]["\u201d]?\s*$', re.MULTILINE)
 _ENDING_ACTION = re.compile(
     r"\b(grabbed|walked|turned|closed|opened|pulled|pushed|stood|"
-    r"reached|stepped|ran|slammed|dropped)\b.*[.!?]$",
+    r"reached|stepped|ran|slammed|dropped|locked|fired|"
+    r"threw|kicked|climbed|ducked|sprinted|bolted|charged)\b.*[.!?]$",
     re.IGNORECASE,
 )
 _ENDING_HUMOR = re.compile(
     r"\b(snorted|laughed|grinned|shook my head|rolled my eyes|"
     r"typical|of course|naturally)\b.*[.!?]$",
+    re.IGNORECASE,
+)
+_ENDING_THREAT = re.compile(
+    r"\b(coming\s+for|wouldn'?t\s+stop|next\s+time|warned|promised|"
+    r"watching|waiting\s+for|hunting|not\s+over|"
+    r"they'?d\s+be\s+back|only\s+a\s+matter\s+of\s+time)\b.*[.!?]$",
+    re.IGNORECASE,
+)
+_ENDING_COST = re.compile(
+    r"\b(gone|lost|never\s+see|couldn'?t\s+take\s+back|too\s+late|"
+    r"paid|price|empty|no\s+longer|"
+    r"that\s+was\s+the\s+cost|some\s+things\s+can'?t\s+be)\b.*[.!?]$",
+    re.IGNORECASE,
+)
+_ENDING_REVERSAL = re.compile(
+    r"\b(but\s+then|everything\s+changed|hadn'?t\s+expected|wrong\s+about|"
+    r"lied|wasn'?t\s+what|turned\s+out|the\s+truth\s+was|"
+    r"not\s+what\s+(?:she|he|they|it)\s+seemed)\b.*[.!?]$",
     re.IGNORECASE,
 )
 
@@ -79,6 +98,12 @@ def _classify_ending(content: str, tail_words: int = 150) -> str:
         return "DEPARTURE"
     if _ENDING_DECISION.search(last_sent):
         return "DECISION"
+    if _ENDING_THREAT.search(last_sent):
+        return "THREAT"
+    if _ENDING_COST.search(last_sent):
+        return "COST"
+    if _ENDING_REVERSAL.search(last_sent):
+        return "REVERSAL"
     if _ENDING_HUMOR.search(last_sent):
         return "HUMOR"
     if _ENDING_QUIET.search(last_sent):

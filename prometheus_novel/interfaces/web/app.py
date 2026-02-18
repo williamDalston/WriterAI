@@ -567,6 +567,9 @@ async def run_generation(project_name: str, generation_id: str):
         api_model = model_defaults.get("api_model", "qwen2.5:7b")
         critic_model = model_defaults.get("critic_model", api_model)
         fallback_model = model_defaults.get("fallback_model", api_model)
+        structure_gate_model = model_defaults.get("structure_gate_model")
+        draft_model = model_defaults.get("draft_model", api_model)
+        rewrite_model = model_defaults.get("rewrite_model", critic_model)
 
         # Create LLM clients - use get_client for smart routing (Ollama vs API)
         from prometheus_novel.prometheus_lib.llm.clients import get_client, is_ollama_model
@@ -578,6 +581,10 @@ async def run_generation(project_name: str, generation_id: str):
         llm_clients["gpt"] = default_client
         llm_clients["claude"] = get_client(critic_model)
         llm_clients["gemini"] = get_client(fallback_model)
+        if structure_gate_model:
+            llm_clients["structure"] = get_client(structure_gate_model)
+        llm_clients["draft"] = get_client(draft_model)
+        llm_clients["rewrite"] = get_client(rewrite_model)
         logger.info(f"Using model: {api_model} (local={'Ollama' if is_ollama_model(api_model) else 'API'})")
 
         # Import and run the pipeline with multi-model support

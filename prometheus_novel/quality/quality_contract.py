@@ -541,9 +541,52 @@ def run_quality_contract(
     except (ImportError, Exception):
         batch_warnings = []
 
+    # Manuscript health checks (POV, atmosphere, stakes, dialogue concreteness)
+    health_reports = {}
+    try:
+        from quality.pov_consistency import batch_audit_pov
+        pov_report = batch_audit_pov(scenes or [])
+        health_reports["pov_consistency"] = pov_report
+        if not pov_report.get("pass"):
+            for v in pov_report.get("violations", [])[:5]:
+                batch_warnings.append(f"POV_PARAGRAPH_DRIFT: {v.get('message', '')}")
+    except Exception as e:
+        logger.debug("POV consistency check failed (non-blocking): %s", e)
+
+    try:
+        from quality.atmosphere_budget import check_atmosphere_budget
+        atmo_report = check_atmosphere_budget(scenes or [])
+        health_reports["atmosphere_budget"] = atmo_report
+        for v in atmo_report.get("violations", []):
+            batch_warnings.append(f"ATMOSPHERE_OVERUSE: {v.get('message', '')}")
+    except Exception as e:
+        logger.debug("Atmosphere budget check failed (non-blocking): %s", e)
+
+    try:
+        from quality.stakes_escalation import track_stakes_progression
+        stakes_report = track_stakes_progression(scenes or [])
+        health_reports["stakes_escalation"] = stakes_report
+        for v in stakes_report.get("violations", []):
+            batch_warnings.append(f"{v.get('type', 'STAKES')}: {v.get('message', '')}")
+    except Exception as e:
+        logger.debug("Stakes escalation check failed (non-blocking): %s", e)
+
+    try:
+        from quality.dialogue_concreteness import batch_check_dialogue
+        dialogue_report = batch_check_dialogue(scenes or [])
+        health_reports["dialogue_concreteness"] = dialogue_report
+        if dialogue_report.get("total_aphorisms", 0) > 0:
+            batch_warnings.append(
+                f"THESIS_DIALOGUE: {dialogue_report['total_aphorisms']} aphoristic "
+                f"dialogue lines across {dialogue_report.get('scenes_with_issues', 0)} scenes"
+            )
+    except Exception as e:
+        logger.debug("Dialogue concreteness check failed (non-blocking): %s", e)
+
     return {
         "contracts": contracts,
         "opening_move_history": opening_move_history,
         "opening_move_violations": opening_move_violations,
         "batch_warnings": batch_warnings,
+        "health_reports": health_reports,
     }

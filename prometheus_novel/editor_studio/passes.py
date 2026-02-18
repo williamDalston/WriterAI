@@ -22,16 +22,22 @@ Add ONE brief transition sentence (5–15 words) at each flagged boundary.
 Do NOT change plot, dialogue, or tone. Only ADD bridging text.
 Preserve all existing content. Output the FULL scene with your additions."""
 
-PASS_2_DIALOGUE_FRICTION = """=== TASK: Add dialogue texture ===
-High-tension dialogue in this scene lacks interruption or deflection.
+PASS_2_DIALOGUE_FRICTION = """=== TASK: Add dialogue subtext and friction ===
+This high-tension scene's dialogue is too cooperative. Real humans dodge.
 
-Add 1–3 of these (without changing plot):
-- An interruption (one character cuts the other off)
-- A half-sentence that trails off
-- A deflection (character answers a different question)
-- A verbal dodge ("I don't—" / "Wait." / "That's not—")
+REQUIRED (add at least 2 of these):
+- One interrupted line (em-dash: "I never said—")
+- One evasive answer (character answers a different question)
+- One strategic silence (character refuses to respond; beats fill the gap)
+- One misdirection (says something true that implies something false)
+- One lie-by-omission (answers literally but withholds the key detail)
+- One half-sentence that trails off ("If you really think that...")
 
-Keep the same information and emotional beats. Add friction, not length.
+RULE: In high-stakes dialogue, no one answers the real question directly
+on the first try. The first response should dodge, deflect, or redirect.
+The truth comes out through pressure, not volunteering.
+
+Keep the same information exchange and emotional arc. Add friction, not length.
 Output the FULL scene with your additions."""
 
 PASS_3_STAKES = """=== TASK: Add stakes anchor ===
@@ -145,3 +151,28 @@ Add 1–2 transition sentences at the VERY START of this scene that:
 
 Do NOT change the rest of the scene. Only ADD at the beginning.
 Output the FULL scene with your addition."""
+
+PASS_LINE_SHARPEN = """=== TASK: Line-level sharpness ===
+Perform ONLY these micro-edits (do not rewrite structure or plot):
+
+1. FILTER WORDS: Replace "saw/heard/noticed/realized/felt/watched/observed"
+   with direct sensation. "I saw the light flicker" → "The light flickered."
+   "She heard footsteps" → "Footsteps scraped the tile."
+
+2. WEAK VERBS: Replace "was/got/started to/began to/seemed to/appeared to"
+   with specific verbs. "He was angry" → "His jaw tightened."
+   "She started to run" → "She ran."
+
+3. ADVERBS: Cut adverbs that echo the verb. "whispered softly" → "whispered."
+   "slammed angrily" → "slammed." Keep adverbs that reverse expectation
+   ("gently slammed" = intentional contrast — keep).
+
+4. WORDINESS: Compress 10-15% without cutting beats or sensory detail.
+   "She was someone who always made sure to" → "She always"
+   "The fact that he had been" → "He'd been"
+
+5. SENTENCE RHYTHM: Ensure at least one ≤6-word sentence and one ≥25-word
+   sentence per page of prose. Break up any run of 4+ same-length sentences.
+
+Do NOT change plot, dialogue content, character voice, or emotional beats.
+Output the FULL scene with your edits."""

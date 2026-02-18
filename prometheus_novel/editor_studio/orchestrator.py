@@ -22,6 +22,7 @@ from editor_studio.passes import (
     PASS_TRUNCATION_COMPLETE,
     PASS_OPENING_VARY,
     PASS_CROSS_SCENE_TRANSITION,
+    PASS_LINE_SHARPEN,
 )
 
 # Overused physical tics to replace (from weakness report / editorial_craft)
@@ -124,6 +125,7 @@ PASS_TEMPERATURES = {
     "truncation_complete": 0.3,
     "opening_vary": 0.4,
     "cross_scene_transition": 0.3,
+    "line_sharpen": 0.3,
     "voice": 0.5,
     "premium": 0.5,
 }
@@ -326,6 +328,7 @@ async def run_editor_studio(
         "tension_collapse",
         "causality",
         "gesture_diversify",
+        "line_sharpen",
         "truncation_complete",
         "opening_vary",
         "cross_scene_transition",
@@ -371,6 +374,15 @@ async def run_editor_studio(
                     for phrase in gesture_phrases
                 )
             }
+        elif pass_name == "line_sharpen":
+            # Target scenes with filter/adverb/abstract density flags, or all scenes if no triage
+            target_ids = {
+                s for s, w in warnings_by_scene.items()
+                if any(k in x for x in w for k in ("FILTER_OVERUSE", "GENERIC_VERBS", "RHYTHM", "ABSTRACT_NOUN"))
+            }
+            if not target_ids:
+                # Fallback: all scenes with content
+                target_indices = {i for i, s in enumerate(scenes_list) if s.get("content")}
         elif pass_name == "truncation_complete":
             target_ids = {s for s, w in warnings_by_scene.items() if any("TRUNCATION" in x for x in w)}
             target_indices = {i for i, s in enumerate(scenes_list) if _scene_id(s) in target_ids}
@@ -399,13 +411,13 @@ async def run_editor_studio(
                 target_indices = set()
 
         # For passes that use scene_id targeting (from quality_contract)
-        if pass_name in ("deflection", "continuity", "dialogue_friction", "stakes", "final_line", "rhythm", "tension_collapse", "causality"):
+        if pass_name in ("deflection", "continuity", "dialogue_friction", "stakes", "final_line", "rhythm", "tension_collapse", "causality", "line_sharpen"):
             target_indices = {
                 i for i, s in enumerate(scenes_list)
                 if _scene_id(s) in target_ids
             }
 
-        if not target_indices and pass_name not in ("voice", "gesture_diversify"):
+        if not target_indices and pass_name not in ("voice", "gesture_diversify", "line_sharpen"):
             logger.info("Pass %s: no targeted scenes", pass_name)
             report["passes_run"].append({"pass": pass_name, "scenes_processed": 0})
             continue
@@ -444,6 +456,8 @@ async def run_editor_studio(
                 phrase = found[0] if found else (gesture_phrases[0] if gesture_phrases else "hand through his hair")
                 count = content_lower.count(phrase.lower())
                 task = PASS_GESTURE_DIVERSIFY.format(phrase=phrase, count=count)
+            elif pass_name == "line_sharpen":
+                task = PASS_LINE_SHARPEN
             elif pass_name == "truncation_complete":
                 task = PASS_TRUNCATION_COMPLETE
             elif pass_name == "opening_vary":

@@ -4,23 +4,34 @@ budget_usd: 0
 central_conflict: She must confront the dark secrets of her past and discover the
   truth before it's too late.
 central_question: ''
+defense:
+  thresholds:
+    budget_max_defense_ratio: 0.9
+    budget_max_retries_per_stage: 5
+enhancements:
+  budget_guard:
+    enabled: false
 genre: Thriller
 influences: ''
 key_locations: ''
 key_plot_points: ''
 model_defaults:
-  api_model: gpt-oss-20b-8k
-  critic_model: gpt-oss-20b-8k
-  fallback_model: gpt-oss-20b-8k
-  local_model: gpt-oss-20b-8k
-  structure_gate_model: gpt-oss-20b-8k
-
+  api_model: gpt-oss-20b-16k
+  critic_model: gpt-oss-20b-16k
+  fallback_model: gpt-oss-20b-16k
+  local_model: gpt-oss-20b-16k
+  structure_gate_model: gpt-oss-20b-16k
 model_tuning:
   stage_max_tokens:
-    scene_drafting: 4500    # GPT-OSS 20B needs runway for ~750–833 word scenes
-    scene_expansion: 3000
     master_outline: 4096
-
+    scene_drafting: 4500
+    scene_expansion: 3000
+    # Polish stages: 2500 was too low. Allow scene + improvement headroom.
+    self_refinement: 5000
+    voice_human_pass: 5000
+    dialogue_polish: 4500
+    prose_polish: 4500
+    chapter_hooks: 3000   # Hooks-only rewrites; lower is fine
 motifs: ''
 other_characters: ''
 premise: ''
@@ -31,10 +42,10 @@ setting: A big city full of danger and secrets.
 stage_model_map:
   beat_sheet: api_model
   high_concept: api_model
-  self_refine: critic_model
   scene_drafting: api_model
+  self_refine: critic_model
   structure_gate: structure_gate_model
-status: seeded
+status: completed
 subplots: ''
 synopsis: 'In a world where dark secrets lurk beneath the surface, an unlikely hero
   must confront
@@ -54,15 +65,6 @@ synopsis: 'In a world where dark secrets lurk beneath the surface, an unlikely h
   change everything forever. Nothing will ever be the same once the truth is revealed.'
 target_length: novella (30k)
 themes: Truth, identity, betrayal, love
-
-# Local model: no $ budget; relax defense ratio (retries are free)
-enhancements:
-  budget_guard:
-    enabled: false   # budget_usd: 0 — nothing to guard
-defense:
-  thresholds:
-    budget_max_defense_ratio: 0.90   # Local: allow more retries (no cost)
-    budget_max_retries_per_stage: 5  # Give gpt-oss more runway
 title: The Last Truth
 tone: Dark, suspenseful, emotionally charged
 world_rules: ''

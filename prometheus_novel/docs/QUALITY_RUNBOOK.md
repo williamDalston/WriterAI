@@ -4,6 +4,23 @@
 
 ---
 
+## Human Readability Gate (Before Paid Polish)
+
+**Before running paid polish** (voice_human_pass, dialogue_polish, prose_polish), read **3 sample scenes**:
+- **Early** (first ~10% of scenes)
+- **Midpoint** (~50%)
+- **Climax** (last ~10%)
+
+If structurally stiff (flat dialogue, weak bones, repetitive beats), fix upstream first. Polish amplifies structure—weak bones stay weak.
+
+**How to get scene indices:**
+```bash
+writerai pre-polish-sample --config path/to/config.yaml
+```
+Prints scene IDs for early, midpoint, climax. Load `pipeline_state.json` and read those scenes before proceeding.
+
+---
+
 ## Required Artifacts (Where to Look)
 
 Before triaging, inspect:
@@ -35,6 +52,17 @@ Before triaging, inspect:
 3. Fix upstream (outline, config, seed) or tighten prompt/validator
 4. Regenerate (probabilistic — may need 1–2 retries)
 5. Re-inspect → diff scorecard if regression snapshot enabled
+
+---
+
+## Human Readability Gate (Pre-Polish Checkpoint)
+
+**Before paid polish**, read 3 sample scenes: early, midpoint, climax. If structurally stiff, fix upstream first—polish amplifies structure; weak bones stay weak.
+
+**Process:**
+1. Run `writerai pre-polish-sample --config path/to/config.yaml` to print scene indices for early, midpoint, climax (and optionally flat scenes from voice heatmap)
+2. Read those scenes in the compiled output or `pipeline_state.json`
+3. If stiff/weak: adjust outline, scene purposes, or tension before running voice_human_pass / prose_polish
 
 ---
 

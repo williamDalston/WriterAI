@@ -194,6 +194,17 @@ def run_scorecard(
     evenness = _ending_evenness(ending_counts)
     ending_pass = evenness >= t.get("ending_evenness_min", 0.40)
 
+    # 6. Abstract noun density (per 1k words)
+    try:
+        from quality.repetition_scanner import compute_abstract_noun_density
+        and_scores = [compute_abstract_noun_density(s["content"]) for s in content_scenes]
+        and_avg = sum(and_scores) / n if n else 0.0
+        and_pass = and_avg <= t.get("abstract_noun_density_max", 12.0)
+    except Exception:
+        and_scores = []
+        and_avg = 0.0
+        and_pass = True
+
     # Build per-metric results
     metric_results = {
         "lexical_diversity": {
@@ -223,6 +234,12 @@ def run_scorecard(
             "evenness_score": round(evenness, 4),
             "pass": ending_pass,
         },
+        "abstract_noun_density": {
+            "per_scene": and_scores,
+            "manuscript_avg": round(and_avg, 1),
+            "threshold_max": t.get("abstract_noun_density_max", 12.0),
+            "pass": and_pass,
+        },
     }
 
     # Weighted scoring (from policy scorecard_weights config)
@@ -234,7 +251,7 @@ def run_scorecard(
         metric_results["weighted"] = weighted_result
         overall_pass = weighted_result["pass"]
     else:
-        overall_pass = ld_pass and dd_pass and emo_pass and verb_pass and ending_pass
+        overall_pass = ld_pass and dd_pass and emo_pass and verb_pass and ending_pass and and_pass
 
     metric_results["pass"] = overall_pass
     return metric_results
@@ -247,6 +264,7 @@ _METRIC_KEY_MAP = {
     "emotional_diversity": "emotional_mode_diversity",
     "verb_specificity": "verb_specificity_index",
     "scene_endings": "scene_ending_distribution",
+    "abstract_noun_density": "abstract_noun_density",
 }
 
 

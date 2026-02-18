@@ -698,7 +698,37 @@ class OllamaClient(BaseLLMClient):
             create_kwargs["response_format"] = {"type": "json_object"}
         if stop:
             create_kwargs["stop"] = stop
-        create_kwargs.update({k: v for k, v in kwargs.items()})
+        filtered = {k: v for k, v in kwargs.items()
+                    if k not in ("repeat_penalty", "frequency_penalty", "presence_penalty")}
+        create_kwargs.update(filtered)
+
+        # Anti-repetition penalties for prose generation (max_tokens >= 1000)
+        # Three complementary mechanisms:
+        # 1. frequency_penalty (OpenAI-compat): penalizes tokens proportional to appearance count
+        # 2. presence_penalty (OpenAI-compat): binary penalty if token appeared at all
+        # 3. repeat_penalty (Ollama native via extra_body): penalizes recent token repetition
+        is_prose = max_tokens >= 1000
+        fp = kwargs.get("frequency_penalty")
+        if fp is None and is_prose:
+            fp = 0.3
+        if fp is not None:
+            create_kwargs["frequency_penalty"] = fp
+
+        pp = kwargs.get("presence_penalty")
+        if pp is None and is_prose:
+            pp = 0.3
+        if pp is not None:
+            create_kwargs["presence_penalty"] = pp
+
+        rp = kwargs.get("repeat_penalty")
+        if rp is None and is_prose:
+            rp = 1.3  # Increased from 1.2 — stronger loop suppression
+        if rp is not None:
+            extra = dict(create_kwargs.get("extra_body") or {})
+            opts = dict(extra.get("options") or {})
+            opts["repeat_penalty"] = rp
+            extra["options"] = opts
+            create_kwargs["extra_body"] = extra
 
         # Retry loop with exponential backoff
         last_error = None
@@ -952,6 +982,40 @@ class AnthropicClient(BaseLLMClient):
 
 # Ollama/local model names - no API cost
 OLLAMA_MODEL_PREFIXES = ("ollama:", "llama", "mistral", "qwen", "phi", "gemma", "codellama", "dolphin", "neural", "openhermes", "nous", "deepseek", "yi-", "gpt-oss")
+
+# Context window limits (tokens) — for pre-flight checks
+_CONTEXT_LIMIT_SUFFIXES = [
+    ("-128k", 128000), ("-128kk", 128000), ("-200k", 200000),
+    ("-32k", 32000), ("-32kk", 32000),
+    ("-16k", 16384), ("-16kk", 16384),
+    ("-8k", 8192), ("-8kk", 8192),
+    ("-4k", 4096),
+]
+
+
+def get_context_limit(model_name: str, config_override: Optional[int] = None) -> int:
+    """Get context window limit in tokens for a model. Used for pre-flight checks.
+
+    Config override takes precedence. Otherwise parses model name for -8k/-16k/-32k
+    suffixes, then falls back to provider defaults.
+    """
+    if config_override is not None and config_override > 0:
+        return int(config_override)
+    lower = (model_name or "").lower()
+    for suffix, limit in _CONTEXT_LIMIT_SUFFIXES:
+        if suffix in lower:
+            return limit
+    # Provider defaults (conservative)
+    if "claude" in lower or "anthropic" in lower:
+        return 100000
+    if "gemini" in lower:
+        return 32000
+    if "gpt" in lower or "openai" in lower:
+        return 128000
+    # Ollama/local: default 16k unless suffix indicated
+    if any(lower.startswith(p) for p in OLLAMA_MODEL_PREFIXES):
+        return 16384
+    return 16384
 
 
 def is_ollama_model(model_name: str) -> bool:

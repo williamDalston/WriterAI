@@ -271,6 +271,8 @@ def cmd_generate(args):
     critic_model = model_defaults.get("critic_model", api_model)
     fallback_model = model_defaults.get("fallback_model", api_model)
     structure_gate_model = model_defaults.get("structure_gate_model")
+    draft_model = model_defaults.get("draft_model", api_model)
+    rewrite_model = model_defaults.get("rewrite_model", critic_model)
 
     llm_clients = {}
     default_client = get_client(api_model)
@@ -279,6 +281,8 @@ def cmd_generate(args):
     llm_clients["gemini"] = get_client(fallback_model)
     if structure_gate_model:
         llm_clients["structure"] = get_client(structure_gate_model)
+    llm_clients["draft"] = get_client(draft_model)
+    llm_clients["rewrite"] = get_client(rewrite_model)
 
     local_tag = "Ollama" if is_ollama_model(api_model) else "API"
     print_info(f"Model: {api_model} ({local_tag})")
@@ -288,6 +292,10 @@ def cmd_generate(args):
         print_info(f"Fallback: {fallback_model}")
     if structure_gate_model:
         print_info(f"Structure gate: {structure_gate_model}")
+    if draft_model != api_model:
+        print_info(f"Draft model: {draft_model}")
+    if rewrite_model != critic_model:
+        print_info(f"Rewrite model: {rewrite_model}")
 
     project_path = config_path.parent
     orchestrator = PipelineOrchestrator(
@@ -352,6 +360,32 @@ def cmd_generate(args):
         for i, s in enumerate(all_stages, 1):
             print(f"  {i:2d}. {s}")
         return 0
+
+    # Human readability gate: --pre-polish-sample (ROADMAP_V2 #11)
+    if getattr(args, 'pre_polish_sample', False):
+        state_file = project_path / "pipeline_state.json"
+        if not state_file.exists():
+            print_warning("No pipeline_state.json — run pipeline first to generate scenes.")
+            return 1
+        try:
+            state_data = json.loads(state_file.read_text(encoding="utf-8"))
+            scenes = state_data.get("scenes") or []
+            n = len(scenes)
+            if n == 0:
+                print_warning("No scenes in pipeline state.")
+                return 1
+            early_idx = max(0, int(n * 0.05))
+            midpoint_idx = max(0, n // 2)
+            climax_idx = min(n - 1, max(0, int(n * 0.95)))
+            print(f"\n{Colors.CYAN}Pre-polish sample: read these 3 scenes before paid polish{Colors.END}\n")
+            print(f"  EARLY   (scene {early_idx + 1}/{n}): {scenes[early_idx].get('scene_id', early_idx + 1)}")
+            print(f"  MIDPOINT (scene {midpoint_idx + 1}/{n}): {scenes[midpoint_idx].get('scene_id', midpoint_idx + 1)}")
+            print(f"  CLIMAX  (scene {climax_idx + 1}/{n}): {scenes[climax_idx].get('scene_id', climax_idx + 1)}")
+            print("\nIf structurally stiff, fix upstream before polish.")
+            return 0
+        except Exception as e:
+            print_error(f"Failed to load pipeline state: {e}")
+            return 1
 
     # Run
     print(f"\n{Colors.CYAN}Starting pipeline...{Colors.END}\n")
@@ -825,6 +859,60 @@ def cmd_cover(args):
 # Main Entry Point
 # ============================================================================
 
+def cmd_pre_polish_sample(args):
+    """Human readability gate: print scene indices (early, midpoint, climax) to read before paid polish."""
+    config_path = Path(args.config)
+    if not config_path.exists():
+        print_error(f"Config not found: {config_path}")
+        return 1
+    project_path = config_path.parent
+    state_file = project_path / "pipeline_state.json"
+    if not state_file.exists():
+        print_error(f"pipeline_state.json not found in {project_path}. Run generate first.")
+        return 1
+    data = json.loads(state_file.read_text(encoding="utf-8"))
+    scenes = data.get("scenes") or []
+    if not scenes:
+        print_warning("No scenes in pipeline state.")
+        return 0
+    n = len(scenes)
+    early_idx = max(0, int(n * 0.05))
+    mid_idx = max(0, int(n * 0.5))
+    climax_idx = min(n - 1, max(0, int(n * 0.95)))
+    indices = sorted(set([early_idx, mid_idx, climax_idx]))
+
+    # Optionally add voice heatmap flat scenes
+    if getattr(args, "flat", False):
+        try:
+            config_path_for_flat = project_path / "config.yaml"
+            config = {}
+            if config_path_for_flat.exists():
+                with open(config_path_for_flat, encoding="utf-8") as f:
+                    config = yaml.safe_load(f) or {}
+            from quality.voice_heatmap import get_flat_scene_ids
+            flat_ids = get_flat_scene_ids(scenes, config)
+            if flat_ids:
+                flat_indices = []
+                for i, s in enumerate(scenes):
+                    if not isinstance(s, dict):
+                        continue
+                    sid = s.get("scene_id") or s.get("id") or f"ch{s.get('chapter',0)}_s{s.get('scene_number', s.get('scene', i))}"
+                    if sid in flat_ids:
+                        flat_indices.append(i)
+                indices = sorted(set(indices + flat_indices))
+        except Exception as e:
+            print_warning(f"Voice heatmap skipped: {e}")
+
+    print(f"\n{Colors.HEADER}Pre-Polish Sample: Read These {len(indices)} Scenes{Colors.END}\n")
+    print_info(f"Total scenes: {n}")
+    for i in indices:
+        s = scenes[i] if isinstance(scenes[i], dict) else {}
+        sid = s.get("id") or s.get("scene_id") or f"ch{s.get('chapter','?')}_s{s.get('scene_number', s.get('scene', i))}"
+        print(f"  Index {i}: {sid}")
+    print(f"\n{Colors.CYAN}Load pipeline_state.json, read scenes at these indices before running voice_human_pass / prose_polish.{Colors.END}\n")
+    return 0
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -852,6 +940,8 @@ def main():
     gen_parser.add_argument("--end-stage", dest="end_stage", help="Stop after this stage (inclusive)")
     gen_parser.add_argument("--list-stages", dest="list_stages", action="store_true", help="List all pipeline stages and exit")
     gen_parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint")
+    gen_parser.add_argument("--pre-polish-sample", dest="pre_polish_sample", action="store_true",
+                            help="Print scene indices for human readability gate (early, midpoint, climax); exit before running")
 
     # compile command
     compile_parser = subparsers.add_parser("compile", help="Compile novel to output format")
@@ -941,6 +1031,14 @@ def main():
     audit_parser.add_argument("--config", "-c", help="Path to config.yaml")
     audit_parser.add_argument("--skip-llm", dest="skip_llm", action="store_true", help="Skip fresh-eyes (LLM) audit")
 
+    # pre-polish-sample command - Human readability gate: print scene indices to read before paid polish
+    sample_parser = subparsers.add_parser(
+        "pre-polish-sample",
+        help="Print scene indices (early, midpoint, climax) to read before paid polish. See QUALITY_RUNBOOK.",
+    )
+    sample_parser.add_argument("--config", "-c", required=True, help="Path to project config.yaml")
+    sample_parser.add_argument("--flat", action="store_true", help="Include voice heatmap flat-scene indices")
+
     # audiobook command - generate ACX-compliant audiobook MP3s
     audio_parser = subparsers.add_parser("audiobook", help="Generate ACX-compliant audiobook MP3s")
     audio_parser.add_argument("--config", "-c", required=True, help="Path to project config.yaml")
@@ -962,6 +1060,7 @@ def main():
     commands = {
         "new": cmd_new,
         "generate": cmd_generate,
+        "pre-polish-sample": cmd_pre_polish_sample,
         "compile": cmd_compile,
         "ideas": cmd_ideas,
         "serve": cmd_serve,
