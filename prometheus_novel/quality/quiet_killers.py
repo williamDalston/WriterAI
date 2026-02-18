@@ -802,8 +802,60 @@ def apply_weak_verb_substitution(text: str, budget: int = 3) -> str:
     return result
 
 
-def apply_final_line_rewrite(content: str) -> str:
-    """If last sentence is SUMMARY or ATMOSPHERE, replace with action-based ending."""
+_FINAL_LINE_BANK = {
+    "default": [
+        "The door clicked shut.",
+        "Silence filled the room.",
+        "Outside, the wind picked up.",
+        "A light went out down the hall.",
+        "The clock on the wall ticked once, twice.",
+        "Somewhere, a door slammed.",
+        "Rain began to fall.",
+        "The last ember died in the grate.",
+        "The glass was empty. So was the room.",
+        "A car started in the lot below.",
+    ],
+    "conflict": [
+        "The door didn't slam. That was worse.",
+        "Silence filled the space where words should have been.",
+        "The chair was still warm where they'd been sitting.",
+        "A glass sat untouched on the counter between them.",
+        "The hallway felt longer on the way out.",
+        "Something had shifted. Neither of them moved to fix it.",
+    ],
+    "romance": [
+        "Neither of them moved first.",
+        "The space between them had changed. They both knew it.",
+        "A door closed somewhere, and neither of them flinched.",
+        "The candle guttered, and the shadows rearranged.",
+        "One of them exhaled. The other pretended not to hear.",
+        "The night settled around them like a held breath.",
+    ],
+    "reveal": [
+        "The truth sat between them like something breakable.",
+        "The phone screen went dark. The room didn't.",
+        "A clock ticked in a room neither of them was listening to.",
+        "The paper lay where it had fallen. Nobody picked it up.",
+        "Something had been said that couldn't be unsaid.",
+        "The file was closed. The question wasn't.",
+    ],
+    "recovery": [
+        "A bird sang outside the window. Ordinary. Persistent.",
+        "The coffee had gone cold without either of them noticing.",
+        "Daylight crept across the floor like an apology.",
+        "The kettle clicked off. Someone would have to get up.",
+        "The room was quiet. Not empty-quiet. Full-quiet.",
+    ],
+}
+
+
+def apply_final_line_rewrite(content: str, scene_mode: str = "default") -> str:
+    """If last sentence is SUMMARY or ATMOSPHERE, replace with action-based ending.
+
+    For ATMOSPHERE endings, first tries to promote the last concrete action or
+    dialogue line from within the final 3 paragraphs. Falls back to mode-aware
+    template bank.
+    """
     paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
     if len(paragraphs) < 2:
         return content
@@ -818,18 +870,20 @@ def apply_final_line_rewrite(content: str) -> str:
     classification = _classify_ending(last_sent)
     if classification not in ("SUMMARY", "ATMOSPHERE"):
         return content
-    # POV-agnostic action endings (work in any person)
-    action_endings = [
-        "The door clicked shut.",
-        "Silence filled the room.",
-        "Outside, the wind picked up.",
-        "A light went out down the hall.",
-        "The clock on the wall ticked once, twice.",
-        "Somewhere, a door slammed.",
-        "Rain began to fall.",
-        "The last ember died in the grate.",
-    ]
-    new_ending = random.choice(action_endings)
+
+    # For ATMOSPHERE: try to promote last action/dialogue paragraph
+    if classification == "ATMOSPHERE" and len(paragraphs) >= 3:
+        for scan_idx in range(len(paragraphs) - 2, max(len(paragraphs) - 4, -1), -1):
+            scan_class = _classify_paragraph(paragraphs[scan_idx])
+            if scan_class in ("DIALOGUE", "ACTION"):
+                # Move this paragraph to the end, drop trailing atmosphere
+                promoted = paragraphs[scan_idx]
+                remaining = paragraphs[:scan_idx] + paragraphs[scan_idx + 1:-1]
+                return "\n\n".join(remaining) + "\n\n" + promoted
+
+    # Fall back to mode-aware template bank
+    bank = _FINAL_LINE_BANK.get(scene_mode, _FINAL_LINE_BANK["default"])
+    new_ending = random.choice(bank)
     kept = "\n\n".join(paragraphs[:-1])
     return kept + "\n\n" + new_ending
 
@@ -870,3 +924,207 @@ def check_therapy_speak(content: str) -> List[str]:
             f"Characters should express emotion through behavior, not clinical language."
         )
     return warnings
+
+
+# === SCENE PROFILE CLASSIFIER ===
+
+
+def classify_scene_profile(
+    content: str, purpose: str, tension_level: int, function: str
+) -> dict:
+    """Combine function + tension into a unified scene profile.
+
+    Returns dict with: tension_level, scene_mode, primary_risk, function.
+    """
+    func = function.upper() if function else "MIXED"
+
+    # scene_mode from function + tension
+    if func in ("CONFLICT", "PURSUIT") and tension_level >= 6:
+        mode = "conflict"
+    elif func in ("REVEAL", "DECISION"):
+        mode = "reveal"
+    elif func == "BOND" and tension_level <= 5:
+        mode = "romance"
+    elif func == "AFTERMATH" and tension_level <= 4:
+        mode = "recovery"
+    else:
+        mode = "setup"
+
+    # primary_risk from mode
+    risk_map = {
+        "conflict": "deflection",
+        "reveal": "stakes",
+        "romance": "ending",
+        "recovery": "ending",
+        "setup": "continuity",
+    }
+
+    return {
+        "tension_level": tension_level,
+        "scene_mode": mode,
+        "primary_risk": risk_map.get(mode, "continuity"),
+        "function": func,
+    }
+
+
+# === DEFLECTION GROUNDING TRANSFORM ===
+
+_INTERNAL_STARTS = re.compile(
+    r"^(I\s+(thought|felt|realized|wondered|knew|understood|couldn't help|found myself)|"
+    r"Part of me|Maybe\b|Something in me|It occurred to me|"
+    r"A part of me|For a moment|In that moment|All I)",
+    re.IGNORECASE,
+)
+_DESCRIPTION_STARTS = re.compile(
+    r"^(The\s+[A-Za-z]+\s+(was|were|had|seemed|looked|felt|smelled|stretched)|"
+    r"Outside[,\s]|Around\s+(us|me|him|her|them)|Above[,\s]|Beyond[,\s]|"
+    r"Somewhere\s+(in|nearby|above|below))",
+    re.IGNORECASE,
+)
+_DIALOGUE_MARKER = re.compile(r'["\u201c\u201d]')
+
+_GROUNDING_INSERTS = [
+    "A door slammed somewhere below.",
+    "Glass clinked against the table.",
+    "The floorboards creaked under shifting weight.",
+    "Outside, a car engine turned over.",
+    "Somewhere, a phone buzzed against wood.",
+    "Wind pushed through the half-open window.",
+    "Ice shifted in a glass no one was drinking.",
+    "Footsteps passed in the hallway and faded.",
+    "A chair scraped across the floor behind them.",
+    "The elevator chimed at the end of the corridor.",
+    "Water dripped from a faucet in the next room.",
+    "Keys jangled in a pocket no one reached for.",
+]
+
+
+def _classify_paragraph(para: str) -> str:
+    """Classify paragraph as INTERNAL, DESCRIPTION, DIALOGUE, or ACTION."""
+    stripped = para.strip()
+    if not stripped:
+        return "ACTION"
+    if _DIALOGUE_MARKER.search(stripped):
+        return "DIALOGUE"
+    if _INTERNAL_STARTS.match(stripped):
+        return "INTERNAL"
+    if _DESCRIPTION_STARTS.match(stripped):
+        return "DESCRIPTION"
+    return "ACTION"
+
+
+def apply_deflection_grounding(
+    text: str, tension_level: int = 5, max_edits: int = 3
+) -> str:
+    """Break up consecutive reflective paragraphs in high-tension scenes.
+
+    For tension >= 6, finds runs of 2+ INTERNAL/DESCRIPTION paragraphs
+    and prepends a sensory grounding sentence to the 2nd paragraph of each run.
+    """
+    if tension_level < 6:
+        return text
+
+    paragraphs = text.split("\n\n")
+    if len(paragraphs) < 3:
+        return text
+
+    classifications = [_classify_paragraph(p) for p in paragraphs]
+    edits = 0
+    insert_idx = 0
+
+    i = 0
+    while i < len(paragraphs) - 1 and edits < max_edits:
+        if classifications[i] in ("INTERNAL", "DESCRIPTION") and \
+           classifications[i + 1] in ("INTERNAL", "DESCRIPTION"):
+            # Found a run — ground the 2nd paragraph
+            grounding = _GROUNDING_INSERTS[insert_idx % len(_GROUNDING_INSERTS)]
+            paragraphs[i + 1] = grounding + " " + paragraphs[i + 1]
+            insert_idx += 1
+            edits += 1
+            i += 2  # skip past the run
+        else:
+            i += 1
+
+    return "\n\n".join(paragraphs)
+
+
+# === CONTINUITY BRIDGE INSERTER ===
+
+_TIME_ANCHOR = re.compile(
+    r"\b(morning|afternoon|evening|night|dawn|dusk|midnight|noon|"
+    r"hours later|next day|next morning|that night|that evening|"
+    r"later that|the following|by the time|when .+ woke)\b",
+    re.IGNORECASE,
+)
+_LOCATION_ANCHOR = re.compile(
+    r"\b(in the|at the|back in|outside the|inside the|"
+    r"the .+ was|returned to|stood in|sat in|arrived at)\b",
+    re.IGNORECASE,
+)
+
+
+def apply_bridge_insert(
+    text: str,
+    prev_text: str,
+    pov_name: str = "",
+    scene_location: str = "",
+    prev_location: str = "",
+) -> str:
+    """Insert a grounding bridge at scene start when location/time changes.
+
+    Checks if scene's first paragraph already has time + location anchors.
+    If anchors missing and location changed, prepends a bridge sentence.
+    """
+    if not prev_text or not text:
+        return text
+
+    paragraphs = text.split("\n\n")
+    if not paragraphs:
+        return text
+
+    first_para = paragraphs[0]
+    has_time = bool(_TIME_ANCHOR.search(first_para))
+    has_location = bool(_LOCATION_ANCHOR.search(first_para))
+
+    # Already grounded
+    if has_time and has_location:
+        return text
+
+    # Check if location actually changed
+    location_changed = False
+    if scene_location and prev_location:
+        location_changed = scene_location.lower().strip() != prev_location.lower().strip()
+    elif not scene_location and not prev_location:
+        # No metadata — compare last para of prev vs first para of current
+        prev_paras = [p.strip() for p in prev_text.split("\n\n") if p.strip()]
+        if prev_paras:
+            prev_locs = set(_LOCATION_NAMES.findall(prev_paras[-1].lower()))
+            curr_locs = set(_LOCATION_NAMES.findall(first_para.lower()))
+            if prev_locs and curr_locs and not (prev_locs & curr_locs):
+                location_changed = True
+            elif prev_locs and not curr_locs:
+                location_changed = True
+
+    if not location_changed and has_time:
+        return text
+    if not location_changed and has_location:
+        return text
+    if not location_changed:
+        return text
+
+    # Build bridge
+    who = pov_name if pov_name else "I"
+    where = f"in the {scene_location}" if scene_location else ""
+
+    if where:
+        bridge = f"{who} found herself {where}." if who != "I" else f"I found myself {where}."
+    else:
+        bridge = "The setting had changed."
+
+    # Only prepend if we actually need it
+    if not has_time and not has_location:
+        paragraphs[0] = bridge + " " + paragraphs[0]
+    elif not has_location and where:
+        paragraphs[0] = bridge + " " + paragraphs[0]
+
+    return "\n\n".join(paragraphs)

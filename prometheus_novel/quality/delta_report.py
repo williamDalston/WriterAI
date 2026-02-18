@@ -133,8 +133,25 @@ def _summarize_pass_report(pass_name: str, report: Dict[str, Any]) -> Dict[str, 
         }
     elif pass_name == "cliche_clusters":
         summary["flagged"] = report.get("flagged", 0)
+    elif pass_name == "quiet_killers":
+        summary["filter_removal_scenes"] = report.get("filter_removal_scenes", 0)
+        summary["weak_verb_substitution_scenes"] = report.get("weak_verb_substitution_scenes", 0)
+        summary["final_line_rewrite_scenes"] = report.get("final_line_rewrite_scenes", 0)
+    elif pass_name == "bridge_and_grounding":
+        summary["bridge_insert_scenes"] = report.get("bridge_insert_scenes", 0)
+        summary["deflection_grounding_scenes"] = report.get("deflection_grounding_scenes", 0)
 
     return summary
+
+
+def _normalize_pass_delta(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Ensure every pass delta has scenes_changed to prevent KeyError downstream."""
+    out = dict(d)
+    if "scenes_changed" not in out:
+        out["scenes_changed"] = 0
+    if "scenes_total" not in out:
+        out["scenes_total"] = 0
+    return out
 
 
 def build_delta_report(
@@ -153,8 +170,10 @@ def build_delta_report(
     total_scenes_changed = 0
     total_replacements = 0
 
-    for d in pass_deltas:
-        total_scenes_changed = max(total_scenes_changed, d["scenes_changed"])
+    normalized = [_normalize_pass_delta(d) for d in pass_deltas]
+
+    for d in normalized:
+        total_scenes_changed = max(total_scenes_changed, d.get("scenes_changed", 0))
         summary = d.get("pass_report_summary", {})
         total_replacements += summary.get("total_replacements", 0)
         total_replacements += summary.get("total_replaced", 0)
@@ -163,10 +182,10 @@ def build_delta_report(
     return {
         "version": 1,
         "summary": {
-            "total_passes": len(pass_deltas),
+            "total_passes": len(normalized),
             "max_scenes_changed": total_scenes_changed,
             "total_replacements": total_replacements,
         },
-        "passes": pass_deltas,
+        "passes": normalized,
         "unresolved": unresolved,
     }

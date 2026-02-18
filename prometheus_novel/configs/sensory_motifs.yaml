@@ -1,0 +1,30 @@
+# Sensory motif tracking — prevent one sensory anchor from dominating
+# When a motif (lemons, salt, etc.) exceeds max_per_5k words, trigger swap pass.
+# Swap candidates replace excess occurrences to diversify sensory palette.
+#
+# Threshold: occurrences per 5,000 words. Burning Vows had lemon overload.
+# Swap order: first excess use gets first swap candidate, etc.
+
+motifs:
+  lemon:
+    # Use single quotes so \b stays literal for regex word boundary
+    pattern: '\b(lemon|lemons|lemon-scented|lemon grove|lemon tart|lemon peel|lemon rind|lemon blossom|lemon zest)\b'
+    max_per_5k: 3
+    swap_candidates:
+      - bergamot
+      - orange zest
+      - grapefruit
+      - citron
+      - lime
+      - jasmine
+      - honeysuckle
+  salt:
+    pattern: '\b(salt air|salt spray|salt-bleached|salty|salt on|salt of)\b'
+    max_per_5k: 2
+    swap_candidates:
+      - brine
+      - spray
+      - mineral tang
+      - sea mist
+      - ocean breeze
+      - coastal air

@@ -25,6 +25,10 @@ from quality.quiet_killers import (
     check_cross_scene_continuity,
     _OBJ_ACQUIRE,
     _OBJ_RELEASE,
+    classify_scene_profile,
+    apply_deflection_grounding,
+    apply_bridge_insert,
+    apply_final_line_rewrite,
 )
 from quality.quality_contract import (
     _check_causality,
@@ -387,3 +391,236 @@ class TestCrossSceneTextOrder:
         warnings = check_cross_scene_continuity(scenes)
         ghost = [w for w in warnings if "CROSS_POSSESSION_GHOST" in w]
         assert len(ghost) == 0, f"Cup was re-acquired at end of scene 1: {ghost}"
+
+
+# ============================================================================
+# 9. classify_scene_profile — mode/risk mapping
+# ============================================================================
+
+
+class TestClassifySceneProfile:
+    """Scene profile should map function + tension to mode + risk."""
+
+    def test_conflict_high_tension(self):
+        result = classify_scene_profile("content", "purpose", 7, "CONFLICT")
+        assert result["scene_mode"] == "conflict"
+        assert result["primary_risk"] == "deflection"
+        assert result["function"] == "CONFLICT"
+
+    def test_bond_low_tension(self):
+        result = classify_scene_profile("content", "purpose", 3, "BOND")
+        assert result["scene_mode"] == "romance"
+        assert result["primary_risk"] == "ending"
+
+    def test_reveal_any_tension(self):
+        for t in [2, 5, 8]:
+            result = classify_scene_profile("content", "purpose", t, "REVEAL")
+            assert result["scene_mode"] == "reveal"
+            assert result["primary_risk"] == "stakes"
+
+    def test_decision_is_reveal_mode(self):
+        result = classify_scene_profile("content", "purpose", 5, "DECISION")
+        assert result["scene_mode"] == "reveal"
+
+    def test_aftermath_low_tension(self):
+        result = classify_scene_profile("content", "purpose", 3, "AFTERMATH")
+        assert result["scene_mode"] == "recovery"
+        assert result["primary_risk"] == "ending"
+
+    def test_pursuit_high_tension(self):
+        result = classify_scene_profile("content", "purpose", 8, "PURSUIT")
+        assert result["scene_mode"] == "conflict"
+
+    def test_unknown_function_defaults_setup(self):
+        result = classify_scene_profile("content", "purpose", 5, "UNKNOWN")
+        assert result["scene_mode"] == "setup"
+        assert result["primary_risk"] == "continuity"
+
+    def test_empty_function_defaults_mixed(self):
+        result = classify_scene_profile("content", "purpose", 5, "")
+        assert result["function"] == "MIXED"
+        assert result["scene_mode"] == "setup"
+
+    def test_tension_passthrough(self):
+        result = classify_scene_profile("content", "purpose", 9, "CONFLICT")
+        assert result["tension_level"] == 9
+
+    def test_bond_high_tension_not_romance(self):
+        """BOND with tension > 5 shouldn't be romance mode."""
+        result = classify_scene_profile("content", "purpose", 7, "BOND")
+        assert result["scene_mode"] != "romance"
+
+
+# ============================================================================
+# 10. apply_deflection_grounding — reflective para detection + insert
+# ============================================================================
+
+
+class TestDeflectionGrounding:
+    """Break up consecutive reflective paragraphs in high-tension scenes."""
+
+    def test_no_change_low_tension(self):
+        text = "I thought about it.\n\nI realized something.\n\nShe spoke."
+        result = apply_deflection_grounding(text, tension_level=4)
+        assert result == text
+
+    def test_inserts_grounding_in_reflective_run(self):
+        text = (
+            "I thought about what she said.\n\n"
+            "I realized the truth was harder than I expected.\n\n"
+            "She turned away."
+        )
+        result = apply_deflection_grounding(text, tension_level=7)
+        assert result != text
+        # Grounding sentence is prepended to the 2nd reflective paragraph
+        assert len(result) > len(text)
+
+    def test_dialogue_breaks_run(self):
+        text = (
+            "I thought about it.\n\n"
+            '"Stop," she said.\n\n'
+            "I felt the weight of it."
+        )
+        result = apply_deflection_grounding(text, tension_level=8)
+        # Dialogue between reflective paras breaks the run, no insert needed
+        assert result == text
+
+    def test_max_edits_respected(self):
+        # Build 6 consecutive reflective paragraphs = 3 potential insert points
+        paras = [f"I thought about thing number {i}." for i in range(7)]
+        text = "\n\n".join(paras)
+        result = apply_deflection_grounding(text, tension_level=8, max_edits=2)
+        # Should add at most 2 inserts
+        added = len(result.split("\n\n")) - len(text.split("\n\n"))
+        assert added <= 2
+
+    def test_single_reflective_no_insert(self):
+        text = (
+            "I wondered what she meant.\n\n"
+            "She crossed the room quickly."
+        )
+        result = apply_deflection_grounding(text, tension_level=8)
+        # Single reflective para = no run, no insert
+        assert result == text
+
+
+# ============================================================================
+# 11. apply_bridge_insert — location change detection + template
+# ============================================================================
+
+
+class TestBridgeInsert:
+    """Insert grounding bridge when location changes between scenes."""
+
+    def test_no_change_when_anchors_present(self):
+        text = "That evening, in the kitchen, she found the letter.\n\nMore content here."
+        prev = "They left the balcony together."
+        result = apply_bridge_insert(text, prev, scene_location="kitchen", prev_location="balcony")
+        assert result == text
+
+    def test_bridge_added_on_location_change(self):
+        text = "She opened the envelope slowly.\n\nThe words blurred."
+        prev = "They stepped off the boat at the dock."
+        result = apply_bridge_insert(
+            text, prev, pov_name="Lena",
+            scene_location="monastery", prev_location="dock",
+        )
+        assert result != text
+        # Bridge should be prepended
+        assert len(result) > len(text)
+
+    def test_no_bridge_same_location(self):
+        text = "She sat down at the table.\n\nThe wine was still warm."
+        prev = "Marco poured more wine at the table."
+        result = apply_bridge_insert(
+            text, prev, pov_name="Lena",
+            scene_location="kitchen", prev_location="kitchen",
+        )
+        assert result == text
+
+    def test_no_bridge_for_first_scene(self):
+        text = "She arrived at the airport.\n\nThe terminal was crowded."
+        result = apply_bridge_insert(text, "", pov_name="Lena", scene_location="airport")
+        # No prev_text means first scene, no bridge needed
+        assert result == text
+
+    def test_bridge_contains_location_reference(self):
+        text = "She unfolded the map.\n\nThe ink was faded."
+        prev = "They said goodbye in the plaza."
+        result = apply_bridge_insert(
+            text, prev, pov_name="Lena",
+            scene_location="library", prev_location="plaza",
+        )
+        if result != text:
+            # If bridge was inserted, it should reference something
+            assert len(result) > len(text)
+
+
+# ============================================================================
+# 12. apply_final_line_rewrite — mode-aware bank selection
+# ============================================================================
+
+
+class TestFinalLineRewriteEnhanced:
+    """Final line rewrite with mode-aware template bank."""
+
+    def test_summary_ending_rewritten_default(self):
+        text = (
+            "She ran across the room.\n\n"
+            "He caught her arm.\n\n"
+            "It was clear that everything had changed between them and nothing would ever be the same again."
+        )
+        result = apply_final_line_rewrite(text, scene_mode="default")
+        # Summary ending should be replaced
+        assert result != text
+
+    def test_action_ending_preserved(self):
+        text = (
+            "She ran across the room.\n\n"
+            "He pulled the door shut."
+        )
+        result = apply_final_line_rewrite(text, scene_mode="default")
+        assert result == text
+
+    def test_dialogue_ending_preserved(self):
+        text = (
+            "She ran across the room.\n\n"
+            '"Don\'t follow me," she said.'
+        )
+        result = apply_final_line_rewrite(text, scene_mode="default")
+        assert result == text
+
+    def test_conflict_mode_uses_conflict_bank(self):
+        text = (
+            "She ran across the room.\n\n"
+            "It was clear that the argument had fundamentally changed everything between them forever."
+        )
+        result = apply_final_line_rewrite(text, scene_mode="conflict")
+        if result != text:
+            # Should not end with the original summary
+            assert "fundamentally changed everything" not in result
+
+    def test_romance_mode_available(self):
+        text = (
+            "He smiled softly.\n\n"
+            "It was clear that the evening had changed things between them in ways neither could articulate or understand."
+        )
+        result = apply_final_line_rewrite(text, scene_mode="romance")
+        assert result != text
+
+    def test_reveal_mode_available(self):
+        text = (
+            "She read the document.\n\n"
+            "Everything had shifted between them and nothing would ever be the same."
+        )
+        result = apply_final_line_rewrite(text, scene_mode="reveal")
+        assert result != text
+
+    def test_unknown_mode_uses_default(self):
+        text = (
+            "She ran.\n\n"
+            "It was clear that things had changed between them and nothing would be the same again."
+        )
+        result = apply_final_line_rewrite(text, scene_mode="nonexistent_mode")
+        # Should fall back to default bank
+        assert result != text

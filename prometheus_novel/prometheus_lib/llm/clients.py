@@ -320,13 +320,17 @@ class OpenAIClient(BaseLLMClient):
             try:
                 # Rate limit check inside retry loop (re-check on each attempt)
                 await rate_limit_check("openai")
-                # GPT-5+ / o-series: max_completion_tokens, no stop, temperature=1 only
+                # GPT-5+ / o-series: max_completion_tokens (with reasoning headroom),
+                # no stop, temperature=1 only
                 _is_reasoning = self.model_name.startswith(("gpt-5", "o1", "o3"))
                 token_key = "max_completion_tokens" if _is_reasoning else "max_tokens"
+                # Reasoning models need ~3-4x tokens because internal thinking
+                # consumes tokens before any output is produced
+                effective_max = max_tokens * 4 if _is_reasoning else max_tokens
                 create_kwargs = {
                     "model": self.model_name,
                     "messages": messages,
-                    token_key: max_tokens,
+                    token_key: effective_max,
                     **kwargs
                 }
                 if not _is_reasoning:
@@ -409,13 +413,15 @@ class OpenAIClient(BaseLLMClient):
             return
 
         try:
-            # GPT-5+ / o-series: max_completion_tokens, no stop, temperature=1 only
+            # GPT-5+ / o-series: max_completion_tokens (with reasoning headroom),
+            # no stop, temperature=1 only
             _is_reasoning = self.model_name.startswith(("gpt-5", "o1", "o3"))
             token_key = "max_completion_tokens" if _is_reasoning else "max_tokens"
+            effective_max = max_tokens * 4 if _is_reasoning else max_tokens
             stream_kwargs = {
                 "model": self.model_name,
                 "messages": messages,
-                token_key: max_tokens,
+                token_key: effective_max,
                 "stream": True,
                 **kwargs,
             }

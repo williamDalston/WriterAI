@@ -89,9 +89,11 @@ strategic_guidance:
     Lena''s family references, food memories, and her abuela''s sayings.
 
     '
-  dialogue_bank: 'Lena''s voice: sharp wit, legal metaphors ("objection", "sustained"),
-    switches to Spanish when emotional. Marco''s voice: warm, teasing, occasional
-    Italian phrases, disarming sincerity that catches Lena off guard.
+  dialogue_bank: 'Lena''s voice: sharp wit, legal metaphors used sparingly and varied
+    (objection/sustained/leading the witness PLUS alternatives: Hold on, Point taken,
+    That''s a loaded question, I''d like to redirect). Switches to Spanish when
+    emotional. Marco''s voice: warm, teasing, occasional Italian phrases, disarming
+    sincerity that catches Lena off guard.
 
     '
   market_positioning: 'Contemporary romance. Comp titles: Beach Read by Emily Henry,
@@ -118,6 +120,9 @@ strategic_guidance:
     - Convert early bonding locations to FRICTION when possible: same setting (balcony,
       lemon grove) but disagreement, logistical pressure, or external problem instead
       of shared vulnerability.
+    - Dynamic conflict: when a secret is REVEALED, the next scene must introduce a NEW
+      obstacle or complication, not immediately resolve the tension. Reveals should
+      create fresh problems (distrust, new stakes, forced choice), not end conflict.
 
     '
   tropes: 'Forced proximity, one-night-stand-to-lovers, enemies-to-lovers (lite),

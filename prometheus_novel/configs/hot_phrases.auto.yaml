@@ -2,4 +2,29 @@ generated: true
 rules:
   min_total: 8
   min_scenes: 4
-phrases: []
+phrases:
+- phrase: close enough that
+  total: 11
+  scenes: 9
+  severity: high
+  keep_first: 2
+- phrase: between us like
+  total: 8
+  scenes: 8
+  severity: high
+  keep_first: 1
+- phrase: hand through his hair
+  total: 8
+  scenes: 8
+  severity: medium
+  keep_first: 1
+- phrase: the prayer card
+  total: 3
+  scenes: 1
+  severity: medium
+  keep_first: 1
+- phrase: the courthouse stamp
+  total: 3
+  scenes: 1
+  severity: medium
+  keep_first: 1

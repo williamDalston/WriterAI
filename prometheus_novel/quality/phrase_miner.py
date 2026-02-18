@@ -258,15 +258,19 @@ def write_auto_yaml(
 def load_phrase_config(
     auto_path: Optional[Path] = None,
     manual_path: Optional[Path] = None,
+    supplemental_paths: Optional[List[Path]] = None,
 ) -> List[Dict[str, Any]]:
-    """Load and merge manual + auto hot phrase configs.
+    """Load and merge manual + auto + supplemental hot phrase configs.
 
     Manual entries override auto entries for the same phrase.
+    Supplemental paths (e.g. metaphor diversification) are merged last;
+    they add phrases that may not appear in auto-mined output.
     """
     phrases: Dict[str, Dict[str, Any]] = {}
 
-    for path in [auto_path, manual_path]:
-        if path and path.exists():
+    all_paths = [auto_path, manual_path] + (supplemental_paths or [])
+    for path in all_paths:
+        if path and Path(path).exists():
             with open(path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
             for entry in data.get("phrases", []):

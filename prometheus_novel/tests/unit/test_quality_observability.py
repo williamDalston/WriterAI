@@ -3,7 +3,12 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from quality.delta_report import compute_scene_delta, compute_pass_delta, build_delta_report
+from quality.delta_report import (
+    compute_scene_delta,
+    compute_pass_delta,
+    build_delta_report,
+    _normalize_pass_delta,
+)
 from quality.ceiling import CeilingRules, CeilingTracker
 from quality.policy import load_policy, is_pass_enabled, _deep_merge
 from quality.loop_guard import check_replacement_loops
@@ -56,6 +61,18 @@ class TestDeltaReport:
         assert "summary" in delta
         assert "passes" in delta
         assert delta["unresolved"]["some_issue"] is True
+
+    def test_every_pass_has_scenes_changed(self):
+        """Every pass delta must have scenes_changed to prevent KeyError."""
+        malformed = {"pass": "bad_pass", "stats": {}}  # Missing scenes_changed
+        normalized = _normalize_pass_delta(malformed)
+        assert "scenes_changed" in normalized
+        assert normalized["scenes_changed"] == 0
+        assert "scenes_total" in normalized
+
+        full = build_delta_report([malformed], {})
+        assert len(full["passes"]) == 1
+        assert full["passes"][0]["scenes_changed"] == 0
 
 
 # ============================================================================

@@ -16,6 +16,13 @@ from typing import Optional
 import argparse
 import json
 
+# Fix Windows cp1252 encoding — allow Unicode in log output (arrows, deltas, etc.)
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -461,6 +468,67 @@ def cmd_ideas(args):
     return 0
 
 
+def cmd_editor_studio(args):
+    """Run Editor Studio — surgical refinement passes on completed manuscript."""
+    print_banner()
+    project_path = None
+    if args.config:
+        config_path = Path(args.config)
+        if not config_path.exists():
+            print_error(f"Config not found: {config_path}")
+            return 1
+        project_path = config_path.parent
+    elif args.project:
+        project_path = Path(args.project)
+    else:
+        # Default to burning-vows-30k for convenience
+        project_path = PROJECT_ROOT / "data" / "projects" / "burning-vows-30k"
+    if not project_path.exists():
+        print_error(f"Project not found: {project_path}")
+        return 1
+    passes_enabled = [p.strip() for p in (args.passes or "").split(",") if p.strip()] or None
+    if args.dry_run:
+        state_file = project_path / "pipeline_state.json"
+        contract_file = project_path / "output" / "quality_contract.json"
+        print(f"\n{Colors.HEADER}[DRY RUN] Editor Studio{Colors.END}\n")
+        print_info(f"Project: {project_path}")
+        print_info(f"pipeline_state.json: {'found' if state_file.exists() else 'MISSING'}")
+        print_info(f"quality_contract.json: {'found' if contract_file.exists() else 'MISSING'}")
+        print_info(f"Passes: {passes_enabled or 'all'}")
+        return 0
+    print(f"\n{Colors.HEADER}Editor Studio — Surgical Refinement{Colors.END}\n")
+    print_info(f"Project: {project_path}")
+    config_path = project_path / "config.yaml"
+    config = {}
+    if config_path.exists():
+        with open(config_path, encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+    from prometheus_lib.llm.clients import get_client
+    defaults = config.get("model_defaults", {}) or {}
+    model = defaults.get("critic_model") or defaults.get("api_model") or "gpt-4o-mini"
+    print_info(f"Model: {model}")
+
+    async def _run():
+        from editor_studio.orchestrator import run_editor_studio
+        client = get_client(model)
+        return await run_editor_studio(project_path, passes_enabled=passes_enabled, client=client)
+
+    try:
+        report = asyncio.run(_run())
+    except Exception as e:
+        print_error(f"Editor Studio failed: {e}")
+        return 1
+    if report.get("errors"):
+        for e in report["errors"]:
+            print_error(str(e))
+        return 1
+    print_success("\nEditor Studio complete!")
+    print_info(f"Scenes modified: {report.get('scenes_modified', 0)}")
+    for p in report.get("passes_run", []):
+        print_info(f"  {p.get('pass')}: {p.get('scenes_modified', 0)}/{p.get('scenes_processed', 0)} scenes")
+    return 0
+
+
 def cmd_serve(args):
     """Start the web server."""
     print_banner()
@@ -732,6 +800,25 @@ def main():
     cover_parser.add_argument("--force", action="store_true",
         help="Overwrite existing cover files")
 
+    # editor-studio command - surgical refinement passes on completed manuscript
+    studio_parser = subparsers.add_parser(
+        "editor-studio",
+        help="Surgical refinement passes on completed manuscript (continuity, dialogue, stakes, etc.)",
+    )
+    studio_parser.add_argument(
+        "--config", "-c",
+        help="Path to project config.yaml (project_path = config.parent)",
+    )
+    studio_parser.add_argument(
+        "--project", "-p",
+        help="Path to project dir (alternative to --config)",
+    )
+    studio_parser.add_argument(
+        "--passes",
+        help="Comma-separated passes: continuity,dialogue_friction,stakes,final_line,voice,premium (default: all)",
+    )
+    studio_parser.add_argument("--dry-run", dest="dry_run", action="store_true", help="Show what would run, no changes")
+
     # audiobook command - generate ACX-compliant audiobook MP3s
     audio_parser = subparsers.add_parser("audiobook", help="Generate ACX-compliant audiobook MP3s")
     audio_parser.add_argument("--config", "-c", required=True, help="Path to project config.yaml")
@@ -759,6 +846,7 @@ def main():
         "seed": cmd_seed,
         "bookops": cmd_bookops,
         "cover": cmd_cover,
+        "editor-studio": cmd_editor_studio,
         "audiobook": cmd_audiobook,
     }
 

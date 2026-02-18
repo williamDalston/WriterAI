@@ -465,6 +465,34 @@ def run_quality_contract(
         except (ImportError, Exception):
             pass
 
+        # Dynamic Conflict Guard: scene following REVEAL must not immediately resolve tension
+        if idx > 0:
+            prev_scene = (scenes or [])[idx - 1]
+            if isinstance(prev_scene, dict):
+                prev_content = prev_scene.get("content", "")
+                prev_func = "UNKNOWN"
+                try:
+                    from quality.quiet_killers import classify_scene_function, _get_purpose_from_outline
+                    prev_purpose = _get_purpose_from_outline(prev_scene, outline or [])
+                    prev_func = classify_scene_function(prev_content, prev_purpose)
+                except (ImportError, Exception):
+                    pass
+                if prev_func == "REVEAL":
+                    # Flag if current scene suggests instant resolution rather than new obstacle
+                    resolution_cues = re.compile(
+                        r"\b(softened|forgiven|put (?:it|that) behind (?:us|them)|moved past|"
+                        r"made peace|settled (?:the|our|their)|resolved (?:everything|it)|"
+                        r"understanding (?:passed|spread)|agreed to (?:let|put)|"
+                        r"apologized (?:and|,)|all was (?:forgiven|well)|"
+                        r"cleared the air|buried the hatchet)\b",
+                        re.IGNORECASE,
+                    )
+                    if resolution_cues.search(content):
+                        all_warnings.append(
+                            "CONFLICT_DEFLATION: scene follows REVEAL but contains instant-resolution "
+                            "language; reveals should create NEW obstacles, not end conflict"
+                        )
+
         # Opening move (for chapter-openers)
         opening_move = _classify_opening_move(content)
         if sc == 1:

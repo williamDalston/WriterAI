@@ -159,4 +159,15 @@ def compute_craft_scorecard(
         + (ending_dist.get("ACTION", 0) + ending_dist.get("DIALOGUE", 0)) * 20
     )
     scorecard["health_score"] = round(min(100, max(0, health)), 1)
+
+    # Editorial craft checks (motif saturation, gesture freq, scene transitions, simile density, etc.)
+    if cfg.get("editorial_craft", True):
+        try:
+            from quality.editorial_craft import run_editorial_craft_checks
+            editorial = run_editorial_craft_checks(scenes_list, config)
+            if "skipped" not in editorial:
+                scorecard["editorial_craft"] = editorial
+        except Exception as ex:
+            logger.warning("Editorial craft checks failed: %s", ex)
+
     return scorecard

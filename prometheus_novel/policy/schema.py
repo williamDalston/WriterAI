@@ -189,6 +189,7 @@ class QualityPolishPolicy(BaseModel):
         "dialogue_trimming",
         "emotion_diversification",
         "cliche_repair",
+        "sensory_motif_swap",
     ])
     ceiling: CeilingConfig = Field(default_factory=CeilingConfig)
     phrase_suppression: PhraseSuppressionConfig = Field(
@@ -229,6 +230,14 @@ class ProfileCompletenessPolicy(BaseModel):
     auto_patch: bool = True  # strict mode: LLM-patch missing fields
 
 
+class VoiceDifferentiationPolicy(BaseModel):
+    """Config for character voice differentiation check during quality_meters."""
+    mode: str = "warn"  # "warn" | "strict" | "off"
+    min_signature_hits: int = 2
+    ngram_overlap_threshold: float = 0.40
+    min_lines_for_eval: int = 5
+
+
 class ExportGatePolicy(BaseModel):
     """Pre-export validation gate."""
     enabled: bool = True
@@ -252,4 +261,7 @@ class Policy(BaseModel):
     )
     profile_completeness: ProfileCompletenessPolicy = Field(
         default_factory=ProfileCompletenessPolicy,
+    )
+    voice_differentiation: VoiceDifferentiationPolicy = Field(
+        default_factory=VoiceDifferentiationPolicy,
     )

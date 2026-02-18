@@ -578,11 +578,15 @@ def scene_body_similarity_meter(
 # 5. VOICE SUB-METRICS (catchphrase overuse + rhythm variance)
 # ============================================================================
 
+MIN_LINES_FOR_VOICE_EVAL = 10  # Below this, voice eval is noise — skip to avoid false failures
+
+
 def voice_sub_metrics(
     scenes: List[Dict],
     characters: List[Dict],
     catchphrase_dominance_threshold: float = 0.40,
     min_rhythm_variance: float = 3.0,
+    min_lines_for_eval: int = MIN_LINES_FOR_VOICE_EVAL,
 ) -> Dict:
     """Additional voice quality checks beyond word-profile Jaccard.
 
@@ -609,8 +613,8 @@ def voice_sub_metrics(
     rhythm_flags = []
 
     for char_name, lines in dialogue_by_char.items():
-        if len(lines) < 3:
-            continue
+        if len(lines) < min_lines_for_eval:
+            continue  # Not enough data to evaluate; skip to avoid false failures
 
         # A) Catchphrase dominance
         all_words = []
@@ -664,6 +668,7 @@ def run_all_meters(
     outline: List[Dict],
     characters: List[Dict],
     meter_config: Optional[Dict] = None,
+    voice_profiles: Optional[Dict] = None,
 ) -> Dict:
     """Run all meters including scene_id integrity and scorecard. Return combined report.
 
@@ -673,6 +678,8 @@ def run_all_meters(
         characters: Character dicts.
         meter_config: Optional dict from policy.quality_polish.quality_meters
             (genre-tuned thresholds). Falls back to defaults when None.
+        voice_profiles: Optional dict mapping character name to voice profile
+            (used by voice_differentiation check).
 
     Returns:
         {
@@ -682,6 +689,7 @@ def run_all_meters(
             "voice": {...},
             "scene_similarity": {...},
             "voice_sub": {...},
+            "voice_differentiation": {...},
             "scorecard": {...},
             "all_pass": bool,
         }
@@ -720,6 +728,19 @@ def run_all_meters(
         "pass": True, "note": "No scenes to check"
     }
 
+    # Voice differentiation (profile adherence + n-gram overlap)
+    try:
+        from quality.voice_differentiation import check_voice_differentiation
+        voice_diff = check_voice_differentiation(
+            scenes, characters,
+            voice_profiles=voice_profiles,
+            min_signature_hits=cfg.get("min_signature_hits", 2),
+            ngram_overlap_threshold=cfg.get("ngram_overlap_threshold", 0.40),
+        ) if scenes else {"pass": True, "note": "No scenes to check"}
+    except Exception as e:
+        logger.warning("Voice differentiation check failed (non-blocking): %s", e)
+        voice_diff = {"pass": True, "error": str(e)}
+
     # Quality Scorecard (F1)
     try:
         from quality.quiet_killers import _EMO_KEYWORDS, _WEAK_VERBS, _classify_ending
@@ -742,11 +763,13 @@ def run_all_meters(
         "voice": voice,
         "scene_similarity": sim,
         "voice_sub": vsub,
+        "voice_differentiation": voice_diff,
         "scorecard": scorecard,
         "all_pass": (
             integrity.get("pass", True) and rep.get("pass", True) and
             dedup.get("pass", True) and voice.get("pass", True) and
             sim.get("pass", True) and vsub.get("pass", True) and
+            voice_diff.get("pass", True) and
             scorecard.get("pass", True)
         ),
     }

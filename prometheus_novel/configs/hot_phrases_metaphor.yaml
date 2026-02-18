@@ -1,0 +1,35 @@
+# Metaphor diversification — prevent overused professional vocabulary
+# Loaded as supplemental phrases for phrase_suppression pass.
+# Protagonist archetypes (lawyer, doctor, etc.) tend to repeat 2–3 signature terms.
+# Cap each and rotate through alternatives for variety.
+#
+# Legal metaphors (objection/sustained/leading the witness) — expand beyond the top 3
+
+phrases:
+  - phrase: "Objection."
+    keep_first: 2
+    total: 0
+    replacements:
+      - "Hold on."
+      - "I'd like to redirect."
+      - "Wait—"
+      - "Let me stop you there."
+      - "That's not the question."
+  - phrase: "Sustained."
+    keep_first: 2
+    total: 0
+    replacements:
+      - "Point taken."
+      - "Fair enough."
+      - "Noted."
+      - "Understood."
+      - "I'll concede that."
+  - phrase: "leading the witness"
+    keep_first: 1
+    total: 0
+    replacements:
+      - "assuming the answer"
+      - "loaded question"
+      - "that's a leading question"
+      - "you're presupposing"
+      - "that implies the conclusion"

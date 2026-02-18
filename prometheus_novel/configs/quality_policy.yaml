@@ -75,6 +75,7 @@ presets:
       - dialogue_trimming
       - emotion_diversification
       - cliche_repair
+      - sensory_motif_swap
 
   thriller:
     outline_diversity:
@@ -146,6 +147,7 @@ presets:
       - phrase_suppression
       - dialogue_trimming
       - cliche_repair
+      - sensory_motif_swap
 
   literary:
     outline_diversity:
@@ -219,6 +221,7 @@ presets:
       - dialogue_trimming
       - emotion_diversification
       - cliche_repair
+      - sensory_motif_swap
 
   fantasy:
     outline_diversity:
@@ -291,3 +294,4 @@ presets:
       - dialogue_trimming
       - emotion_diversification
       - cliche_repair
+      - sensory_motif_swap

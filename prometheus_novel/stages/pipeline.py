@@ -34,6 +34,7 @@ from quality.dialogue_trimmer import process_scenes as trim_dialogue_scenes
 from quality.emotion_diversifier import process_scenes as diversify_emotion_scenes
 from quality.cliche_clusters import detect_clusters, repair_clusters, load_cluster_config
 from quality.delta_report import compute_pass_delta, build_delta_report
+from editor_studio.orchestrator import run_editor_studio
 from quality.ceiling import CeilingRules, CeilingTracker
 from quality.policy import load_policy as _load_quality_policy_legacy, is_pass_enabled
 from policy import load_policy as load_central_policy, Policy
@@ -1487,10 +1488,11 @@ def _repair_pov_context_errors(text: str, protagonist_gender: str = "",
     )
 
     # === PATTERN 3c: "[Name] [any verb] my [body_attr]" without comma ===
-    # Catches: "Sofia speaks my voice soft", "Marco lifts my chin"
+    # Catches: "Sofia speaks my voice soft", "Marco lifts my chin", "Sofia cleared my throat"
     # Broader than 3b: any verb followed by "my [body]" when subject is a named char
     all_verbs = (dialogue_verbs + r'|' + self_action_verbs +
-                 r'|speaks|lifts|drops|raises|lowers|touches|cups|grabs|presses|strokes')
+                 r'|speaks|lifts|drops|raises|lowers|touches|cups|grabs|presses|strokes|'
+                 r'clears|cleared|clearing|runs|ran|running|picks|picked|pinches|traces')
     text = re.sub(
         rf'(\b[A-Z][a-z]+)\s+({all_verbs})\s+my\s+({body_attrs})\b',
         lambda m: f'{m.group(1)} {m.group(2)} {_poss_for_name(m.group(1))} {m.group(3)}',
@@ -2805,6 +2807,18 @@ CREATIVE_STOP_SEQUENCES = [
     "\n[Scene continues",
 ]
 
+# Conflict dialogue mode: injected into dialogue_polish prompt for tension >= 6
+CONFLICT_DIALOGUE_CONSTRAINTS = """
+
+=== CONFLICT DIALOGUE MODE (high tension) ===
+- At least ONE interrupted line per confrontation (em-dash: "I never said\u2014")
+- At least ONE evasive/deflecting answer (character changes subject, answers a different question, or weaponizes silence)
+- At least ONE line of subtext (what they say vs what they mean must diverge)
+- Short volleys: 2-3 exchanges max before a physical beat, silence, or action break
+- NO emotional processing in dialogue tags ("he said, realizing..." \u2192 "he said.")
+- NO neat resolution within the scene \u2014 if conflict starts, it should leave residue
+"""
+
 # Retry prefix for critic gate failures
 STRICT_RETRY_PREFIX = (
     "CRITICAL: Your previous output contained non-prose content. "
@@ -2860,7 +2874,8 @@ ISSUE_SPECIFIC_FEEDBACK = {
 PROSE_STAGES = {
     "scene_drafting", "scene_expansion", "structure_gate", "self_refinement",
     "continuity_fix", "continuity_recheck", "voice_human_pass", "continuity_fix_2",
-    "dialogue_polish", "prose_polish", "chapter_hooks", "final_deai"
+    "dialogue_polish", "prose_polish", "chapter_hooks", "final_deai",
+    "targeted_refinement",
 }
 
 # Stages where full critic gate runs (retry on failure)
@@ -3166,7 +3181,8 @@ class PipelineOrchestrator:
         # Safety net: surgical AI tell removal (protects hooks)
         "final_deai",
         "quality_polish",           # Deterministic: phrase suppression + dialogue trim + emotion diversify
-        "quality_meters",           # Deterministic quality meters (no LLM, non-blocking)
+        "quality_meters",           # Deterministic quality meters (no LLM, produces quality_contract)
+        "targeted_refinement",      # LLM: deflection, stakes, rhythm, tension_collapse, causality, gesture, etc.
         "quality_audit",
         "output_validation"
     ]
@@ -3198,6 +3214,7 @@ class PipelineOrchestrator:
         "final_deai": "gpt",                 # Fast surgical replacement (no creativity needed)
         "quality_polish": "gpt",             # Deterministic (no LLM call)
         "quality_meters": "gpt",             # Deterministic (no LLM call), cheapest placeholder
+        "targeted_refinement": "claude",     # Targeted LLM fixes (deflection, stakes, gesture, etc.)
         "quality_audit": "gemini",           # Long context for full audit
         "output_validation": "gpt"
     }
@@ -3234,6 +3251,7 @@ class PipelineOrchestrator:
         "final_deai": 0.3,
         "quality_polish": 0.2,
         "quality_meters": 0.2,
+        "targeted_refinement": 0.4,
         "quality_audit": 0.2,
         "output_validation": 0.2
     }
@@ -3499,7 +3517,7 @@ class PipelineOrchestrator:
                     if not isinstance(sc, dict):
                         continue
                     sc_id = sc.get("scene_id", sc.get("scene", "?"))
-                    sc_summary = sc.get("summary", sc.get("description", sc.get("title", "")))
+                    sc_summary = sc.get("summary", sc.get("purpose", sc.get("scene_name", sc.get("description", sc.get("title", "")))))
                     if len(sc_summary) > 100:
                         sc_summary = sc_summary[:97] + "..."
                     func = sc.get("function", "")
@@ -3699,7 +3717,7 @@ class PipelineOrchestrator:
 
         # Write resolved config for reproducibility (env + project merged)
         try:
-            from prometheus_novel.configs.config_resolver import resolve_and_write
+            from configs.config_resolver import resolve_and_write
             resolve_and_write(self.project_path, env=os.getenv("PROMETHEUS_ENV"))
         except Exception as e:
             logger.debug(f"Could not write resolved config: {e}")
@@ -3941,7 +3959,7 @@ class PipelineOrchestrator:
         finally:
             output_dir = self.state.project_path / "output" if getattr(self.state, "project_path", None) else None
             if output_dir and getattr(self.state, "outline_json_report", None):
-                from prometheus_novel.configs.config_resolver import update_resolved_outline_meta
+                from configs.config_resolver import update_resolved_outline_meta
                 update_resolved_outline_meta(output_dir, self.state.outline_json_report)
 
         await self._emit("on_pipeline_complete", self.state)
@@ -3983,6 +4001,7 @@ class PipelineOrchestrator:
             "final_deai": self._stage_final_deai,
             "quality_polish": self._stage_quality_polish,
             "quality_meters": self._stage_quality_meters,
+            "targeted_refinement": self._stage_targeted_refinement,
             "quality_audit": self._stage_quality_audit,
             "output_validation": self._stage_output_validation
         }
@@ -5473,6 +5492,20 @@ Respond with a JSON object: {{"chapters": [{{"chapter": {miss_ch}, "chapter_titl
             except Exception as e:
                 logger.debug("Outline diversity check failed (non-blocking): %s", e)
 
+        # --- Conflict Maturity (resolution latency) validation ---
+        if all_chapters:
+            try:
+                from quality.conflict_maturity import check_conflict_maturity
+                cm_report = check_conflict_maturity(all_chapters, self.state.config)
+                self.state.conflict_maturity_report = cm_report
+                if not cm_report.get("pass", True):
+                    logger.warning(
+                        "Conflict maturity: %d violations (resolution before latency)",
+                        len(cm_report.get("violations", [])),
+                    )
+            except Exception as e:
+                logger.debug("Conflict maturity check failed (non-blocking): %s", e)
+
         return self.state.master_outline, total_tokens
 
     # --- Outline diversity repair helpers ---
@@ -6512,10 +6545,10 @@ RULES:
                     rf'\b(?:{names_alt})\b[^.!?]{{0,30}}\bmy\s+(?:{_body_attrs})\b',
                     text, re.IGNORECASE
                 ))
-                if pov_confusion_hits >= 2:
+                if pov_confusion_hits >= 1:
                     issues["pov_pronoun_confusion"] = True
                     logger.warning(
-                        f"POV pronoun confusion: {pov_confusion_hits} instances of "
+                        f"POV pronoun confusion: {pov_confusion_hits} instance(s) of "
                         f"[character name] ... my [body part]"
                     )
 
@@ -7820,6 +7853,12 @@ Hook in the first 100 words.
 POSITION: Scene {scene_position + 1} of {total_scenes_in_chapter} in this chapter.
 YOU ARE {pov_char.upper()}. You are writing AS {pov_char}, in first person. "I" = {pov_char}.
 
+=== POV PRONOUN RULES (first person) ===
+- NEVER use third-person pronouns (He/She/His/Her) to describe the POV character. "I" and "my" only.
+- In paragraphs of action: if you write "He" or "She" + verb (e.g. "He turned"), you have slipped into third person — rewrite as "I turned."
+- Dialogue tags for OTHER characters are fine: "he said," "she asked."
+- When describing the POV character's body/actions, use "I" and "my": "my throat tightened," "I crossed my arms" — never "her throat" or "she crossed."
+
 {entity_anchor}
 
 === MASTER CRAFT PRINCIPLES ===
@@ -8057,15 +8096,26 @@ Write the complete scene as {pov_char} ("I"):"""
                         client, prompt, "scene_drafting",
                         scene_meta={"chapter": chapter_num, "scene": scene_num, "pov": pov_char},
                         max_tokens=max_tokens, temperature=temp)
-                    scenes.append({
+                    scene_dict = {
                         "chapter": chapter_num,
                         "scene_number": scene_num,
                         "scene_id": stable_id,
                         "pov": pov_char,
                         "location": location,
                         "spice_level": spice_level,
-                        "content": content
-                    })
+                        "tension_level": tension_level,
+                        "content": content,
+                    }
+                    # Classify scene profile for downstream quality transforms
+                    try:
+                        from quality.quiet_killers import classify_scene_profile, classify_scene_function
+                        func_label = classify_scene_function(content, purpose)
+                        profile = classify_scene_profile(content, purpose, tension_level, func_label)
+                        scene_dict["scene_profile"] = profile
+                        scene_dict["scene_function"] = func_label
+                    except Exception:
+                        pass
+                    scenes.append(scene_dict)
                     total_tokens += tokens
                 else:
                     scenes.append({
@@ -8215,11 +8265,14 @@ Write the complete scene as {pov_char} ("I"):"""
                             client, content, scene, sid, pov)
                         _tokens += t
 
-                    # Pass 5: Wolf voice seed (LAST — after all rewrites to prevent overwrites)
+                    # Pass 5: Wolf voice seed
                     if _tokens < per_scene_budget:
                         content, t = await self._micro_wolf_voice_seed(
                             client, content, scene, sid, pov)
                         _tokens += t
+
+                    # Pass 6: POV pronoun re-fix (deterministic; micro-passes can reintroduce errors)
+                    content = self._micro_pov_pronoun_fix(content, pov)
 
                     if _tokens >= per_scene_budget:
                         logger.info(f"Micro-pass budget exhausted for {sid}: "
@@ -8762,6 +8815,24 @@ Return the paragraph with exactly one *italic thought* added:"""
             logger.warning(f"Wolf voice seed failed for {sid}: {e}")
             return content, 0
 
+    def _micro_pov_pronoun_fix(self, content: str, pov: str) -> str:
+        """Re-apply POV pronoun repair after micro-passes (deterministic, no LLM).
+
+        Micro-passes can reintroduce '[Name] ... my [body]' errors. This pass
+        re-runs the same regex fixes used in _postprocess to catch any regressions.
+        """
+        if not content:
+            return content
+        try:
+            pov_name, pov_gender = self._get_pov_info(pov, scene_text=content)
+            # _repair_pov_context_errors expects protagonist gender (narrator = pov)
+            protagonist_gender = pov_gender or ""
+            char_genders = self._build_character_genders()
+            return _repair_pov_context_errors(content, protagonist_gender, char_genders)
+        except Exception as e:
+            logger.debug("POV pronoun re-fix failed (non-blocking): %s", e)
+            return content
+
     async def _stage_scene_expansion(self) -> tuple:
         """Expand scenes that are below target word count.
 
@@ -8809,6 +8880,11 @@ Expand it by adding {shortfall}+ words.
    Keep the existing content and ADD to it—more depth, not a rewrite.
 4. NO EMOTIONAL SUMMARIES: Never end a paragraph by explaining what the
    moment means. End on action, dialogue, or sensory detail.
+5. EXPANSION DENSITY: Every added sentence must do at least ONE of: advance
+   plot, deepen character, introduce NEW sensory detail not already present,
+   or add subtext to dialogue. Do NOT repeat existing descriptions, restate
+   atmosphere, or narrate unremarkable movements (walking, sitting, standing)
+   unless they carry emotional weight.
 
 {previous_context}
 
@@ -9384,6 +9460,22 @@ JSON:"""
         else:
             logger.info("structure_gate: all scenes passed")
 
+        # Scene-ending pattern check (Fix 3): flag repetitive endings
+        try:
+            from quality.scene_ending_patterns import check_scene_ending_patterns
+            ending_report = check_scene_ending_patterns(
+                self.state.scenes or [],
+                max_consecutive_same=2,
+                max_per_window=3,
+                window_size=5,
+            )
+            gate_results["scene_ending_patterns"] = ending_report
+            if not ending_report.get("pass", True):
+                for v in ending_report.get("violations", []):
+                    logger.warning("Scene ending pattern: %s", v.get("message", v))
+        except Exception as e:
+            logger.debug("Scene ending pattern check failed (non-blocking): %s", e)
+
         return gate_results, total_tokens
 
     async def _stage_self_refinement(self) -> tuple:
@@ -9519,6 +9611,58 @@ For each issue found, provide:
 
 Respond in JSON format with "issues" array and "passed" boolean."""
 
+        # Deterministic character roster check (catches hallucinated characters like Elena)
+        roster_issues = []
+        try:
+            from quality.character_roster import check_character_roster
+            roster_violations = check_character_roster(
+                self.state.scenes or [],
+                self.state.master_outline or [],
+                self.state.characters or [],
+                self.state.config,
+                min_dialogue_for_flag=2,
+            )
+            roster_issues = [
+                {
+                    "location": v["scene_id"],
+                    "type": "hallucination",
+                    "description": v["reason"],
+                    "suggested_fix": f"Remove or replace '{v['character']}' with an established character from the outline.",
+                }
+                for v in roster_violations
+            ]
+        except Exception as e:
+            logger.debug("Character roster check failed (non-blocking): %s", e)
+
+        # Causal completeness check (Fix 4): secret referenced but never explained
+        try:
+            from quality.causal_completeness import check_causal_completeness
+            causal_report = check_causal_completeness(
+                self.state.scenes or [],
+                self.state.master_outline or [],
+                self.state.config,
+                min_refs_for_flag=5,
+            )
+            for v in causal_report.get("violations", []):
+                # Convert ch06_s02 -> "Chapter 6, Scene 2" for continuity_fix matching
+                tid = v.get("target_scene_id", "")
+                loc = "manuscript"
+                if tid:
+                    m = re.search(r"ch(\d+)_s(\d+)", tid, re.IGNORECASE)
+                    if m:
+                        loc = f"Chapter {int(m.group(1))}, Scene {int(m.group(2))}"
+                roster_issues.append({
+                    "location": loc,
+                    "type": "causal_incomplete",
+                    "description": v.get("message", ""),
+                    "suggested_fix": (
+                        f"Add 2-3 sentences of concrete exposition in {loc}: "
+                        "what specifically happened, what case/file it was, and why it matters."
+                    ),
+                })
+        except Exception as e:
+            logger.debug("Causal completeness check failed (non-blocking): %s", e)
+
         if client:
             response = await client.generate(prompt, max_tokens=4000, temperature=0.2, json_mode=True)
             try:
@@ -9532,19 +9676,20 @@ Respond in JSON format with "issues" array and "passed" boolean."""
             if "passed" not in audit_report:
                 audit_report["passed"] = len(audit_report.get("issues", [])) == 0
 
-            # Store issues for the fix stage
-            self.state.continuity_issues = audit_report.get("issues", [])
+            # Merge roster violations with LLM audit issues (roster first — high priority)
+            llm_issues = audit_report.get("issues", [])
+            self.state.continuity_issues = roster_issues + llm_issues
             logger.info(f"Continuity audit found {len(self.state.continuity_issues)} issues")
 
             return audit_report, response.input_tokens + response.output_tokens
 
-        # Mock response
+        # Mock response (no client)
         audit_report = {
-            "issues_found": 0,
-            "issues": [],
-            "passed": True
+            "issues_found": len(roster_issues),
+            "issues": roster_issues,
+            "passed": len(roster_issues) == 0,
         }
-        self.state.continuity_issues = []
+        self.state.continuity_issues = roster_issues
         return audit_report, 50
 
     async def _stage_continuity_fix(self) -> tuple:
@@ -9859,11 +10004,51 @@ FIXED SCENE:"""
         logger.info(f"Repetition detector: {len(repeated_beats)} repeated beats, "
                      f"{len(repeated_phrases)} repeated phrases found")
 
+        # === NEGATIVE ANCHOR LIST (per-POV overused idiosyncratic phrases) ===
+        # Count 3-word phrases per POV; if a phrase appears in 3+ scenes for that POV, it's an
+        # overused anchor. Instruct model to express the trait without using those words.
+        pov_phrase_counts: Dict[str, Counter] = {}
+        for s in (self.state.scenes or []):
+            if not isinstance(s, dict):
+                continue
+            pov_key = (s.get("pov") or "protagonist").strip().split()[0].lower()
+            text = (s.get("content") or "").lower()
+            words = text.split()
+            if pov_key not in pov_phrase_counts:
+                pov_phrase_counts[pov_key] = Counter()
+            seen = set()
+            for i in range(len(words) - 2):
+                phrase = " ".join(words[i:i+3])
+                if phrase not in seen:
+                    seen.add(phrase)
+                    pov_phrase_counts[pov_key][phrase] += 1
+        negative_anchors: Dict[str, List[str]] = {}
+        for pov_key, counts in pov_phrase_counts.items():
+            overused = [
+                p for p, c in counts.most_common(50)
+                if c >= 3 and len(p) > 12 and not any(
+                    skip in p for skip in ("the ", "and ", "but ", "that ", "this ", "with ", "for ")
+                )
+            ]
+            if overused:
+                negative_anchors[pov_key] = overused[:8]
+
         for scene in (self.state.scenes or []):
             if not isinstance(scene, dict):
                 enhanced_scenes.append(scene)
                 continue
             pov = scene.get("pov", "protagonist")
+            pov_key = pov.strip().split()[0].lower() if pov else "protagonist"
+            anchor_block = ""
+            if negative_anchors.get(pov_key):
+                anchors = negative_anchors[pov_key]
+                anchor_block = (
+                    "\n=== NEGATIVE ANCHOR (voice diversification) ===\n"
+                    f"These phrases define {pov}'s voice but are OVERUSED across the manuscript.\n"
+                    "Express the same trait WITHOUT using them. Find fresh wording:\n"
+                    + "\n".join(f'- "{a}"' for a in anchors)
+                    + "\n"
+                )
 
             prompt = f"""You are a destructive revision editor. Your job: make this scene
 read like a human wrote it. Not "good AI." Not "polished AI." HUMAN.
@@ -9879,7 +10064,7 @@ Change HOW it's written, not WHAT happens.
 3. NO REPEATED TICS: If a physical action (hair taming, jaw clenching,
    finger tightening) or catchphrase appears more than once, keep only
    the first. Replace repeats with different body language.
-
+{anchor_block}
 === VOICE ===
 STYLE: {writing_style}
 TONE: {tone}
@@ -10185,6 +10370,15 @@ Output the scene with ONLY the factual fix applied:"""
 
 Rewrite with polished, authentic dialogue. Keep all non-dialogue prose intact.
 Focus ONLY on improving the dialogue and adding physical beats between lines:"""
+
+            # Inject conflict dialogue constraints for high-tension scenes
+            tension = scene.get("tension_level", 5)
+            try:
+                tension = int(tension)
+            except (ValueError, TypeError):
+                tension = 5
+            if tension >= 6:
+                prompt += CONFLICT_DIALOGUE_CONSTRAINTS
 
             if client:
                 content, tokens = await self._generate_prose(
@@ -10908,9 +11102,11 @@ OUTPUT the text with only problematic sentences fixed:"""
         # --- 2. Phrase suppression ---
         if is_pass_enabled(policy, "phrase_suppression"):
             try:
+                metaphor_path = configs_dir / "hot_phrases_metaphor.yaml"
                 phrase_configs = load_phrase_config(
                     auto_path=configs_dir / "hot_phrases.auto.yaml",
                     manual_path=configs_dir / "hot_phrases.yaml" if (configs_dir / "hot_phrases.yaml").exists() else None,
+                    supplemental_paths=[metaphor_path] if metaphor_path.exists() else None,
                 )
                 if phrase_configs:
                     before = list(texts)
@@ -11027,18 +11223,46 @@ OUTPUT the text with only problematic sentences fixed:"""
         else:
             report["cliche_clusters"] = {"skipped": "disabled by policy"}
 
-        # --- 6. Quiet Killers transforms: filter removal, weak verb substitution, final-line rewrite ---
+        # --- 6. Sensory motif diversification ---
+        if is_pass_enabled(policy, "sensory_motif_swap"):
+            try:
+                from quality.sensory_motif_pass import process_sensory_motifs
+                before = list(texts)
+                texts, motif_report = process_sensory_motifs(
+                    texts, config_path=configs_dir / "sensory_motifs.yaml",
+                )
+                report["sensory_motif_swap"] = motif_report
+                if motif_report.get("total_replacements", 0) > 0:
+                    pass_deltas.append(
+                        compute_pass_delta(before, texts, "sensory_motif_swap", motif_report),
+                    )
+                    logger.info(
+                        "Sensory motif swap: %d replacements across %d motifs",
+                        motif_report["total_replacements"],
+                        motif_report.get("motifs_processed", 0),
+                    )
+            except Exception as e:
+                logger.warning(f"Sensory motif swap failed (non-blocking): {e}")
+                report["sensory_motif_swap"] = {"error": str(e)}
+        else:
+            report["sensory_motif_swap"] = {"skipped": "disabled by policy"}
+
+        # --- 7. Quiet Killers transforms: filter removal, weak verb substitution, final-line rewrite ---
         try:
             from quality.quiet_killers import (
                 apply_filter_removal,
                 apply_weak_verb_substitution,
                 apply_final_line_rewrite,
+                apply_deflection_grounding,
+                apply_bridge_insert,
             )
             before = list(texts)
             filter_edits = 0
             verb_edits = 0
             line_edits = 0
             for i, t in enumerate(texts):
+                sc = scenes_list[i] if i < len(scenes_list) else {}
+                scene_mode = sc.get("scene_profile", {}).get("scene_mode", "default")
                 t1 = apply_filter_removal(t, max_edits=5)
                 if t1 != t:
                     filter_edits += 1
@@ -11047,7 +11271,7 @@ OUTPUT the text with only problematic sentences fixed:"""
                 if t2 != t1:
                     verb_edits += 1
                     texts[i] = t2
-                t3 = apply_final_line_rewrite(t2)
+                t3 = apply_final_line_rewrite(t2, scene_mode=scene_mode)
                 if t3 != t2:
                     line_edits += 1
                     texts[i] = t3
@@ -11057,12 +11281,58 @@ OUTPUT the text with only problematic sentences fixed:"""
                 "final_line_rewrite_scenes": line_edits,
             }
             if filter_edits or verb_edits or line_edits:
-                pass_deltas.append({
-                    "pass_name": "quiet_killers",
-                    "before": before,
-                    "after": list(texts),
-                    "stats": report["quiet_killers_transforms"],
-                })
+                pass_deltas.append(
+                    compute_pass_delta(
+                        before,
+                        list(texts),
+                        "quiet_killers",
+                        report["quiet_killers_transforms"],
+                    )
+                )
+
+            # --- 8. Bridge insert + deflection grounding (new transforms) ---
+            before_8 = list(texts)
+            bridge_edits = 0
+            grounding_edits = 0
+            for i, t in enumerate(texts):
+                sc = scenes_list[i] if i < len(scenes_list) else {}
+                tension = sc.get("tension_level", 5)
+                try:
+                    tension = int(tension)
+                except (ValueError, TypeError):
+                    tension = 5
+                pov_name = sc.get("pov", "")
+                scene_loc = sc.get("location", "")
+                # Previous scene info for bridge insert
+                prev_text = texts[i - 1] if i > 0 else ""
+                prev_sc = scenes_list[i - 1] if i > 0 and (i - 1) < len(scenes_list) else {}
+                prev_loc = prev_sc.get("location", "")
+                # Bridge insert: patch scene opening when location changes
+                t_bridged = apply_bridge_insert(
+                    t, prev_text, pov_name=pov_name,
+                    scene_location=scene_loc, prev_location=prev_loc,
+                )
+                if t_bridged != t:
+                    bridge_edits += 1
+                    texts[i] = t_bridged
+                # Deflection grounding: break up reflective runs in high-tension scenes
+                t_grounded = apply_deflection_grounding(texts[i], tension_level=tension)
+                if t_grounded != texts[i]:
+                    grounding_edits += 1
+                    texts[i] = t_grounded
+            report["bridge_and_grounding"] = {
+                "bridge_insert_scenes": bridge_edits,
+                "deflection_grounding_scenes": grounding_edits,
+            }
+            if bridge_edits or grounding_edits:
+                pass_deltas.append(
+                    compute_pass_delta(before_8, texts, "bridge_and_grounding",
+                                       report["bridge_and_grounding"]),
+                )
+                logger.info(
+                    "Bridge+grounding: %d bridges, %d deflection fixes",
+                    bridge_edits, grounding_edits,
+                )
         except ImportError:
             report["quiet_killers_transforms"] = {"skipped": "module not found"}
         except Exception as e:
@@ -11126,6 +11396,7 @@ OUTPUT the text with only problematic sentences fixed:"""
                 outline=outline,
                 characters=characters,
                 meter_config=meter_config,
+                voice_profiles=getattr(self.state, "voice_profiles", None),
             )
         except Exception as e:
             logger.warning(f"Quality meters failed (non-blocking): {e}")
@@ -11242,6 +11513,80 @@ OUTPUT the text with only problematic sentences fixed:"""
             logger.warning(f"Quality meters detected issues: {failures}")
 
         return meter_report, 0  # No tokens used (deterministic)
+
+    async def _stage_targeted_refinement(self) -> tuple:
+        """Run Editor Studio passes: deflection, stakes, rhythm, gesture, etc.
+        Uses quality_contract from quality_meters to target scenes. Modifies scenes in-place.
+        """
+        tr_cfg = self.state.config.get("enhancements", {}).get("targeted_refinement", {})
+        if tr_cfg.get("enabled") is False:
+            logger.info("targeted_refinement disabled via config")
+            return {"skipped": True, "reason": "disabled"}, 0
+
+        project_path = getattr(self.state, "project_path", None) or Path(
+            self.state.config.get("_project_path", "")
+        )
+        if not project_path or not Path(project_path).exists():
+            logger.warning("targeted_refinement: no project_path, skipping")
+            return {"skipped": True, "reason": "no_project_path"}, 0
+
+        scenes = [s for s in (self.state.scenes or []) if isinstance(s, dict)]
+        if not scenes:
+            logger.warning("targeted_refinement: no scenes")
+            return {"skipped": True, "reason": "no_scenes"}, 0
+
+        contracts = []
+        if hasattr(self.state, "quality_contract_report") and self.state.quality_contract_report:
+            contracts = self.state.quality_contract_report.get("contracts", [])
+
+        client = self.get_client_for_stage("targeted_refinement")
+        passes_enabled = tr_cfg.get("passes")
+        if passes_enabled is not None and not isinstance(passes_enabled, list):
+            passes_enabled = [p.strip() for p in str(passes_enabled).split(",") if p.strip()]
+
+        # Manuscript-specific overused phrases for gesture_diversify (dynamic per book)
+        overused_phrases = None
+        if tr_cfg.get("dynamic_gestures", True):
+            try:
+                from quality.phrase_miner import mine_hot_phrases
+                texts = [s.get("content", "") or "" for s in scenes]
+                mine_result = mine_hot_phrases(
+                    texts,
+                    n_min=3, n_max=5,
+                    min_total=4, min_scenes=2,
+                    max_in_scene_threshold=2,
+                    min_phrase_chars=12,
+                )
+                phrases = mine_result.get("phrases", [])
+                overused_phrases = [p["phrase"] for p in phrases[:20]] if phrases else None
+                if overused_phrases:
+                    logger.info("targeted_refinement: mined %d overused phrases for gesture_diversify", len(overused_phrases))
+            except Exception as e:
+                logger.debug("Phrase mining for gesture_diversify failed (using fallback): %s", e)
+
+        report = await run_editor_studio(
+            project_path,
+            passes_enabled=passes_enabled,
+            client=client,
+            scenes=scenes,
+            config=self.state.config,
+            contracts=contracts,
+            overused_phrases=overused_phrases,
+            characters=getattr(self.state, "characters", None),
+            genre=self.state.config.get("genre", ""),
+            skip_persist=True,
+        )
+
+        if report.get("errors"):
+            for err in report["errors"]:
+                logger.warning("targeted_refinement: %s", err)
+
+        modified = report.get("scenes_modified", 0)
+        if modified > 0:
+            logger.info("targeted_refinement: %d scenes modified", modified)
+
+        self.state.targeted_refinement_report = report
+        return report, 0
 
     async def _stage_quality_audit(self) -> tuple:
         """Comprehensive quality audit before final output."""
@@ -11525,7 +11870,7 @@ OUTPUT the text with only problematic sentences fixed:"""
         Returns a report dict or None if no issues found.
         """
         try:
-            from prometheus_novel.export.scene_validator import validate_project_scenes
+            from export.scene_validator import validate_project_scenes
         except ImportError:
             try:
                 from export.scene_validator import validate_project_scenes
@@ -11601,7 +11946,7 @@ OUTPUT the text with only problematic sentences fixed:"""
             cleaned = _postprocess_scene(content, pov_name, language, pov_gender, policy=self.policy)
 
             # If postprocessor fixed it, accept
-            from prometheus_novel.export.scene_validator import validate_scene
+            from export.scene_validator import validate_scene
             recheck = validate_scene(cleaned, config, f"Ch{scene.get('chapter', idx+1)}Sc{scene.get('scene_number', 1)}", idx)
             meta_errors = [i for i in recheck if i.get("code") == "META_TEXT"]
 
@@ -11837,6 +12182,17 @@ Respond with JSON:
 
         validation_report["output_file"] = str(output_file)
 
+        # Auto-export to Kindle-ready Word (.docx) for KDP upload
+        try:
+            self.state.save()  # Persist state so exporter can load scenes
+            from prometheus_novel.export.docx_exporter import KDPExporter
+            exporter = KDPExporter(self.state.project_path, policy=self.policy)
+            docx_path = exporter.export()
+            validation_report["kdp_docx"] = str(docx_path)
+            logger.info(f"Kindle-ready Word saved: {docx_path}")
+        except Exception as e:
+            logger.warning(f"KDP docx export skipped (non-blocking): {e}")
+
         # Persist run report as structured JSON for post-run analysis
         # This is the "flight recorder" — one file shows the whole run
         run_report = {
@@ -11904,6 +12260,8 @@ Respond with JSON:
             run_report["quality_polish"] = self.state.quality_polish_report
         if hasattr(self.state, 'quality_meter_report') and self.state.quality_meter_report:
             run_report["quality_meters"] = self.state.quality_meter_report
+        if hasattr(self.state, 'targeted_refinement_report') and self.state.targeted_refinement_report:
+            run_report["targeted_refinement"] = self.state.targeted_refinement_report
         if hasattr(self.state, 'outline_diversity_report') and self.state.outline_diversity_report:
             run_report["outline_diversity"] = self.state.outline_diversity_report
         if metrics_delta:
