@@ -1,0 +1,92 @@
+# === IDENTITY ===
+project_name: the-bends
+title: "The Bends"
+genre: thriller
+target_length: "standard (60k)"   # micro (5k), novelette (15k), novella (30k), standard (60k), long (90k), epic (120k)
+status: seeded
+
+# === STORY CORE ===
+synopsis: >
+  Elena Vance is the woman brands call when an influencer becomes radioactive.
+  She cleans reputations for a living, turning scandals into arcs, pain into content,
+  and apologies into revenue. Her newest job is the biggest of her career: shepherding
+  Jax Vale, a once-beloved creator whose "charity" was exposed as a grift, through a
+  public redemption spectacle on the Aethelgard, the world's first luxury deep-sea
+  saturation habitat. Thirty days underwater. No phone. No exits. A live-scheduled
+  "detox" marketed as authenticity.
+
+  Two days in, a seismic event snaps the habitat's tether and knocks them down the
+  continental shelf. The broadcast dies. The surface goes silent. The Aethelgard
+  becomes a sealed museum of expensive breath. Oxygen scrubbing degrades. CO₂ rises.
+  The walls begin to talk in tiny metallic pops. In the dark, everyone reverts to
+  their oldest survival habits: bargaining, performing, blaming.
+
+  When Elena discovers the backup oxygen system was manually disabled before the quake,
+  she understands the terror has intent. Someone wanted them trapped. Someone wanted
+  the masks to crack. As paranoia blooms and bodies start appearing in places that
+  should be impossible, Elena must do the one thing her entire career avoided:
+  tell the truth about what she helped bury. The only way out is not a confession
+  for the audience. There is no audience. It's confession for the living.
+
+premise: "A crisis PR fixer and her disgraced influencer client are trapped in a failing luxury underwater habitat with a saboteur. Survival requires stripping away the curated self."
+protagonist: "Elena Vance, 34, crisis PR manager. Hyper-competent, emotionally avoidant, addicted to control. Flaw: she confuses optics with morality."
+antagonist: "Dr. Aris Kade (hidden saboteur) + the ocean/pressure/time (external)."
+central_conflict: "Elena must identify the saboteur and keep the group alive while the habitat's systems fail and old secrets turn lethal."
+central_question: "Who are you when nobody is watching, and the only currency left is breath?"
+setting: "The Aethelgard: an Art Deco luxury saturation habitat 600 ft underwater in the North Atlantic. Condensation, groaning metal, amber emergency lights."
+world_rules: "Hard physics only: saturation diving constraints, limited oxygen/CO₂ scrubbing, decompression realities, no fast escape, failing power, sealed compartments."
+
+# === CONTENT ELEMENTS ===
+themes: "performative identity vs authentic survival; commodified trauma; complicity; redemption without applause; the cost of control"
+tone: "claustrophobic, noir-leaning, visceral, dread-forward, emotionally sharp"
+writing_style: "close first-person present (Elena), high sensory specificity, short punchy interior lines under stress"
+influences: "technical suspense + psychological acuity; luxury-satire energy turning into survival horror"
+subplots: "B-plot: Elena's buried role in a prior cover-up resurfaces. C-plot: a staged romance becomes real grief. D-plot: the habitat AI becomes a confessional mirror."
+key_plot_points: |
+  ACT 1: The tether snaps; broadcast dies; group realizes they're truly alone.
+  ACT 2 (Midpoint): Elena finds the backup oxygen was disabled by hand; it's a cage, not an accident.
+  ACT 3: The hull begins to fail; escape requires a brutal choice about who fits in the bell and what truth goes up.
+motifs: "mirrors/reflections; breath/CO₂ headache; crushing pressure; red recording light; bioluminescent flickers in darkness"
+other_characters: "Jax Vale (disgraced influencer), Captain Mara Sato (habitat commander), Linnea Shaw (architect), Priya Nand (med tech), Silas Greer (billionaire sponsor), 'MOTHER' (habitat AI/house system)"
+avoid: "supernatural monsters; deus-ex-rescue; villain monologues; dream-sequence reveals; cheap shock twists"
+
+# === MODEL ROUTING (HYBRID: local draft + Opus polish) ===
+model_defaults:
+  api_model: qwen3:14b                  # default / planning (local, free)
+  critic_model: qwen3:14b               # critic (local, free)
+  fallback_model: qwen3:14b             # fallback (local, free)
+  local_model: qwen3:14b                # local
+  structure_gate_model: qwen3:14b        # structure validation (local, free)
+  draft_model: qwen3:14b                # scene_drafting, scene_expansion (local, free)
+  rewrite_model: claude-sonnet-4-5-20250929  # self_refinement, voice_human_pass, dialogue_polish, prose_polish, chapter_hooks (Sonnet 4.5, best value)
+budget_usd: 15   # Sonnet polish budget (~$8-12 estimated for 24 scenes)
+
+model_tuning:
+  stage_max_tokens:
+    scene_drafting: 6000       # ~2500 words draft, 80% headroom
+    scene_expansion: 8000      # full expanded scene output, plenty of room
+    self_refinement: 8000      # full scene rewrite
+    voice_human_pass: 8000     # full scene rewrite (Sonnet 4.5)
+    dialogue_polish: 8000      # full scene rewrite (Sonnet 4.5)
+    prose_polish: 8000         # full scene rewrite (Sonnet 4.5)
+    chapter_hooks: 4000        # per-chapter, shorter
+
+# === OPTIONAL: Strategic Guidance ===
+strategic_guidance:
+  pacing_notes: "Act 1 seduction (luxury, roles). Act 2 compression (systems fail, secrets leak). Act 3 velocity (choices, sacrifice, truth). Keep chapters short and oxygen-tight."
+  aesthetic_guide: "Deep teal + amber emergency light + rust + condensation + velvet luxury decaying into utility steel."
+  dialogue_bank: "Influencers default to therapy-speak and brand language. Crew speak in procedure and blunt constraints. Elena translates everything into leverage until it stops working."
+  tropes: "locked-room whodunit; survival countdown; parasite fame nightmare; 'the fixer must be fixed'"
+  stakes_ladder: "social death -> professional death -> literal death -> moral rebirth"
+
+# === OPTIONAL: Enhancements ===
+enhancements:
+  budget_guard:
+    enabled: true
+    warn_if_exceed: true
+  human_review_gates: []
+
+defense:
+  thresholds:
+    budget_max_defense_ratio: 0.9
+    budget_max_retries_per_stage: 5

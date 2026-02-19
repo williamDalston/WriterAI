@@ -25,6 +25,7 @@ MODEL_CLIENT_MAP: Dict[str, Type[BaseLLMClient]] = {
     "gpt-local": OllamaClient,
     "qwen2.5:7b": OllamaClient,
     "qwen2.5:14b": OllamaClient,
+    "qwen3:14b": OllamaClient,
     "qwen2.5": OllamaClient,
     "llama3.2": OllamaClient,
     "llama3.1": OllamaClient,
@@ -40,6 +41,7 @@ MODEL_CLIENT_MAP: Dict[str, Type[BaseLLMClient]] = {
     "o1-mini": OpenAIClient,
     # Anthropic models
     "claude-sonnet-4-20250514": AnthropicClient,
+    "claude-sonnet-4-5-20250929": AnthropicClient,
     "claude-opus-4-6": AnthropicClient,
     "claude-haiku-4-5-20251001": AnthropicClient,
     # Google models

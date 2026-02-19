@@ -67,7 +67,7 @@ def count_tokens(text: str, model_name: str = "gpt-4o-mini") -> int:
 # ============================================================================
 # RETRY AND TIMEOUT CONFIGURATION
 # ============================================================================
-DEFAULT_TIMEOUT_SECONDS = 120  # 2 minutes per request
+DEFAULT_TIMEOUT_SECONDS = 240  # 4 minutes per request (8k token output at ~60 tok/s = 133s)
 MAX_RETRIES = 3
 INITIAL_RETRY_DELAY = 1.0  # seconds
 MAX_RETRY_DELAY = 30.0  # seconds
@@ -686,7 +686,7 @@ class OllamaClient(BaseLLMClient):
         # Build create kwargs
         json_mode = kwargs.pop("json_mode", False)
         stop = kwargs.pop("stop", None)
-        timeout_val = kwargs.pop("timeout", 300)
+        timeout_val = kwargs.pop("timeout", 1200)  # 20 min for long prose on slow hardware
 
         create_kwargs = {
             "model": self.model_name,

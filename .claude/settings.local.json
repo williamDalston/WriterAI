@@ -35,7 +35,13 @@
       "Bash(del \"c:\\\\Users\\\\farad\\\\OneDrive\\\\Desktop\\\\Apps\\\\writerai - Copy\\\\prometheus_novel\\\\scripts\\\\md_to_kdp_docx.py\")",
       "Bash(ollama create:*)",
       "Bash(tasklist:*)",
-      "Bash(wmic process:*)"
+      "Bash(wmic process:*)",
+      "Bash(ollama pull:*)",
+      "Bash(taskkill:*)",
+      "Bash(cmd.exe /c \"start /min \"\"\"\" \"\"C:\\\\Users\\\\farad\\\\AppData\\\\Local\\\\Programs\\\\Ollama\\\\ollama app.exe\"\"\")",
+      "Bash(Start-Process \"ollama\" -ArgumentList \"serve\" -WindowStyle Hidden)",
+      "Bash(Start-Sleep -Seconds 5)",
+      "Bash(ollama ps:*)"
     ]
   }
 }

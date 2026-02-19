@@ -3,63 +3,253 @@ rules:
   min_total: 8
   min_scenes: 4
 phrases:
-- phrase: lena castillo found
-  total: 21
-  scenes: 21
-  severity: high
-  keep_first: 2
-- phrase: castillo found herself
-  total: 21
-  scenes: 21
-  severity: high
-  keep_first: 2
-- phrase: lena castillo found herself
-  total: 21
-  scenes: 21
-  severity: high
-  keep_first: 2
-- phrase: castillo found herself in
-  total: 21
-  scenes: 21
-  severity: high
-  keep_first: 2
-- phrase: lena castillo found herself in
-  total: 21
-  scenes: 21
-  severity: high
-  keep_first: 2
-- phrase: castillo found herself in the
-  total: 21
-  scenes: 21
-  severity: high
-  keep_first: 2
-- phrase: lena castillo found herself in the
-  total: 21
-  scenes: 21
-  severity: high
-  keep_first: 2
-- phrase: three years ago
-  total: 10
-  scenes: 8
-  severity: high
-  keep_first: 2
-- phrase: pressed my temple
-  total: 9
-  scenes: 9
-  severity: high
-  keep_first: 1
-- phrase: i pressed my temple
-  total: 9
-  scenes: 9
-  severity: high
-  keep_first: 1
-- phrase: giannas heels click
-  total: 3
+- phrase: i want to stay
+  total: 87
   scenes: 1
-  severity: medium
-  keep_first: 1
-- phrase: the prayer card
-  total: 3
+  severity: high
+  keep_first: 2
+- phrase: want to stay i
+  total: 87
   scenes: 1
-  severity: medium
-  keep_first: 1
+  severity: high
+  keep_first: 2
+- phrase: to stay i want
+  total: 87
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: i want to stay i
+  total: 87
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: want to stay i want
+  total: 87
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: i want to stay i want
+  total: 87
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: stay i want to
+  total: 86
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: to stay i want to
+  total: 86
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: stay i want to stay
+  total: 86
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: want to stay i want to
+  total: 86
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: to stay i want to stay
+  total: 86
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: stay i want to stay i
+  total: 86
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: i want to stay i want to
+  total: 86
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: want to stay i want to stay
+  total: 86
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: to stay i want to stay i
+  total: 86
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: stay i want to stay i want
+  total: 86
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: i want to stay i want to stay
+  total: 86
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: want to stay i want to stay i
+  total: 86
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: to stay i want to stay i want
+  total: 86
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: stay i want to stay i want to
+  total: 85
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: world was alive
+  total: 68
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: the world was alive
+  total: 68
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: alive the world
+  total: 67
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: world was alive the
+  total: 67
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: was alive the world
+  total: 67
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: alive the world was
+  total: 67
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: the world was alive the
+  total: 67
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: world was alive the world
+  total: 67
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: was alive the world was
+  total: 67
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: alive the world was alive
+  total: 67
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: the world was alive the world
+  total: 67
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: world was alive the world was
+  total: 67
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: was alive the world was alive
+  total: 67
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: the world was alive the world was
+  total: 67
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: world was alive the world was alive
+  total: 67
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: the world was alive the world was alive
+  total: 67
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: alive the world was alive the
+  total: 66
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: was alive the world was alive the
+  total: 66
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: alive the world was alive the world
+  total: 66
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: world was alive the world was alive the
+  total: 66
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: was alive the world was alive the world
+  total: 66
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: alive the world was alive the world was
+  total: 66
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: city was alive
+  total: 62
+  scenes: 5
+  severity: high
+  keep_first: 2
+- phrase: the city was alive
+  total: 62
+  scenes: 5
+  severity: high
+  keep_first: 2
+- phrase: alive and i was part
+  total: 59
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: city was alive and
+  total: 60
+  scenes: 3
+  severity: high
+  keep_first: 2
+- phrase: the city was alive and
+  total: 60
+  scenes: 3
+  severity: high
+  keep_first: 2
+- phrase: city was alive and i
+  total: 58
+  scenes: 2
+  severity: high
+  keep_first: 2
+- phrase: city was alive and i was part
+  total: 57
+  scenes: 1
+  severity: high
+  keep_first: 2
+- phrase: part of the city
+  total: 36
+  scenes: 1
+  severity: high
+  keep_first: 2

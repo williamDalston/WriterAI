@@ -19,6 +19,7 @@ class CostTracker:
 
             # Anthropic models
             "claude-sonnet-4-20250514": {"input_cost_per_million_tokens": 3.00, "output_cost_per_million_tokens": 15.00},
+            "claude-sonnet-4-5-20250929": {"input_cost_per_million_tokens": 3.00, "output_cost_per_million_tokens": 15.00},
             "claude-opus-4-6": {"input_cost_per_million_tokens": 15.00, "output_cost_per_million_tokens": 75.00},
             "claude-haiku-4-5-20251001": {"input_cost_per_million_tokens": 0.80, "output_cost_per_million_tokens": 4.00},
 
@@ -30,6 +31,7 @@ class CostTracker:
             "gpt-local": {"input_cost_per_million_tokens": 0.0, "output_cost_per_million_tokens": 0.0},
             "qwen2.5": {"input_cost_per_million_tokens": 0.0, "output_cost_per_million_tokens": 0.0},
             "qwen2.5:7b": {"input_cost_per_million_tokens": 0.0, "output_cost_per_million_tokens": 0.0},
+            "qwen3:14b": {"input_cost_per_million_tokens": 0.0, "output_cost_per_million_tokens": 0.0},
             "llama3.2": {"input_cost_per_million_tokens": 0.0, "output_cost_per_million_tokens": 0.0},
             "llama3.1": {"input_cost_per_million_tokens": 0.0, "output_cost_per_million_tokens": 0.0},
             "mistral": {"input_cost_per_million_tokens": 0.0, "output_cost_per_million_tokens": 0.0},

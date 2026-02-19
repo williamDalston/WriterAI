@@ -1,0 +1,25 @@
+{
+  "timestamp": null,
+  "last_stage": "trope_integration",
+  "last_status": "completed",
+  "completed_stages": [
+    "high_concept",
+    "world_building",
+    "beat_sheet",
+    "emotional_architecture",
+    "character_profiles",
+    "motif_embedding",
+    "master_outline",
+    "trope_integration"
+  ],
+  "total_stages": 8,
+  "total_tokens": 0,
+  "total_cost_usd": 0,
+  "scene_count": 0,
+  "incidents": 0,
+  "budget": {
+    "defense_tokens": 0,
+    "generation_tokens": 0,
+    "rewritten_scenes": 0
+  }
+}

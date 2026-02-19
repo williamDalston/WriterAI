@@ -1,0 +1,35 @@
+{
+  "timestamp": "2026-02-18T23:35:55.633826",
+  "last_stage": "final_deai",
+  "last_status": "failed",
+  "completed_stages": [
+    "high_concept",
+    "world_building",
+    "beat_sheet",
+    "emotional_architecture",
+    "character_profiles",
+    "motif_embedding",
+    "master_outline",
+    "trope_integration",
+    "scene_drafting",
+    "roster_gate",
+    "scene_expansion",
+    "structure_gate",
+    "continuity_audit",
+    "continuity_fix",
+    "continuity_recheck",
+    "continuity_audit_2",
+    "continuity_fix_2",
+    "pov_enforcer"
+  ],
+  "total_stages": 18,
+  "total_tokens": 1071171,
+  "total_cost_usd": 10.7117,
+  "scene_count": 36,
+  "incidents": 4,
+  "budget": {
+    "defense_tokens": 45899,
+    "generation_tokens": 222145,
+    "rewritten_scenes": 0
+  }
+}

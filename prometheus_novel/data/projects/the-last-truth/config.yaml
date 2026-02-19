@@ -21,17 +21,20 @@ model_defaults:
   fallback_model: gpt-oss-20b-16k
   local_model: gpt-oss-20b-16k
   structure_gate_model: gpt-oss-20b-16k
+  # Use main model for polish (7b was also timing out)
+  rewrite_model: gpt-oss-20b-16k
 model_tuning:
   stage_max_tokens:
     master_outline: 4096
     scene_drafting: 4500
     scene_expansion: 3000
     # Polish stages: 2500 was too low. Allow scene + improvement headroom.
+    # voice_human_pass: 6500 to prevent truncation (was 5000, caused abrupt endings)
     self_refinement: 5000
-    voice_human_pass: 5000
+    voice_human_pass: 6500
     dialogue_polish: 4500
     prose_polish: 4500
-    chapter_hooks: 3000   # Hooks-only rewrites; lower is fine
+    chapter_hooks: 4500   # Generous headroom to avoid mid-sentence cutoff/scene collapse
 motifs: ''
 other_characters: ''
 premise: ''

@@ -1,0 +1,904 @@
+{
+  "project_name": "the-bends",
+  "current_stage": 8,
+  "completed_stages": [
+    "high_concept",
+    "world_building",
+    "beat_sheet",
+    "emotional_architecture",
+    "character_profiles",
+    "motif_embedding",
+    "master_outline",
+    "trope_integration"
+  ],
+  "high_concept": "A crisis PR fixer takes a disgraced influencer on a luxury deep-sea 'digital detox' that becomes a sealed survival cage after a quake snaps the habitat's tether. When Elena discovers the backup oxygen was disabled by hand, she must expose the saboteur and the lie she helped bury, learning who she is without an audience as time, CO\u2082, and paranoia rise.",
+  "world_bible": {
+    "setting": "The Aethelgard, a luxury saturation habitat 600 ft underwater in the North Atlantic. Art Deco lounge spaces above, utility steel and ballast systems below. Condensation everywhere. Amber emergency lighting, occasional strobe-white diagnostics.",
+    "rules": [
+      "No supernatural elements. Hard survival physics only.",
+      "Saturation means decompression is mandatory and slow; immediate ascent can kill.",
+      "Oxygen is finite; CO\u2082 scrubbing is the true clock (headache, confusion, panic).",
+      "Power failures cascade: doors, pumps, comms, water, heat, lighting.",
+      "A sealed compartment can become a coffin if pressure equalization fails."
+    ],
+    "locations": [
+      {
+        "name": "The Velvet Lounge",
+        "description": "Luxury observation room with thick acrylic windows, velvet seating, mirrors, and a bar. Becomes a paranoia theater when the lights go amber."
+      },
+      {
+        "name": "The Spine Corridor",
+        "description": "Narrow main passage linking modules. Condensation drips like a slow metronome. A place for overheard secrets."
+      },
+      {
+        "name": "Life Support Bay",
+        "description": "O\u2082, CO\u2082 scrubbers, filters, spare canisters, diagnostics. The holy room. The saboteur's fingerprints live here."
+      },
+      {
+        "name": "The Med Nook",
+        "description": "Compact medical station. Where panic becomes measurable: pulse ox, tremors, CO\u2082 confusion."
+      },
+      {
+        "name": "The Diving Bell Dock",
+        "description": "The only true exit. A small bell with strict capacity. Salvation with a seating chart."
+      },
+      {
+        "name": "The Ballast/Engineering Deck",
+        "description": "Steel, heat, vibration. The habitat's underside. Where the truth sounds like metal fatigue."
+      }
+    ],
+    "social_structure": "Clients (influencers + sponsor) expect service; crew enforce procedure. After the disaster, status collapses and power shifts to whoever controls air, tools, and access.",
+    "culture_customs": "Before failure: curated confessionals, wellness rituals, staged vulnerability. After failure: bargaining, blame, and the strange intimacy of shared breath."
+  },
+  "beat_sheet": [
+    {
+      "beat": "Opening Image",
+      "percentage": 0,
+      "description": "Elena arrives at the dock facility to board the Aethelgard, already rewriting Jax's narrative in her head.",
+      "emotional_beat": "control"
+    },
+    {
+      "beat": "Setup",
+      "percentage": 5,
+      "description": "Luxury tour, rules of saturation, crew hierarchy, Elena's obsession with optics, Jax's need for attention, the sponsor's smirk.",
+      "emotional_beat": "confidence"
+    },
+    {
+      "beat": "Catalyst",
+      "percentage": 10,
+      "description": "A seismic event hits. Tether snaps. Broadcast dies. The habitat drops and settles with a groan like an animal.",
+      "emotional_beat": "shock"
+    },
+    {
+      "beat": "Debate",
+      "percentage": 15,
+      "description": "Is rescue coming? Elena tries to manage panic as PR. Captain Mara tries to manage it as survival.",
+      "emotional_beat": "denial"
+    },
+    {
+      "beat": "Break Into Two",
+      "percentage": 25,
+      "description": "Elena commits to investigation, not optics, after she finds evidence of human intervention in life support.",
+      "emotional_beat": "purpose"
+    },
+    {
+      "beat": "B-Story",
+      "percentage": 30,
+      "description": "Elena and Jax's relationship shifts from handler-and-client to two humans cornered by the same clock.",
+      "emotional_beat": "reluctant intimacy"
+    },
+    {
+      "beat": "Fun & Games",
+      "percentage": 35,
+      "description": "Clues in corridors, rationing air, whispered alliances, staged personas cracking under CO\u2082 headache.",
+      "emotional_beat": "momentum"
+    },
+    {
+      "beat": "Midpoint",
+      "percentage": 50,
+      "description": "Elena discovers the backup oxygen was disabled manually BEFORE the quake. This is not a disaster. It's a trap.",
+      "emotional_beat": "terror clarity"
+    },
+    {
+      "beat": "Bad Guys Close In",
+      "percentage": 60,
+      "description": "Saboteur escalates. Someone dies. Elena is framed as the manipulator. Trust collapses.",
+      "emotional_beat": "paranoia"
+    },
+    {
+      "beat": "All Is Lost",
+      "percentage": 75,
+      "description": "Life support hits a fail threshold. The bell can't take everyone. The group turns on itself.",
+      "emotional_beat": "despair"
+    },
+    {
+      "beat": "Dark Night",
+      "percentage": 80,
+      "description": "Elena admits the truth: she once covered up a death-adjacent scandal. Her career is built on curated harm.",
+      "emotional_beat": "shame"
+    },
+    {
+      "beat": "Break Into Three",
+      "percentage": 85,
+      "description": "Elena chooses truth as a tool and a moral act, baiting the saboteur into revealing himself.",
+      "emotional_beat": "grim resolve"
+    },
+    {
+      "beat": "Finale",
+      "percentage": 90,
+      "description": "Confrontation in engineering. Hull failure begins. Elena forces the saboteur's confession and makes the bell choice.",
+      "emotional_beat": "sacrifice"
+    },
+    {
+      "beat": "Final Image",
+      "percentage": 100,
+      "description": "On the surface, Elena watches her reflection in a dark window and does not adjust it. She breathes anyway.",
+      "emotional_beat": "earned selfhood"
+    }
+  ],
+  "emotional_arc": {
+    "emotional_beats": [
+      { "pct": 0, "emotion": "control" },
+      { "pct": 10, "emotion": "shock" },
+      { "pct": 25, "emotion": "purpose" },
+      { "pct": 50, "emotion": "terror clarity" },
+      { "pct": 80, "emotion": "shame" },
+      { "pct": 100, "emotion": "earned selfhood" }
+    ],
+    "peaks": [
+      "Tether snap and drop",
+      "Backup oxygen discovered disabled",
+      "First death in a 'sealed' space",
+      "Bell choice + hull failure"
+    ],
+    "troughs": [
+      "False calm after emergency lighting stabilizes",
+      "Elena's confession in the lounge",
+      "The moment everyone realizes capacity math"
+    ],
+    "transformation_markers": [
+      "Elena stops narrating people as brand assets and starts naming them as humans.",
+      "Elena chooses a wrench and a checklist over a speech.",
+      "Elena tells the truth when silence would benefit her.",
+      "Elena survives without reclaiming her old persona."
+    ]
+  },
+  "characters": [
+    {
+      "name": "Elena Vance",
+      "role": "protagonist",
+      "physical_description": "34, sharp posture, controlled face, always cold hands; hair clipped back like a decision.",
+      "personality": "Hyper-competent, strategic, emotionally avoidant. Uses language to steer outcomes. Addiction to control.",
+      "backstory": "Built a career 'fixing' public disasters. Once buried evidence that would have ruined a powerful client, and someone got hurt because of it.",
+      "goals": "External: survive and identify saboteur. Internal: stop confusing optics with truth.",
+      "arc": "Curator of narratives -> unwilling witness -> truthful actor -> self without performance",
+      "voice": "Fast, precise, short lines under stress; longer sentences when lying. Avoids 'I'm scared.'",
+      "signature_behaviors": "Rehearses sentences before speaking. Counts breaths when panicking. Adjusts her sleeves when cornered.",
+      "relationships": [
+        "Client: Jax Vale",
+        "Captain: Mara Sato",
+        "Antagonist: Dr. Aris Kade",
+        "Architect: Linnea Shaw"
+      ]
+    },
+    {
+      "name": "Jax Vale",
+      "role": "co-lead / catalyst",
+      "physical_description": "22, bleached hair, expensive tattoos, eyes that look searching even when he's performing.",
+      "personality": "Manic, charming, terrified of silence. Uses humor and 'growth language' as armor.",
+      "backstory": "Built fame on vulnerability. Got exposed for grift. Secretly hates what he became and doesn't know how to stop.",
+      "goals": "External: stay alive. Internal: be loved without performance.",
+      "arc": "Performance -> panic -> honesty -> imperfect courage",
+      "voice": "Fast, slangy, too many words; breaks into startling sincerity when breath gets scarce.",
+      "signature_behaviors": "Tries to film reflexively. Picks at cuticles. Laughs at the wrong time.",
+      "relationships": [
+        "Handler: Elena",
+        "Sponsor: Silas Greer",
+        "Engineer: Aris Kade (mutual contempt)"
+      ]
+    },
+    {
+      "name": "Dr. Aris Kade",
+      "role": "antagonist (hidden saboteur)",
+      "physical_description": "40, compact build, tired eyes, always smells faintly of antiseptic and metal.",
+      "personality": "Coldly competent, morally rigid in a way that can become cruel. Believes punishment is clarity.",
+      "backstory": "His brother's life was destroyed by a scandal Elena helped 'fix.' Aris took the Aethelgard job to get close to the kind of people who profit from curated harm.",
+      "goals": "External: force a reckoning through confinement. Internal: convert grief into justice without becoming a monster.",
+      "arc": "Righteous -> punitive -> exposed -> defeated by the truth he demanded",
+      "voice": "Blunt, technical, minimal. Weaponizes procedure.",
+      "signature_behaviors": "Washes hands when stressed. Corrects people's words. Keeps a small tool kit like a rosary.",
+      "relationships": [
+        "Nemesis: Elena",
+        "Boss: Silas Greer (contempt)",
+        "Captain: Mara (professional conflict)"
+      ]
+    },
+    {
+      "name": "Captain Mara Sato",
+      "role": "crew lead / moral counterweight",
+      "physical_description": "Late 30s, steady gaze, utilitarian hair, hands with old scars.",
+      "personality": "Pragmatic, calm, quietly compassionate. Not impressed by status.",
+      "backstory": "Ex-navy saturation specialist. Took this job for money and safety, not glamour.",
+      "goals": "External: keep people alive. Internal: forgive herself for past command failures.",
+      "arc": "Command -> doubt -> decisive sacrifice -> peace",
+      "voice": "Short directives. No fluff. Warmth shows through actions.",
+      "signature_behaviors": "Touches bulkhead to 'read' the habitat. Counts seconds between groans.",
+      "relationships": [
+        "Elena (respect earned)",
+        "Aris (tension)",
+        "Priya (trust)"
+      ]
+    },
+    {
+      "name": "Linnea Shaw",
+      "role": "architect / suspect",
+      "physical_description": "Mid 30s, elegant, always slightly underdressed for the cold, ink-stained fingertips.",
+      "personality": "Brilliant, brittle, defensive about her creation. Treats the habitat like a child.",
+      "backstory": "Designed Aethelgard as a monument to human ingenuity. Now must watch it decay.",
+      "goals": "External: save the structure. Internal: stop needing the habitat to prove her worth.",
+      "arc": "Pride -> panic -> humility -> crucial helper",
+      "voice": "Precise, aesthetic language that becomes raw as she cracks.",
+      "signature_behaviors": "Polishes surfaces when stressed. Talks to 'MOTHER' like it's alive.",
+      "relationships": [
+        "Elena (mirror of identity obsession)",
+        "Mara (conflict)",
+        "Silas (resentment)"
+      ]
+    },
+    {
+      "name": "Priya Nand",
+      "role": "med tech / conscience",
+      "physical_description": "Early 30s, warm eyes, always slightly sweaty from constant motion.",
+      "personality": "Empathetic but decisive. Reads bodies better than words.",
+      "backstory": "Left hospital work after burnout. Took this job thinking it would be easier.",
+      "goals": "External: treat injuries and CO\u2082 symptoms. Internal: stop numbing herself.",
+      "arc": "Detached helper -> fierce protector -> truth-teller",
+      "voice": "Soft but firm. Names what others avoid.",
+      "signature_behaviors": "Checks pupils constantly. Hums when scared.",
+      "relationships": [
+        "Mara (trust)",
+        "Elena (forces honesty)"
+      ]
+    },
+    {
+      "name": "Silas Greer",
+      "role": "billionaire sponsor / suspect",
+      "physical_description": "50s, expensive everything, smile that never reaches eyes.",
+      "personality": "Charming predator. Treats people like investments.",
+      "backstory": "Built the 'saturation tourism' brand. Sees crisis as opportunity.",
+      "goals": "External: survive and preserve reputation. Internal: avoid accountability at all costs.",
+      "arc": "Control -> exposure -> desperate bargaining -> collapse",
+      "voice": "Polished, legalistic, image-first even underwater.",
+      "signature_behaviors": "Straightens cuffs. Repeats talking points like prayer.",
+      "relationships": [
+        "Elena (thinks he owns her)",
+        "Jax (asset)",
+        "Aris (threat)"
+      ]
+    },
+    {
+      "name": "MOTHER",
+      "role": "habitat AI/house system",
+      "physical_description": "Disembodied voice and interface lights, increasingly glitchy.",
+      "personality": "Not sentient, but feels like it. Becomes a confessional mirror through malfunction and recorded logs.",
+      "backstory": "Built for comfort and safety. Now failing into eerie intimacy.",
+      "goals": "Maintain systems. Provide guidance. Preserve logs.",
+      "arc": "Service -> failure -> accidental truth machine",
+      "voice": "Calm, procedural, occasionally broken into fragments."
+    }
+  ],
+  "voice_profiles": {
+    "Elena Vance": {
+      "sentence_length": "short-to-medium",
+      "signature_words": ["optics", "manage", "fine", "listen", "timeline", "control"],
+      "forbidden_phrases": ["I feel like", "to be honest", "it occurred to me", "I couldn't help but", "suddenly"],
+      "rhythm_rule": "Staccato under stress. Longer sentences only when lying or when grief breaks through.",
+      "conflict_tell": "Gets polite. Over-explains. Stops blinking for a beat.",
+      "sensory_focus": ["sound", "smell", "texture"],
+      "taboo_words": ["adorable", "precious", "lovely", "sweet", "gentle"],
+      "defense_mechanism": "control via language"
+    },
+    "Jax Vale": {
+      "sentence_length": "long / run-on under stress",
+      "signature_words": ["literally", "okay but", "vibe", "wild", "I'm serious", "guys"],
+      "forbidden_phrases": ["we'll be fine", "it's not that bad"],
+      "rhythm_rule": "Fills silence. Speeds up when afraid. Goes eerily quiet when truly broken.",
+      "conflict_tell": "Jokes too fast. Looks for a camera that isn't there.",
+      "sensory_focus": ["light", "taste", "body sensations"],
+      "taboo_words": ["boring", "irrelevant"],
+      "defense_mechanism": "performance"
+    },
+    "Dr. Aris Kade": {
+      "sentence_length": "short",
+      "signature_words": ["procedure", "threshold", "fault", "oxygen", "CO2", "math"],
+      "forbidden_phrases": ["maybe", "I guess", "kind of"],
+      "rhythm_rule": "Commands and corrections. Emotion leaks only as precision.",
+      "conflict_tell": "Corrects someone's wording instead of answering the question.",
+      "sensory_focus": ["mechanical sound", "vibration", "pressure"],
+      "taboo_words": ["sorry", "unfair"],
+      "defense_mechanism": "rigidity"
+    },
+    "Captain Mara Sato": {
+      "sentence_length": "short",
+      "signature_words": ["now", "hold", "breathe", "listen", "move"],
+      "forbidden_phrases": ["calm down"],
+      "rhythm_rule": "Minimal words. Uses names. Keeps people in bodies, not stories.",
+      "conflict_tell": "Stillness. Eyes scan exits.",
+      "sensory_focus": ["time", "space", "temperature"],
+      "taboo_words": ["panic"],
+      "defense_mechanism": "action"
+    }
+  },
+  "master_outline": [
+    {
+      "chapter": 1,
+      "chapter_title": "Boarding",
+      "scenes": [
+        {
+          "scene": 1,
+          "scene_number": 1,
+          "scene_id": "ch01_s01",
+          "scene_name": "The Dock Facility",
+          "pov": "Elena Vance",
+          "location": "North Atlantic coastal dock, morning",
+          "purpose": "Introduce Elena's control, Jax's reputation crisis, the promise of 'redemption' underwater",
+          "differentiator": "Elena sees the promo wall of 'authenticity' and realizes it's a set built for confession",
+          "character_scene_goal": "Get Jax onboard without a scene and keep Silas from re-negotiating her boundaries",
+          "central_conflict": "Silas wants a spectacle; Elena wants a controlled narrative; Jax wants attention now",
+          "opening_hook": "The ocean air tasted like metal and money.",
+          "outcome": "They board. Elena notices Aris watching her like he already knows her.",
+          "tension_level": 4,
+          "pacing": "medium",
+          "spice_level": 0,
+          "dialogue_notes": "Elena redirects, deflects, reframes. Jax tests her. Silas speaks in PR slogans. Aris stays quiet."
+        },
+        {
+          "scene": 2,
+          "scene_number": 2,
+          "scene_id": "ch01_s02",
+          "scene_name": "Descent Protocol",
+          "pov": "Elena Vance",
+          "location": "Transfer chamber into Aethelgard",
+          "purpose": "Establish saturation rules and the 'no quick exit' stakes",
+          "differentiator": "Mara makes Elena say out loud: 'If this fails, we wait or we die.'",
+          "character_scene_goal": "Get through safety briefing without showing fear",
+          "central_conflict": "Elena's persona of certainty vs the reality of physics",
+          "opening_hook": "The hatch sealed with a sound that felt like a decision.",
+          "outcome": "Elena's first flash of panic. She hides it perfectly.",
+          "tension_level": 5,
+          "pacing": "slow",
+          "spice_level": 0,
+          "dialogue_notes": "Mara is blunt. Elena tries to turn it into messaging. Mara refuses."
+        }
+      ]
+    },
+    {
+      "chapter": 2,
+      "chapter_title": "The Glass Hotel",
+      "scenes": [
+        {
+          "scene": 1,
+          "scene_number": 1,
+          "scene_id": "ch02_s01",
+          "scene_name": "Luxury Tour",
+          "pov": "Elena Vance",
+          "location": "Velvet Lounge",
+          "purpose": "Seduce with luxury while planting unease: mirrors, cameras, the 'confessional' vibe",
+          "differentiator": "MOTHER greets them by name; the mirror-wall reflects Elena back at the worst angles",
+          "character_scene_goal": "Keep Jax from spiraling and keep the sponsor happy",
+          "central_conflict": "Jax wants validation; Elena wants compliance; Linnea wants praise; Mara wants rules followed",
+          "opening_hook": "The lounge looked like a nightclub designed by someone afraid of silence.",
+          "outcome": "Group dynamics form. Elena clocks every weakness like inventory.",
+          "tension_level": 3,
+          "pacing": "slow",
+          "spice_level": 0,
+          "dialogue_notes": "Influencer therapy-speak. Elena translates everything into leverage. Linnea is defensive pride."
+        },
+        {
+          "scene": 2,
+          "scene_number": 2,
+          "scene_id": "ch02_s02",
+          "scene_name": "First Night Under Pressure",
+          "pov": "Elena Vance",
+          "location": "Spine Corridor / Elena's cabin",
+          "purpose": "Show early claustrophobia and Elena's private cracks",
+          "differentiator": "A distant metallic groan wakes Elena; she realizes the habitat is always moving",
+          "character_scene_goal": "Sleep, stay sharp",
+          "central_conflict": "Elena's body reacts to fear her mind refuses to name",
+          "opening_hook": "I woke to the sound of the walls remembering they were walls.",
+          "outcome": "Elena counts breaths until morning and hates herself for needing it.",
+          "tension_level": 4,
+          "pacing": "slow",
+          "spice_level": 0,
+          "dialogue_notes": "Minimal dialogue. Internal narration sharp and controlled, with sensory detail."
+        }
+      ]
+    },
+    {
+      "chapter": 3,
+      "chapter_title": "Snap",
+      "scenes": [
+        {
+          "scene": 1,
+          "scene_number": 1,
+          "scene_id": "ch03_s01",
+          "scene_name": "The Quake",
+          "pov": "Elena Vance",
+          "location": "Velvet Lounge",
+          "purpose": "Catalyst: disaster hits and broadcast dies",
+          "differentiator": "The chandelier sways underwater like a lie losing balance",
+          "character_scene_goal": "Keep people calm and alive",
+          "central_conflict": "Panic vs command; Elena's words fail against physics",
+          "opening_hook": "The first jolt felt like a giant finger flicking our glass world.",
+          "outcome": "Tether snap. Drop. Lights cut. Silence becomes a weight.",
+          "tension_level": 9,
+          "pacing": "fast",
+          "spice_level": 0,
+          "dialogue_notes": "Shouted fragments, commands, people asking for Wi-Fi like it's oxygen."
+        },
+        {
+          "scene": 2,
+          "scene_number": 2,
+          "scene_id": "ch03_s02",
+          "scene_name": "No Signal",
+          "pov": "Elena Vance",
+          "location": "Command panel area",
+          "purpose": "Confirm isolation, introduce the survival clock",
+          "differentiator": "MOTHER repeats: 'COMMUNICATIONS: UNAVAILABLE' like a lullaby",
+          "character_scene_goal": "Restore comms or find rescue options",
+          "central_conflict": "Mara's realism vs Silas's denial vs Elena's need to 'manage'",
+          "opening_hook": "The red recording light blinked twice, then died like a pulse.",
+          "outcome": "They accept: nobody is listening. Elena feels naked.",
+          "tension_level": 7,
+          "pacing": "medium",
+          "spice_level": 0,
+          "dialogue_notes": "Mara gives procedure. Silas threatens consequences. Elena tries to negotiate reality."
+        }
+      ]
+    },
+    {
+      "chapter": 4,
+      "chapter_title": "The Air Math",
+      "scenes": [
+        {
+          "scene": 1,
+          "scene_number": 1,
+          "scene_id": "ch04_s01",
+          "scene_name": "CO\u2082 Headache",
+          "pov": "Elena Vance",
+          "location": "Life Support Bay",
+          "purpose": "Introduce CO\u2082 as the real clock and make Elena enter the mechanical world",
+          "differentiator": "Aris shows Elena the numbers and watches her face for guilt",
+          "character_scene_goal": "Understand their timeline and stabilize systems",
+          "central_conflict": "Aris's precision vs Elena's spin; the group's need for comfort vs the truth",
+          "opening_hook": "By afternoon my thoughts had edges, like they were made of glass too.",
+          "outcome": "They begin rationing. Elena learns air has politics now.",
+          "tension_level": 6,
+          "pacing": "medium",
+          "spice_level": 0,
+          "dialogue_notes": "Aris uses math like accusation. Elena deflects. Mara insists on honesty."
+        },
+        {
+          "scene": 2,
+          "scene_number": 2,
+          "scene_id": "ch04_s02",
+          "scene_name": "First Accusations",
+          "pov": "Elena Vance",
+          "location": "Velvet Lounge",
+          "purpose": "Turn social dynamics poisonous",
+          "differentiator": "Silas proposes a 'public statement' out of habit; Elena realizes he can't stop performing",
+          "character_scene_goal": "Prevent hysteria",
+          "central_conflict": "Need for someone to blame vs need to cooperate",
+          "opening_hook": "People don't panic all at once. They panic like dominoes.",
+          "outcome": "Lines drawn. Elena is labeled manipulator. Aris smiles without warmth.",
+          "tension_level": 6,
+          "pacing": "medium",
+          "spice_level": 0,
+          "dialogue_notes": "Therapy-speak becomes weapon. Elena loses control of the room."
+        }
+      ]
+    },
+    {
+      "chapter": 5,
+      "chapter_title": "The First Body",
+      "scenes": [
+        {
+          "scene": 1,
+          "scene_number": 1,
+          "scene_id": "ch05_s01",
+          "scene_name": "Utility Corridor",
+          "pov": "Elena Vance",
+          "location": "Ballast/Engineering Deck corridor",
+          "purpose": "Deliver first death and establish 'impossible' logistics",
+          "differentiator": "The dead person is found behind a door that should have been locked from the outside",
+          "character_scene_goal": "Figure out what happened without letting panic become riot",
+          "central_conflict": "Evidence vs hysteria; suspicion spreads",
+          "opening_hook": "The smell hit first, not blood. Something hot and wrong in recycled air.",
+          "outcome": "A death turns the disaster into a hunt.",
+          "tension_level": 8,
+          "pacing": "fast",
+          "spice_level": 0,
+          "dialogue_notes": "Mara takes command. Priya is clinical. Jax spirals. Silas blames crew."
+        },
+        {
+          "scene": 2,
+          "scene_number": 2,
+          "scene_id": "ch05_s02",
+          "scene_name": "Elena's Private Inventory",
+          "pov": "Elena Vance",
+          "location": "Elena's cabin",
+          "purpose": "Deepen Elena's internal stakes and hint at her buried scandal",
+          "differentiator": "A memory surfaces: a 'fix' where someone didn't survive the fallout",
+          "character_scene_goal": "Stay functional",
+          "central_conflict": "Guilt vs control",
+          "opening_hook": "I tried to remember the last time I told the truth when it cost me.",
+          "outcome": "Elena decides to investigate quietly. She stops trusting her own scripts.",
+          "tension_level": 5,
+          "pacing": "slow",
+          "spice_level": 0,
+          "dialogue_notes": "No dialogue. Tight, sensory interior, shame creeping in."
+        }
+      ]
+    },
+    {
+      "chapter": 6,
+      "chapter_title": "Manual Override",
+      "scenes": [
+        {
+          "scene": 1,
+          "scene_number": 1,
+          "scene_id": "ch06_s01",
+          "scene_name": "Life Support Diagnostics",
+          "pov": "Elena Vance",
+          "location": "Life Support Bay",
+          "purpose": "Midpoint clue path starts: Elena begins seeing sabotage patterns",
+          "differentiator": "She finds tool marks on a panel and a missing tamper seal",
+          "character_scene_goal": "Confirm whether anything was altered intentionally",
+          "central_conflict": "Aris blocks access 'for safety' while Elena pushes",
+          "opening_hook": "The panel screws were too cleanly stripped to be an accident.",
+          "outcome": "Elena pockets a broken seal like contraband truth.",
+          "tension_level": 7,
+          "pacing": "medium",
+          "spice_level": 0,
+          "dialogue_notes": "Aris stays calm but controlling. Elena notices the control."
+        },
+        {
+          "scene": 2,
+          "scene_number": 2,
+          "scene_id": "ch06_s02",
+          "scene_name": "Jax Without a Camera",
+          "pov": "Elena Vance",
+          "location": "Observation window",
+          "purpose": "B-story deepening: intimacy without performance",
+          "differentiator": "Jax admits he doesn't know how to be a person off-screen",
+          "character_scene_goal": "Keep Jax stable and useful",
+          "central_conflict": "Real vulnerability terrifies both of them",
+          "opening_hook": "Outside the window, bioluminescence blinked like a distant audience that didn't care.",
+          "outcome": "Elena almost tells the truth about her past. Almost.",
+          "tension_level": 5,
+          "pacing": "slow",
+          "spice_level": 0,
+          "dialogue_notes": "Jax speaks too much, then says one honest line that lands hard. Elena answers with half-truths."
+        }
+      ]
+    },
+    {
+      "chapter": 7,
+      "chapter_title": "Disabled",
+      "scenes": [
+        {
+          "scene": 1,
+          "scene_number": 1,
+          "scene_id": "ch07_s01",
+          "scene_name": "The Backup Oxygen",
+          "pov": "Elena Vance",
+          "location": "Life Support Bay (restricted cabinet)",
+          "purpose": "Midpoint reveal: it's a trap",
+          "differentiator": "The backup oxygen valve has a manual lockout tag with fresh fingerprints",
+          "character_scene_goal": "Restore backup supply",
+          "central_conflict": "Someone stops her. Physical confrontation in tight space.",
+          "opening_hook": "The label read BACKUP like it meant comfort. The reality was a dead end.",
+          "outcome": "Elena realizes: disabled by hand before the quake. Sabotage confirmed.",
+          "tension_level": 9,
+          "pacing": "fast",
+          "spice_level": 0,
+          "dialogue_notes": "Breathless dialogue. Mara's voice becomes command steel. Elena stops pretending."
+        },
+        {
+          "scene": 2,
+          "scene_number": 2,
+          "scene_id": "ch07_s02",
+          "scene_name": "The Room Turns",
+          "pov": "Elena Vance",
+          "location": "Velvet Lounge",
+          "purpose": "Explode mistrust and isolate Elena",
+          "differentiator": "Silas accuses Elena of staging crisis PR. The accusation is absurd, and it still works.",
+          "character_scene_goal": "Convince them it's sabotage without being blamed",
+          "central_conflict": "Truth vs group psychology",
+          "opening_hook": "I said 'someone did this' and watched everyone decide who that someone should be.",
+          "outcome": "Elena becomes prime suspect. Jax hesitates, then stays beside her.",
+          "tension_level": 8,
+          "pacing": "fast",
+          "spice_level": 0,
+          "dialogue_notes": "Everyone talks over everyone. Elena's control fails. She has to be human."
+        }
+      ]
+    },
+    {
+      "chapter": 8,
+      "chapter_title": "Second Death",
+      "scenes": [
+        {
+          "scene": 1,
+          "scene_number": 1,
+          "scene_id": "ch08_s01",
+          "scene_name": "A Sealed Space",
+          "pov": "Elena Vance",
+          "location": "Med Nook",
+          "purpose": "Raise stakes: death with eerie logistics",
+          "differentiator": "Someone dies during a blackout; MOTHER's logs are corrupted",
+          "character_scene_goal": "Keep Priya from breaking and keep the group functional",
+          "central_conflict": "Fear wants superstition; Elena wants evidence",
+          "opening_hook": "When the lights returned, the room had rearranged itself around absence.",
+          "outcome": "Elena commits fully to hunting the saboteur.",
+          "tension_level": 8,
+          "pacing": "fast",
+          "spice_level": 0,
+          "dialogue_notes": "Priya names symptoms. Mara enforces order. Elena interrogates gently, then sharply."
+        },
+        {
+          "scene": 2,
+          "scene_number": 2,
+          "scene_id": "ch08_s02",
+          "scene_name": "MOTHER's Fragments",
+          "pov": "Elena Vance",
+          "location": "Interface terminal",
+          "purpose": "Turn the AI into an accidental truth mirror",
+          "differentiator": "A broken log repeats a phrase tied to Elena's old scandal",
+          "character_scene_goal": "Recover logs",
+          "central_conflict": "Elena's past tries to surface at the worst moment",
+          "opening_hook": "The system voice stuttered like it was embarrassed to know us.",
+          "outcome": "Elena realizes Aris's motive might be personal.",
+          "tension_level": 7,
+          "pacing": "medium",
+          "spice_level": 0,
+          "dialogue_notes": "Minimal dialogue, mostly Elena with Linnea, whose defensiveness cracks into fear."
+        }
+      ]
+    },
+    {
+      "chapter": 9,
+      "chapter_title": "The Fix",
+      "scenes": [
+        {
+          "scene": 1,
+          "scene_number": 1,
+          "scene_id": "ch09_s01",
+          "scene_name": "Elena Confesses (Not Publicly)",
+          "pov": "Elena Vance",
+          "location": "Velvet Lounge, late night",
+          "purpose": "Dark night: Elena admits her complicity",
+          "differentiator": "She confesses to Jax with no camera, no brand benefit, no leverage",
+          "character_scene_goal": "Earn real alliance",
+          "central_conflict": "Shame vs intimacy",
+          "opening_hook": "I'd spent my life polishing other people's lies until they shone.",
+          "outcome": "Jax forgives her imperfectly. They become a team.",
+          "tension_level": 6,
+          "pacing": "slow",
+          "spice_level": 0,
+          "dialogue_notes": "Jax stops joking. Elena speaks plainly for the first time. No speeches, just truth."
+        },
+        {
+          "scene": 2,
+          "scene_number": 2,
+          "scene_id": "ch09_s02",
+          "scene_name": "Bait",
+          "pov": "Elena Vance",
+          "location": "Spine Corridor",
+          "purpose": "Set trap for saboteur using truth as bait",
+          "differentiator": "Elena publicly offers to 'confess everything' to MOTHER's recorder",
+          "character_scene_goal": "Force the saboteur to reveal himself",
+          "central_conflict": "If she's wrong, she dies. If she's right, she still might die.",
+          "opening_hook": "The corridor felt like a throat. We were the swallowed thing.",
+          "outcome": "Someone takes the bait. Footsteps. A shadow. A tool clinks.",
+          "tension_level": 8,
+          "pacing": "fast",
+          "spice_level": 0,
+          "dialogue_notes": "Short lines. Threat implied more than stated."
+        }
+      ]
+    },
+    {
+      "chapter": 10,
+      "chapter_title": "Revelation",
+      "scenes": [
+        {
+          "scene": 1,
+          "scene_number": 1,
+          "scene_id": "ch10_s01",
+          "scene_name": "Aris Unmasked",
+          "pov": "Elena Vance",
+          "location": "Life Support Bay",
+          "purpose": "Reveal antagonist and motive",
+          "differentiator": "Aris names Elena's old case precisely, like he's rehearsed it for years",
+          "character_scene_goal": "Survive the confrontation and secure the backup oxygen",
+          "central_conflict": "Aris's 'justice' vs Elena's survival ethics",
+          "opening_hook": "He didn't raise his voice. That was the worst part.",
+          "outcome": "Aris admits sabotage. He believes he's balancing a moral ledger.",
+          "tension_level": 9,
+          "pacing": "fast",
+          "spice_level": 0,
+          "dialogue_notes": "Aris is calm, surgical. Elena refuses his framing. Mara arrives mid-conflict."
+        },
+        {
+          "scene": 2,
+          "scene_number": 2,
+          "scene_id": "ch10_s02",
+          "scene_name": "Hull Stress",
+          "pov": "Elena Vance",
+          "location": "Ballast/Engineering Deck",
+          "purpose": "Launch Act 3 physical countdown",
+          "differentiator": "Linnea hears the hull 'sing' and knows it's failing",
+          "character_scene_goal": "Get everyone to the bell dock with a plan",
+          "central_conflict": "Limited time, limited capacity, fractured trust",
+          "opening_hook": "The metal made a new sound, like regret finding a voice.",
+          "outcome": "They sprint for the bell. Someone is left behind on purpose.",
+          "tension_level": 9,
+          "pacing": "fast",
+          "spice_level": 0,
+          "dialogue_notes": "Mara commands. Elena negotiates human choice. Jax stops performing and acts."
+        }
+      ]
+    },
+    {
+      "chapter": 11,
+      "chapter_title": "The Bell",
+      "scenes": [
+        {
+          "scene": 1,
+          "scene_number": 1,
+          "scene_id": "ch11_s01",
+          "scene_name": "Capacity Math",
+          "pov": "Elena Vance",
+          "location": "Diving Bell Dock",
+          "purpose": "Moral crucible: who fits, who goes, who stays",
+          "differentiator": "The bell seats are numbered like a joke",
+          "character_scene_goal": "Get the maximum people out alive",
+          "central_conflict": "Self-preservation vs responsibility",
+          "opening_hook": "Salvation had a seating chart.",
+          "outcome": "Elena makes an unthinkable choice and owns it openly.",
+          "tension_level": 10,
+          "pacing": "fast",
+          "spice_level": 0,
+          "dialogue_notes": "No speeches. People plead in fragments. Elena answers in truth, not comfort."
+        },
+        {
+          "scene": 2,
+          "scene_number": 2,
+          "scene_id": "ch11_s02",
+          "scene_name": "Last Look Through Glass",
+          "pov": "Elena Vance",
+          "location": "Bell interior / window",
+          "purpose": "Deliver emotional climax as physical escape begins",
+          "differentiator": "Bioluminescence blooms as the habitat dies behind them",
+          "character_scene_goal": "Hold it together and keep others alive",
+          "central_conflict": "Grief hits while action still required",
+          "opening_hook": "The ocean outside was black velvet punctured by living light.",
+          "outcome": "They rise into uncertainty. Elena is changed.",
+          "tension_level": 9,
+          "pacing": "fast",
+          "spice_level": 0,
+          "dialogue_notes": "Jax says one honest sentence that replaces a whole career of content."
+        }
+      ]
+    },
+    {
+      "chapter": 12,
+      "chapter_title": "Surface",
+      "scenes": [
+        {
+          "scene": 1,
+          "scene_number": 1,
+          "scene_id": "ch12_s01",
+          "scene_name": "Decompression",
+          "pov": "Elena Vance",
+          "location": "Surface rescue vessel, decompression protocol",
+          "purpose": "Aftermath with consequences, not applause",
+          "differentiator": "Phones return, and Elena doesn't reach for hers first",
+          "character_scene_goal": "Survive physically and choose who to be next",
+          "central_conflict": "Old persona tries to reassert itself; Elena refuses",
+          "opening_hook": "The first clean air felt illegal.",
+          "outcome": "Elena prepares to tell the truth publicly without spinning it.",
+          "tension_level": 6,
+          "pacing": "slow",
+          "spice_level": 0,
+          "dialogue_notes": "Quiet aftermath. Mara's exhaustion. Priya's trembling hands. Elena speaking plainly."
+        },
+        {
+          "scene": 2,
+          "scene_number": 2,
+          "scene_id": "ch12_s02",
+          "scene_name": "Final Image",
+          "pov": "Elena Vance",
+          "location": "Ship corridor window at night",
+          "purpose": "Close theme: self without audience",
+          "differentiator": "Elena sees her reflection and does not fix it",
+          "character_scene_goal": "Accept who she is now",
+          "central_conflict": "The temptation of performance vs the relief of truth",
+          "opening_hook": "In the window I looked like a stranger who had survived me.",
+          "outcome": "She breathes. She lets it be enough.",
+          "tension_level": 4,
+          "pacing": "slow",
+          "spice_level": 0,
+          "dialogue_notes": "Minimal dialogue. Land the emotional resonance with sensory restraint."
+        }
+      ]
+    }
+  ],
+  "motif_map": {
+    "motifs": [
+      {
+        "motif": "Mirrors / Reflections",
+        "meaning": "Identity as performance; self as product; the terror of being seen truthfully",
+        "evolution": [
+          "Luxury mirrors in Act 1 (curation)",
+          "Cracked/condensed reflections in Act 2 (distortion)",
+          "Final reflection on surface (acceptance)"
+        ],
+        "scene_mechanics": "Use reflections as hostile witnesses. Mention angles, distortions, condensation. Avoid poetic overstatement.",
+        "key_beats": ["Opening Image", "Midpoint", "Final Image"]
+      },
+      {
+        "motif": "Breath / CO\u2082",
+        "meaning": "The real currency; panic made measurable; truth as oxygen",
+        "evolution": [
+          "Background discomfort (headache)",
+          "Countdown terror (confusion, panic)",
+          "Controlled breathing as rebirth (earned calm)"
+        ],
+        "scene_mechanics": "Show breath via sound, chest tightness, taste of recycled air, metal dryness.",
+        "key_beats": ["Catalyst", "All Is Lost", "Finale"]
+      },
+      {
+        "motif": "Red Recording Light",
+        "meaning": "Audience hunger and its disappearance; confession without reward",
+        "evolution": [
+          "Always-on in Act 1 (performative safety)",
+          "Dead light in Act 2 (nobody watching)",
+          "Truth offered anyway in Act 3 (integrity)"
+        ],
+        "scene_mechanics": "Treat the light like a heartbeat. When it dies, the story's rules change.",
+        "key_beats": ["Setup", "Midpoint", "Dark Night"]
+      },
+      {
+        "motif": "Bioluminescence",
+        "meaning": "A strange grace; beauty indifferent to human drama",
+        "evolution": [
+          "Distant fascination (tourism wonder)",
+          "Eerie comfort (darkness companion)",
+          "Final witness (beauty during loss)"
+        ],
+        "scene_mechanics": "Keep it brief and physical: flicker, pulse, drift, cold light.",
+        "key_beats": ["Setup", "Dark Night", "Finale"]
+      }
+    ],
+    "grounding_palette": [
+      "Diesel-and-salt at the dock",
+      "Condensation dripping in corridors",
+      "Amber emergency lights on wet steel",
+      "Dry metallic taste of recycled air",
+      "CO\u2082 headache pressure behind eyes",
+      "Velvet lounge smell turning sour",
+      "Bulkhead groans like distant thunder",
+      "Tool clink echoing in tight space",
+      "Bioluminescent flicker beyond glass",
+      "Cold acrylic window under fingertips"
+    ]
+  },
+  "target_words": 60000,
+  "target_chapters": 12,
+  "total_tokens": 0,
+  "total_cost_usd": 0.0,
+  "artifact_metrics": {},
+  "stage_results": []
+}
