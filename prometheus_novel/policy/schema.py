@@ -169,6 +169,12 @@ class ValidationPolicy(BaseModel):
     meta_text_patterns: List[MetaTextPattern] = Field(default_factory=list)
     suspect_name_threshold: int = 3
     min_scene_words: int = 100
+    # Tense enforcement thresholds (Fix G)
+    tense_threshold_scene: float = 0.30  # scene-level wrong-tense ratio (was 0.40)
+    tense_threshold_para: float = 0.50   # per-paragraph wrong-tense ratio
+    tense_leak_para_count: int = 2       # flag if N+ paragraphs have tense leaks
+    # Location tracking (Fix I)
+    location_tracking: bool = True
 
 
 class LexiconPolicy(BaseModel):
@@ -252,6 +258,31 @@ class ManuscriptHealthPolicy(BaseModel):
     stakes_plateau_window: int = 3
 
 
+class CrisisDevicePolicy(BaseModel):
+    """Config for crisis device repetition tracking (Fix B/H)."""
+    enabled: bool = True
+    lookback_chapters: int = 2  # scan last N chapters for device reuse
+    strict_mode: bool = False   # if True, repetition triggers retry
+
+
+class ChapterCountPolicy(BaseModel):
+    """Config for chapter count enforcement at outline stage (Fix F)."""
+    enforce_mode: str = "warn"  # "warn" | "strict" | "off"
+    shortfall_threshold_pct: float = 25.0  # trigger at >N% shortfall
+    retry_on_shortfall: bool = True
+
+
+class TensionDensityPolicy(BaseModel):
+    """Config for tension density gate after scene_drafting.
+
+    Measures narrative value per scene across 4 dimensions:
+    new_information, power_shift, irreversible_action, emotional_turn.
+    """
+    mode: str = "warn"  # "warn" | "strict" | "off"
+    min_score: int = 2  # minimum dimensions present (0-4)
+    inject_on_fail: bool = True  # strict mode: run scene_turn_injection micro-pass
+
+
 class ExportGatePolicy(BaseModel):
     """Pre-export validation gate."""
     enabled: bool = True
@@ -281,4 +312,13 @@ class Policy(BaseModel):
     )
     manuscript_health: ManuscriptHealthPolicy = Field(
         default_factory=ManuscriptHealthPolicy,
+    )
+    crisis_device: CrisisDevicePolicy = Field(
+        default_factory=CrisisDevicePolicy,
+    )
+    chapter_count: ChapterCountPolicy = Field(
+        default_factory=ChapterCountPolicy,
+    )
+    tension_density: TensionDensityPolicy = Field(
+        default_factory=TensionDensityPolicy,
     )

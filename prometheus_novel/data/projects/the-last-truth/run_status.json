@@ -1,7 +1,7 @@
 {
-  "timestamp": "2026-02-18T23:35:55.633826",
-  "last_stage": "final_deai",
-  "last_status": "failed",
+  "timestamp": "2026-02-19T07:23:27.763646",
+  "last_stage": "output_validation",
+  "last_status": "completed",
   "completed_stages": [
     "high_concept",
     "world_building",
@@ -20,16 +20,23 @@
     "continuity_recheck",
     "continuity_audit_2",
     "continuity_fix_2",
-    "pov_enforcer"
+    "pov_enforcer",
+    "final_deai",
+    "quality_polish",
+    "quality_meters",
+    "targeted_refinement",
+    "developmental_audit",
+    "quality_audit",
+    "output_validation"
   ],
-  "total_stages": 18,
-  "total_tokens": 1071171,
-  "total_cost_usd": 10.7117,
+  "total_stages": 25,
+  "total_tokens": 1125785,
+  "total_cost_usd": 11.2578,
   "scene_count": 36,
-  "incidents": 4,
+  "incidents": 0,
   "budget": {
-    "defense_tokens": 45899,
-    "generation_tokens": 222145,
+    "defense_tokens": 91146,
+    "generation_tokens": 127142,
     "rewritten_scenes": 0
   }
 }

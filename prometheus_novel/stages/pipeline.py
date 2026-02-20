@@ -947,6 +947,7 @@ def _clean_scene_content(text: str, scene_id: str = "", policy: 'Policy | None' 
     """
     import re
     _original_input = text  # Keep for salvage restore
+    _salvage_restored = False
 
     if not text:
         return text
@@ -1093,8 +1094,18 @@ def _clean_scene_content(text: str, scene_id: str = "", policy: 'Policy | None' 
                     anchor_check=f"restored_wc={original_wc},stripped_wc={word_count},has_meta={has_hard_meta}"
                 )
                 text = _original_input
+                _salvage_restored = True
 
     # --- PHASE 3: Inline artifact removal (patterns that appear MID-text) ---
+    # SKIP Phase 3 when salvage restored — the original content was good enough
+    # (1000+ words). Running inline patterns on raw LLM output re-strips it to
+    # nothing, defeating the salvage. The critic gate will catch any meta-text
+    # on the next validation pass.
+    if _salvage_restored:
+        # Jump directly to Phase 4 whitespace cleanup
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = re.sub(r' +\n', '\n', text)
+        return text.strip()
     # Each pattern is (name, regex). Names enable exact disabled_builtins matching.
     # Source: policy.cleanup if available, else hardcoded + cleanup_patterns.yaml
     if policy:
@@ -1472,7 +1483,7 @@ def _repair_pov_context_errors(text: str, protagonist_gender: str = "",
     # These verbs imply the subject acts on THEIR OWN body part
     self_action_verbs = (r'rolled|tilted|shook|nodded|tossed|flipped|'
                          r'narrowed|widened|closed|squeezed|pursed|'
-                         r'bit|clenched|rubbed|tucked|brushed')
+                         r'bit|clenched|rubbed|tucked|brushed|wiped|wipes')
     text = re.sub(
         rf'({other_subj_cap})\s+({self_action_verbs})\s+my\s+({body_attrs})\b',
         lambda m: f'{m.group(1)} {m.group(2)} {other_poss} {m.group(3)}',
@@ -1559,6 +1570,30 @@ def _repair_pov_context_errors(text: str, protagonist_gender: str = "",
         lambda m: f'I followed {other_poss} {m.group(1)}',
         text
     )
+
+    # === PATTERN 6b: "his/her hands folded behind my back" (describing another char's posture) ===
+    # Common error: "Dr. Kade stood, his hands folded behind my back" — "my" should be "his"
+    text = re.sub(
+        r'\bhis\s+hands?\s+(?:folded|clasped)\s+behind\s+my\s+back\b',
+        'his hands folded behind his back',
+        text,
+        flags=re.IGNORECASE
+    )
+    text = re.sub(
+        r'\bher\s+hands?\s+(?:folded|clasped)\s+behind\s+my\s+back\b',
+        'her hands folded behind her back',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # === PATTERN 6c: "My eyes were on me" (POV slip: his/her eyes on narrator) -> "His/Her eyes were on me" ===
+    # Model writes "my" when describing another character's gaze at narrator
+    if gender == "female":
+        text = re.sub(r'\bMy\s+eyes\s+were\s+(already\s+)?on\s+me\b', r'His eyes were \1on me', text)
+        text = re.sub(r'\bmy\s+gaze\s+(?:was|were)\s+on\s+me\b', 'His gaze was on me', text)
+    elif gender == "male":
+        text = re.sub(r'\bMy\s+eyes\s+were\s+(already\s+)?on\s+me\b', r'Her eyes were \1on me', text)
+        text = re.sub(r'\bmy\s+gaze\s+(?:was|were)\s+on\s+me\b', 'Her gaze was on me', text)
 
     # === PATTERN 7: Strip stray markdown bold from prose ===
     # Only strip **bold** markers. Single *italic* is preserved for inner voice
@@ -1953,7 +1988,7 @@ def _detect_duplicate_content(text: str, similarity_threshold: float = 0.6) -> s
 
     for marker in stitch_markers:
         parts = re.split(marker, text, maxsplit=1, flags=re.IGNORECASE)
-        if len(parts) == 2 and len(parts[0].strip()) > 50:
+        if len(parts) == 2 and len(parts[0].strip().split()) > 150:
             text = parts[0].strip()
             break
 
@@ -2518,9 +2553,21 @@ def _postprocess_scene(text: str, protagonist_name: str = "",
     # Strip sentinel token if present (matches both static <END_PROSE> and
     # per-run nonce variants like <END_PROSE_a3f1b2c9>)
     text = re.sub(r'\s*<END_PROSE(?:_[a-f0-9]+)?>\s*$', '', text or '', flags=re.IGNORECASE).strip()
+    _pre_cleanup = text  # Snapshot for catastrophic-loss guard
     text = _clean_scene_content(text, policy=policy)
     text = _detect_duplicate_content(text)
     text = _detect_semantic_duplicates(text)
+    # --- Catastrophic loss guard ---
+    # If cleanup+dedup destroyed >75% of content, restore pre-cleanup input.
+    _pre_wc = len(_pre_cleanup.split())
+    _post_wc = len(text.split())
+    if _pre_wc > 200 and _post_wc < _pre_wc * 0.25:
+        logger.warning(
+            "Postprocess guard: cleanup+dedup destroyed %d%% of content (%d -> %d words). "
+            "Restoring pre-cleanup input.",
+            int((1 - _post_wc / _pre_wc) * 100), _pre_wc, _post_wc
+        )
+        text = _pre_cleanup
     text = _enforce_first_person_pov(text, protagonist_name, protagonist_gender)
     # ORDERING INVARIANT: F3b (repair) MUST run after F3 (enforce).
     # F3 may create patterns like "She whispered, my voice" that F3b fixes.
@@ -3011,6 +3058,7 @@ ABSOLUTE RULES:
 - NEVER output: "[Scene continues...]" or "[Rest of scene unchanged]"
 - NEVER repeat the same phrase or sentence 2+ times in a row (no loops: "I want to stay" x5, "The city was alive" x3, etc.)
 - Maintain consistent POV pronouns within each paragraph — no mixing I/He/She in narration
+- CRITICAL: In first-person narration, "my" refers ONLY to the POV character's own body, voice, and perceptions. When describing another character's eyes, voice, hands, shoulders, or actions, use THEIR pronouns ("his", "her", "their"). Example: If Jax speaks, write "His voice is flat" NOT "My voice is flat". If Elena observes Silas's eyes, write "his eyes" NOT "my eyes".
 - Dialogue must contain specific objects, actions, or names — avoid pure philosophy or aphorisms
 - If unsure whether to explain or continue the scene: CONTINUE THE SCENE
 
@@ -3045,6 +3093,22 @@ CREATIVE_STOP_SEQUENCES = [
     "\n[The rest",
     "\n[Scene continues",
 ]
+
+# Crisis device patterns — detect repeated crisis mechanisms across chapters
+_CRISIS_DEVICE_PATTERNS = {
+    "power failure": r"\b(?:blackout|power (?:out|fail|cut)|lights? (?:die|fail|flicker(?:ed)? out)|electrical (?:fail|dead))\b",
+    "lockdown": r"\b(?:lock(?:down|ed)|seal(?:ed)? (?:in|off)|doors? lock|emergency seal)\b",
+    "timer/countdown": r"\b(?:countdown|timer|deadline|(?:\d+|few|sixty|thirty) (?:minute|second|hour)s? (?:left|remain)|running out of time)\b",
+    "flooding": r"\b(?:flood(?:ing|ed)?|water ris(?:es|ing)|hull leak|breach.*water|deluge)\b",
+    "fire": r"\b(?:fire\b|flame|smoke fill|burning|blaze|inferno)\b",
+    "oxygen crisis": r"\b(?:oxygen|air (?:running out|thin)|can'?t breathe|suffocate?|asphyxia|O2 (?:low|drop|fail))\b",
+    "structural failure": r"\b(?:collapse|crack(?:ing|ed)?.*(?:hull|wall|ceiling)|hull breach|buckling|structural (?:fail|damage))\b",
+    "alarm/siren": r"\b(?:alarm|siren|klaxon|red alert|warning (?:light|system|blare))\b",
+    "communication loss": r"\b(?:radio (?:dead|silence|static)|comms? (?:down|dead|fail|cut)|can'?t (?:reach|contact|raise))\b",
+    "medical emergency": r"\b(?:heart attack|stroke|seizure|overdose|bleeding out|critical condition|collapsed.*medical)\b",
+    "sabotage reveal": r"\b(?:sabotage|tamper(?:ed)?|disabled.*system|cut (?:the |a )?(?:wire|line|cable)|rigged)\b",
+    "isolation/trapped": r"\b(?:cut off|stranded|isolated|no (?:way out|exit)|trapped|sealed in)\b",
+}
 
 # Bad dialogue tags blacklist (merged into voice_human_pass from dialogue_polish)
 BAD_DIALOGUE_TAGS_BLACKLIST = """
@@ -3154,6 +3218,83 @@ ISSUE_SPECIFIC_FEEDBACK = {
         "Do NOT summarize, condense, or cut content. Preserve the full scene length "
         "while making your revisions. Output the entire scene from start to finish."
     ),
+    "dead_character_present": (
+        "YOUR ERROR: A character who is DEAD appears as physically present in the scene. "
+        "Dead characters can only be mentioned in memory, dialogue about the past, or flashback. "
+        "They CANNOT speak, act, or be physically present. Check the CONTINUITY STATE block "
+        "in the prompt for which characters are alive and which are dead. "
+        "Rewrite to remove dead character(s) from active participation."
+    ),
+    "setting_violation": (
+        "YOUR ERROR: The scene contains references that violate the hard setting rules. "
+        "For example: sunlight/sky when underwater, open air when sealed, etc. "
+        "Check the HARD SETTING RULES in the CONTINUITY STATE block. "
+        "Replace impossible references with setting-appropriate alternatives "
+        "(emergency lighting, condensation, recycled air, pressure effects)."
+    ),
+    "info_leak": (
+        "YOUR ERROR: The scene reveals information that the POV character does NOT know yet. "
+        "Check the CONTINUITY STATE block for what the character knows vs does not know. "
+        "Remove any premature reveals. Keep suspicion ambiguous — do not name or confirm "
+        "the identity of hidden antagonists, unrevealed secrets, or future plot points."
+    ),
+    "design_drift": (
+        "YOUR ERROR: The scene introduces plot elements forbidden by design. "
+        "Do NOT add: clones, doubles, doppelgängers, or duplicate versions of characters. "
+        "Do NOT introduce new characters not in the roster. "
+        "The antagonist and premise are fixed in config — stay within the outlined plot. "
+        "If the outline does not specify a twist, do not invent one."
+    ),
+    "avoid_violation": (
+        "YOUR ERROR: The scene contains content that the author explicitly said to AVOID. "
+        "Check the 'avoid' field in the project config. Common violations: supernatural elements, "
+        "monsters, dream sequences, deus ex machina. Remove ALL such content. "
+        "Replace with genre-appropriate alternatives (e.g. psychological dread instead of monsters, "
+        "real danger instead of supernatural horror). Rewrite the scene WITHOUT forbidden elements."
+    ),
+    "tense_violation": (
+        "YOUR ERROR: The scene uses the WRONG narrative tense. Check the writing_style in config. "
+        "If the style says 'present tense', ALL narration must be present tense (I walk, I see, "
+        "I feel). If 'past tense', use past tense (I walked, I saw, I felt). "
+        "Dialogue and flashbacks may use different tenses, but the main narration must be consistent. "
+        "Rewrite the entire scene in the CORRECT tense."
+    ),
+    "phantom_character": (
+        "YOUR ERROR: The scene introduces characters NOT in the approved cast list. "
+        "Only use characters from the config: protagonist, antagonist, and other_characters. "
+        "Do NOT invent new named characters. If you need a minor role (e.g. a dead body), "
+        "use a description ('a crew member', 'the technician') instead of a proper name. "
+        "Remove or replace all unauthorized character names."
+    ),
+    "physical_tic_repetition": (
+        "YOUR ERROR: You repeated the same physical gesture or sensation too often "
+        "(e.g. 'I adjust my sleeves' x7, 'count three breaths' x5). This erodes reader trust. "
+        "Each character quirk should appear ONCE or TWICE per scene maximum. "
+        "Vary how stress is shown: different gestures, sense details, internal thought."
+    ),
+    "tense_leak": (
+        "YOUR ERROR: This story is in PRESENT tense but your narration slipped into past tense "
+        "(e.g. 'I stood', 'the descent took', 'temperature dropped'). "
+        "Rewrite: use 'I stand', 'takes', 'drops' etc. for main narrative. "
+        "Only use past tense inside dialogue or for explicit flashbacks."
+    ),
+    "echoing_text": (
+        "YOUR ERROR: You used the same distinctive phrase or sentence twice (or more). "
+        "This reads like copy-paste. Each idea needs its own wording. "
+        "Rewrite so no 6+ word phrase appears identically in multiple places."
+    ),
+    "location_continuity": (
+        "YOUR ERROR: A character moved to a new location without transition language. "
+        "When a character was previously at Location A and now appears at Location B, "
+        "you MUST include a transition: 'I head down the corridor...', 'She steps into the bay...', "
+        "'We cross to the Velvet Lounge...'. Never teleport characters between scenes. "
+        "Add explicit movement (walked, crossed, descended, entered) in the opening of the scene."
+    ),
+    "phrase_cap_exceeded": (
+        "YOUR ERROR: You used a phrase that has already reached its manuscript limit. "
+        "Check the REPETITION BLACKLIST or phrase_caps in config. Replace with a suggested alternative "
+        "or a fresh variation. Do not repeat overused sensory or physical phrases."
+    ),
 }
 
 # Stages that generate prose (not JSON/analysis) — get format contract + stop sequences
@@ -3249,6 +3390,7 @@ class PipelineState:
         length_map = {
             "micro (5k)": 5000,
             "novelette (15k)": 15000,
+            "compact (18k)": 18000,
             "novella (30k)": 30000,
             "short (30k)": 30000,
             "standard (60k)": 60000,
@@ -3756,6 +3898,13 @@ class PipelineOrchestrator:
                 value = clamped
         return value
 
+    def _should_process_scene(self, idx: int) -> bool:
+        """When rewrite_scenes_indices is set, only process those indices; else process all."""
+        rwi = getattr(self, "_rewrite_scenes_indices", None)
+        if rwi is None:
+            return True
+        return idx in rwi
+
     def _write_run_status(self, last_stage: str, result=None):
         """Write run_status.json at phase boundaries for monitoring."""
         if not self.state or not self.state.project_path:
@@ -4049,8 +4198,10 @@ class PipelineOrchestrator:
         logger.info(f"Initialized pipeline for project: {self.state.project_name}")
         return self.state
 
-    async def run(self, stages: Optional[List[str]] = None, resume: bool = False):
+    async def run(self, stages: Optional[List[str]] = None, resume: bool = False,
+                  rewrite_scenes_indices: Optional[List[int]] = None):
         """Run the pipeline with quality-driven iteration and checkpoint resume."""
+        self._rewrite_scenes_indices = rewrite_scenes_indices
         await self.initialize(resume=resume)
 
         # Write resolved config for reproducibility (env + project merged)
@@ -4069,6 +4220,32 @@ class PipelineOrchestrator:
             logger.warning(f"Unknown defense mode '{mode}', using 'protect'")
             self._defense_mode = "protect"
         logger.info(f"Defense mode: {self._defense_mode}")
+
+        # Inject config.avoid and writing_style rules into format contract
+        _avoid_str = str(self.state.config.get("avoid", "")).strip()
+        _style_str = str(self.state.config.get("writing_style", "")).strip()
+        _inject_rules = []
+        if _avoid_str:
+            _inject_rules.append(
+                f"- NEVER include: {_avoid_str}. These elements are FORBIDDEN by the author."
+            )
+        if "present" in _style_str.lower() and "past" not in _style_str.lower():
+            _inject_rules.append(
+                "- TENSE: Write ALL narration in PRESENT TENSE (I walk, I see, I feel). "
+                "Past tense is only allowed in dialogue or explicit flashbacks."
+            )
+        elif "past" in _style_str.lower() and "present" not in _style_str.lower():
+            _inject_rules.append(
+                "- TENSE: Write ALL narration in PAST TENSE (I walked, I saw, I felt). "
+                "Present tense is only allowed in dialogue."
+            )
+        if _inject_rules:
+            _rules_block = "\n".join(_inject_rules)
+            self._format_contract = self._format_contract.replace(
+                "ABSOLUTE RULES:",
+                f"ABSOLUTE RULES:\n{_rules_block}"
+            )
+            logger.info("Injected %d config rules into format contract", len(_inject_rules))
 
         # Provenance: log active model config so every run proves it was real
         md = self.state.config.get("model_defaults", {})
@@ -5170,6 +5347,11 @@ For each character, respond with these EXACT JSON keys:
 - "voice": unique phrases, vocabulary, speech rhythm
 - "signature_behaviors": habits, tells
 - "relationships": connections to other characters
+- "competence_limit": what this character is NOT trained in / cannot plausibly do (prevents skill creep)
+- "speech_cadence": one of: short/choppy, flowing, formal, halting, fragmented, measured
+- "vocabulary_level": one of: blue-collar, academic, technical, slang-heavy, poetic, clinical
+- "emotional_default": one of: stoic, expressive, deflecting, earnest, cynical, performative
+- "dialogue_examples": array of 2-3 sample lines this character would say (concrete voice mimicry)
 
 Respond as a JSON array of character objects."""
 
@@ -5224,7 +5406,7 @@ Respond as a JSON array of character objects."""
 
         chars_text = "\n".join(char_summaries)
 
-        prompt = f"""For each character below, create a voice profile with EXACTLY these 8 fields.
+        prompt = f"""For each character below, create a voice profile with EXACTLY these 12 fields.
 These profiles will be injected into dialogue and scene drafting prompts to ensure each
 character sounds unique and perceives the world distinctly.
 
@@ -5247,9 +5429,17 @@ character sounds unique and perceives the world distinctly.
 8. "defense_mechanism": exactly one of: "sarcasm", "intellectualization", "aggression",
    "withdrawal", "humor", "deflection", "over-explaining"
    (how they protect themselves emotionally under pressure)
+9. "speech_cadence": exactly one of: "short/choppy", "flowing", "formal", "halting",
+   "fragmented", "measured" — the rhythm and pacing of their speech
+10. "vocabulary_level": exactly one of: "blue-collar", "academic", "technical",
+    "slang-heavy", "poetic", "clinical" — word choice sophistication
+11. "emotional_default": exactly one of: "stoic", "expressive", "deflecting",
+    "earnest", "cynical", "performative" — their baseline emotional register
+12. "dialogue_examples": array of exactly 3 sample lines this character would say
+    (concrete mimicry — show their actual speech patterns, not generic lines)
 
 === EXAMPLE ===
-{{"Elena": {{"sentence_length": "medium", "signature_words": ["okay", "fine", "listen", "safe", "right"], "forbidden_phrases": ["I couldn't help but", "a sense of", "my mind raced with"], "rhythm_rule": "Starts cautious, ends decisive; interrupts herself when scared.", "conflict_tell": "Deflects with practicality, then snaps with one clean truth.", "sensory_focus": ["sound", "temperature", "texture"], "taboo_words": ["whatever", "chill", "relax"], "defense_mechanism": "over-explaining"}}}}
+{{"Elena": {{"sentence_length": "medium", "signature_words": ["okay", "fine", "listen", "safe", "right"], "forbidden_phrases": ["I couldn't help but", "a sense of", "my mind raced with"], "rhythm_rule": "Starts cautious, ends decisive; interrupts herself when scared.", "conflict_tell": "Deflects with practicality, then snaps with one clean truth.", "sensory_focus": ["sound", "temperature", "texture"], "taboo_words": ["whatever", "chill", "relax"], "defense_mechanism": "over-explaining", "speech_cadence": "measured", "vocabulary_level": "academic", "emotional_default": "deflecting", "dialogue_examples": ["Fine. That's fine. We'll figure it out.", "Listen, I need you to tell me exactly what you saw.", "I didn't say that. I said we should be careful."]}}}}
 
 Return a JSON object with character names as keys. No commentary."""
 
@@ -5309,6 +5499,16 @@ Return a JSON object with character names as keys. No commentary."""
             ct = vp.get("conflict_tell", "")
             lines.append(f"{name}:")
             lines.append(f"  Sentence length: {sl}")
+            # Enhanced voice fields (speech_cadence, vocabulary_level, emotional_default)
+            cadence = vp.get("speech_cadence", "")
+            if cadence:
+                lines.append(f"  Speech cadence: {cadence}")
+            vocab = vp.get("vocabulary_level", "")
+            if vocab:
+                lines.append(f"  Vocabulary level: {vocab}")
+            emo_default = vp.get("emotional_default", "")
+            if emo_default:
+                lines.append(f"  Emotional default: {emo_default}")
             if sw:
                 lines.append(f"  Signature words: {', '.join(sw[:5])}")
             if fp:
@@ -5326,6 +5526,12 @@ Return a JSON object with character names as keys. No commentary."""
             dm = vp.get("defense_mechanism", "")
             if dm:
                 lines.append(f"  Defense mechanism: {dm} (how they protect themselves under pressure)")
+            # Concrete dialogue examples for mimicry
+            examples = vp.get("dialogue_examples", [])
+            if examples:
+                lines.append(f"  Example lines (mimic this voice):")
+                for ex in examples[:3]:
+                    lines.append(f'    - "{ex}"')
 
         return "\n".join(lines)
 
@@ -5445,6 +5651,7 @@ it MUST be in Chapter 1 or 2. Do NOT skip it or start the story after it happene
 
 TARGET: {self.state.target_chapters} chapters total, {self.state.scenes_per_chapter} scenes per chapter
 {self._build_pov_prompt_block(batch_start, batch_end) if is_dual_pov else "POV: " + protagonist}
+{self._build_escalation_block_for_outline()}
 
 SUBPLOTS: {config.get('subplots', 'None specified')}
 
@@ -5489,6 +5696,15 @@ The AI tends to collapse similar scenes into the same output. To prevent this, E
    - Every scene must serve the story's genre. Do not inject elements from other genres.
    - Location variety: no more than 3 scenes total in cafes/coffee shops across the entire outline.
 
+{"" if batch_start > 1 else '''
+=== ANTAGONIST REVEAL TIMELINE (thriller/mystery/suspense only) ===
+If this novel has a hidden antagonist, conspiracy, or mystery to solve, include these 3 OPTIONAL
+fields at the TOP LEVEL of your JSON response (alongside "chapters"):
+- "antagonist_first_suspected": scene_id (e.g. "ch03_s02") where protagonist first suspects something is wrong
+- "antagonist_hierarchy_revealed": scene_id where the chain of command / conspiracy structure is made explicit
+- "antagonist_identity_revealed": scene_id where the true villain is unmasked
+These fields ensure the reader gets explicit answers, not ambiguous hints. Omit if not applicable.
+'''}
 Respond with a JSON object containing a "chapters" array of {batch_end - batch_start + 1} chapter objects. Each chapter MUST have "chapter", "chapter_title", and "scenes" keys."""
 
             # Retry loop: only break on valid outline shape. Raw wrapper is NOT success.
@@ -5508,6 +5724,23 @@ Respond with a JSON object containing a "chapters" array of {batch_end - batch_s
                                                   timeout=600)
                 raw_text = response.content if response else ""
                 batch = extract_json_robust(raw_text, expect_array=True)
+
+                # Fix J: Capture antagonist reveal timeline from first batch
+                if batch_start == 1 and raw_text:
+                    try:
+                        _raw_dict = extract_json_robust(raw_text, expect_array=False)
+                        if isinstance(_raw_dict, dict):
+                            _reveal_fields = {}
+                            for _rk in ("antagonist_first_suspected", "antagonist_hierarchy_revealed", "antagonist_identity_revealed"):
+                                if _rk in _raw_dict and isinstance(_raw_dict[_rk], str):
+                                    _reveal_fields[_rk] = _raw_dict[_rk]
+                            if _reveal_fields:
+                                if not hasattr(self.state, "master_outline_raw"):
+                                    self.state.master_outline_raw = {}
+                                self.state.master_outline_raw.update(_reveal_fields)
+                                logger.info("Antagonist reveal timeline captured: %s", _reveal_fields)
+                    except Exception:
+                        pass  # Non-critical — reveal fields are optional
 
                 if _is_valid_outline_batch(batch):
                     if retry_idx > 0:
@@ -5728,6 +5961,83 @@ Respond with a JSON object: {{"chapters": [{{"chapter": {miss_ch}, "chapter_titl
                     self.state.outline_json_report["backfill"]["failures"].append(miss_ch)
             # Re-sort by chapter number
             all_chapters.sort(key=lambda ch: ch.get("chapter", 0) if isinstance(ch, dict) else 0)
+
+        # --- Fix 5: Chapter count enforcement (UPGRADED: retry on major shortfall) ---
+        actual_chapters = len([ch for ch in all_chapters if isinstance(ch, dict)])
+        target = self.state.target_chapters
+        _shortfall_threshold = 25.0
+        _retry_on_shortfall = True
+        if self.policy and hasattr(self.policy, 'chapter_count'):
+            _shortfall_threshold = self.policy.chapter_count.shortfall_threshold_pct
+            _retry_on_shortfall = self.policy.chapter_count.retry_on_shortfall
+        if actual_chapters < target:
+            shortfall_pct = (target - actual_chapters) / target * 100
+            if shortfall_pct > _shortfall_threshold and _retry_on_shortfall and client:
+                logger.critical(
+                    "OUTLINE CHAPTER SHORTFALL: produced %d/%d chapters (%.0f%% short). "
+                    "Attempting retry with explicit chapter count requirement.",
+                    actual_chapters, target, shortfall_pct
+                )
+                # Build retry prompt with explicit count requirement
+                _beat_summary = ""
+                if self.state.beat_sheet:
+                    try:
+                        _beat_summary = json.dumps(self.state.beat_sheet, indent=2, ensure_ascii=False)[:3000]
+                    except Exception:
+                        _beat_summary = str(self.state.beat_sheet)[:3000]
+                _retry_prompt = f"""CRITICAL: The previous outline only generated {actual_chapters} chapters.
+You MUST produce EXACTLY {target} chapters for this novel.
+
+HIGH CONCEPT: {self.state.high_concept or 'Not set'}
+
+BEAT SHEET:
+{_beat_summary}
+
+GENRE: {self.state.config.get('genre', 'fiction')}
+SCENES PER CHAPTER: {self.state.scenes_per_chapter}
+
+Generate ALL {target} chapters. Each chapter must have exactly {self.state.scenes_per_chapter} scenes.
+If you run out of plot by the climax, extend: add subplot closure, aftermath, character moments, consequences.
+
+For each chapter, output:
+{{"chapter": N, "chapter_title": "...", "scenes": [{{"scene": 1, "scene_name": "...", "purpose": "...", "pov": "...", "location": "...", "tension": N}}]}}
+
+Return a JSON object with key "chapters" containing an array of ALL {target} chapter objects."""
+                try:
+                    _retry_response = await client.generate(_retry_prompt, json_mode=True, max_tokens=8000)
+                    _retry_parsed = extract_json_robust(_retry_response.content if _retry_response else None)
+                    _retry_chapters = []
+                    if isinstance(_retry_parsed, dict) and "chapters" in _retry_parsed:
+                        _retry_chapters = _retry_parsed["chapters"]
+                    elif isinstance(_retry_parsed, list):
+                        _retry_chapters = _retry_parsed
+                    _valid_retry = [ch for ch in _retry_chapters if isinstance(ch, dict) and "scenes" in ch]
+                    if len(_valid_retry) >= int(target * 0.75):
+                        logger.info(
+                            "Chapter count retry successful: %d/%d chapters (was %d)",
+                            len(_valid_retry), target, actual_chapters
+                        )
+                        all_chapters = _valid_retry
+                        total_tokens += (_retry_response.input_tokens + _retry_response.output_tokens) if _retry_response else 0
+                    else:
+                        logger.warning(
+                            "Chapter count retry still short: %d/%d. Falling through to backfill.",
+                            len(_valid_retry), target
+                        )
+                except Exception as e:
+                    logger.error("Chapter count retry failed: %s. Proceeding with backfill.", e)
+            elif shortfall_pct > _shortfall_threshold:
+                logger.critical(
+                    "OUTLINE CHAPTER SHORTFALL: produced %d/%d chapters (%.0f%% short). "
+                    "Retry disabled or no client available.",
+                    actual_chapters, target, shortfall_pct
+                )
+            else:
+                logger.warning(
+                    "Outline produced %d/%d chapters (%.0f%% short). "
+                    "Minor shortfall — downstream stages may compensate.",
+                    actual_chapters, target, shortfall_pct
+                )
 
         # Deterministic scene order within each chapter (chapter_index, scene_index)
         def _scene_sort_key(s):
@@ -6603,6 +6913,15 @@ Return JSON with:
         ])
         return "\n".join(lines)
 
+    def _build_escalation_block_for_outline(self) -> str:
+        """Build escalation ladder block for outline prompt. Varies by genre (thriller vs romance)."""
+        try:
+            from stages.genre_mode import build_escalation_prompt_block
+            config = self.state.config or {}
+            return build_escalation_prompt_block(config)
+        except ImportError:
+            return ""
+
     def _normalize_outline_pov(self, chapters: list) -> int:
         """Deterministic POV normalizer: overwrite scene POVs to match chapter rule.
 
@@ -6785,11 +7104,18 @@ RULES:
             return 0.0
         return len(ngrams_a & ngrams_b) / len(ngrams_a | ngrams_b)
 
-    def _validate_scene_output(self, text: str, scene_meta: dict = None) -> dict:
+    def _validate_scene_output(self, text: str, scene_meta: dict = None,
+                                continuity_state=None) -> dict:
         """Lightweight critic gate: check raw LLM output for obvious problems.
 
         Runs BEFORE postprocessing so we can measure what the model actually produced.
         Returns dict with 'pass' bool and specific issue flags.
+
+        Args:
+            text: Raw LLM output.
+            scene_meta: Dict with chapter, scene, pov, scene_id.
+            continuity_state: Optional ContinuityState for content validation
+                (alive/dead enforcement, setting rules, info gating).
         """
         if not text:
             return {"pass": False, "issues": {"empty": True}, "word_count": 0}
@@ -6912,7 +7238,7 @@ RULES:
                           f"({drift_ratio:.1%} of alphabetic content)")
 
         # POV drift check (quick heuristic for first-person stories)
-        writing_style = self.state.config.get("writing_style", "").lower()
+        writing_style = self.state.config.get("writing_style", "").lower().replace("-", " ")
         if "first person" in writing_style:
             protagonist_name = self._get_protagonist_name()
             if protagonist_name:
@@ -6923,11 +7249,17 @@ RULES:
                 if third_person_refs >= 3:
                     issues["pov_drift"] = True
 
-            # POV pronoun confusion: [Non-POV name] [verb] my [body_attr]
-            # Catches: "Sofia speaks, my voice..." / "Gianna narrows my eyes"
+            # POV pronoun confusion: [Non-POV name/pronoun] [verb] my [body_attr]
+            # Catches: "Sofia speaks, my voice..." / "He wiped my palms" / "Jax doesn't lift my head"
             _body_attrs = (r'voice|eyes|face|lips|head|hair|gaze|smile|expression|'
                           r'brow|chin|jaw|cheek|shoulder|shoulders|hand|hands|'
-                          r'fingers|arm|arms|breath|chest|throat|neck|mouth')
+                          r'fingers|arm|arms|breath|chest|throat|neck|mouth|'
+                          r'knees|legs|palms|back|wrist|wrists|temples|forehead')
+            # Self-directed verbs: actions you do to YOUR OWN body (not someone else's)
+            _self_verbs = (r'wiped|clenched|tightened|folded|clasped|crossed|narrowed|'
+                          r'furrowed|tilted|lifted|dropped|adjusted|tugged|curled|'
+                          r'flexed|cracked|worked|set|rubbed|scratched|pressed|'
+                          r'shook|jerked|tucked|smoothed|straightened|squared')
             # Get character names (excluding protagonist)
             _char_names = set()
             for char in (self.state.characters or []):
@@ -6941,19 +7273,83 @@ RULES:
                 if m.lower() != (protagonist_name or "").lower():
                     _char_names.add(re.escape(m))
 
+            pov_confusion_hits = 0
+            # Pattern A: [Name] ... my [body_attr] (expanded to 60 char lookback)
             if _char_names:
                 names_alt = "|".join(_char_names)
-                # Pattern: [Name] [verb/comma] my [body_attr]
-                pov_confusion_hits = len(re.findall(
-                    rf'\b(?:{names_alt})\b[^.!?]{{0,30}}\bmy\s+(?:{_body_attrs})\b',
+                pov_confusion_hits += len(re.findall(
+                    rf'\b(?:{names_alt})\b[^.!?]{{0,60}}\bmy\s+(?:{_body_attrs})\b',
                     text, re.IGNORECASE
                 ))
-                if pov_confusion_hits >= 1:
-                    issues["pov_pronoun_confusion"] = True
+            # Pattern B: He/She [self-verb] my [body_attr] (self-directed action on wrong body)
+            pov_confusion_hits += len(re.findall(
+                rf'\b(?:He|She)\s+(?:\w+\s+)?(?:{_self_verbs})\s+my\s+(?:{_body_attrs})\b',
+                text
+            ))
+            # Pattern C: He/She ... my [body_attr] within sentence (broader catch)
+            he_she_my_hits = len(re.findall(
+                rf'\b(?:He|She)\b[^.!?]{{0,40}}\bmy\s+(?:{_body_attrs})\b',
+                text
+            ))
+            # Pattern C is noisier (could be "He grabbed my arm" = valid), so weight it less
+            pov_confusion_hits += max(0, he_she_my_hits - 2)  # allow 2 freebies
+
+            # Pattern D: [Name] [self-verb] my [body_attr] (strongest signal)
+            if _char_names:
+                pov_confusion_hits += len(re.findall(
+                    rf'\b(?:{names_alt})\b\s+(?:\w+\s+)?(?:{_self_verbs})\s+my\s+(?:{_body_attrs})\b',
+                    text, re.IGNORECASE
+                ))
+
+            # Pattern F: High-confidence POV slips (trigger on 1 hit — unambiguous)
+            # "My eyes were on me" = narrator wrongly attributed another's gaze; should be "His/Her eyes"
+            # "his hands folded behind my back" = describing his posture; "my" should be "his"
+            _pov_slip_patterns = [
+                r'\b[Mm]y\s+eyes\s+(?:were|was)\s+(?:already\s+)?on\s+me\b',
+                r'\b[Mm]y\s+gaze\s+(?:was|were)\s+on\s+me\b',
+                r'\b(?:his|her)\s+hands?\s+(?:folded|clasped)\s+behind\s+my\s+back\b',
+            ]
+            for _psp in _pov_slip_patterns:
+                m = re.search(_psp, text)
+                if m:
+                    pov_confusion_hits += 2  # Guarantee trigger (threshold is 2)
                     logger.warning(
-                        f"POV pronoun confusion: {pov_confusion_hits} instance(s) of "
-                        f"[character name] ... my [body part]"
+                        "POV slip detected (high-confidence): '%s' — triggers retry",
+                        m.group(0),
                     )
+                    break
+
+            # Pattern E: Gender mismatch — male character referred to with "her" or vice versa
+            _char_genders = {}
+            for char in (self.state.characters or []):
+                if isinstance(char, dict):
+                    cname = (char.get("name") or "").split()[0]
+                    gender = str(char.get("gender", "")).lower()
+                    if cname and gender in ("male", "female", "m", "f"):
+                        _char_genders[cname] = "male" if gender in ("male", "m") else "female"
+            for cname, gender in _char_genders.items():
+                if cname.lower() == (protagonist_name or "").lower():
+                    continue
+                esc = re.escape(cname)
+                if gender == "male":
+                    # Male referred to with "her"
+                    pov_confusion_hits += len(re.findall(
+                        rf'\b{esc}\b[^.!?]{{0,40}}\bher\s+(?:{_body_attrs})\b',
+                        text, re.IGNORECASE
+                    ))
+                else:
+                    # Female referred to with "his"
+                    pov_confusion_hits += len(re.findall(
+                        rf'\b{esc}\b[^.!?]{{0,40}}\bhis\s+(?:{_body_attrs})\b',
+                        text, re.IGNORECASE
+                    ))
+
+            if pov_confusion_hits >= 2:
+                issues["pov_pronoun_confusion"] = True
+                logger.warning(
+                    f"POV pronoun confusion: {pov_confusion_hits} instance(s) of "
+                    f"[character/pronoun] ... my/wrong-gender [body part]"
+                )
 
         # Gender pronoun drift: same character referred to with BOTH he/she
         # Catches: "Dr. Kline said he..." then "Dr. Kline said she..." in same scene
@@ -7008,6 +7404,87 @@ RULES:
                 if _bow_tie_hits >= 1:
                     issues["emotional_summary_ending"] = True
 
+        # Physical tic repetition: same gesture/phrase 3+ times erodes reader trust
+        # (e.g. "adjust my sleeves" x7, "count three breaths" x5, "blood thuds in my ears")
+        if word_count >= 150:
+            _TIC_PATTERNS = [
+                r'\bI\s+adjust\s+(?:my\s+)?sleeves\b',
+                r'\badjust\s+(?:my\s+)?sleeves\b',
+                r'\bcount\s+(?:three\s+)?breaths?\b',
+                r'\bblood\s+thuds?\s+in\s+my\s+ears\b',
+                r'\b(?:my\s+)?(?:jaw|teeth)\s+(?:locks?|clench|clenches|tighten)\b',
+                r'\b(?:I\s+)?(?:press|pressed)\s+(?:my\s+)?(?:temples?|temple)\b',
+            ]
+            tic_hits = sum(len(re.findall(pat, text, re.IGNORECASE)) for pat in _TIC_PATTERNS)
+            if tic_hits >= 3:
+                issues["physical_tic_repetition"] = True
+                logger.warning(f"Physical tic repetition: {tic_hits} hits of sleeve/breath/jaw patterns")
+
+        # Tense leak: present-tense stories slipping into past-tense narration
+        # (Catches "I stood", "the descent took", "temperature dropped" in narrative)
+        writing_style_cfg = str(self.state.config.get("writing_style", "")).lower().replace("-", " ")
+        if word_count >= 100 and "present" in writing_style_cfg and "past" not in writing_style_cfg:
+            # Strip dialogue to avoid false positives on quoted speech
+            _narration = re.sub(r'["\u201c][^"\u201d]*["\u201d]', '', text)
+            _past_leak_patterns = [
+                r'\bI\s+(?:stood|sat|lay|knew|saw|felt|thought|had)\s+(?:the|to|at|on|in)\b',
+                r'\b(?:The|It|She|He)\s+(?:took|dropped|turned|fell|ran|came|went)\s+',
+                r'\b(?:Now\s+)?I\s+stood\s+(?:at|in|on)\b',
+                r'\bneeding\s+[^.?!]*\s+more\s+than\s+I\s+needed\b',  # "needing X more than I needed Y"
+            ]
+            past_leak_hits = sum(1 for pat in _past_leak_patterns if re.search(pat, _narration, re.IGNORECASE))
+            if past_leak_hits >= 2:
+                issues["tense_leak"] = True
+                logger.warning(f"Tense leak: {past_leak_hits} past-tense narration in present-tense story")
+
+        # Echoing text: same distinctive phrase 2+ times (copy-paste during drafting)
+        # Catches "Velvet Lounge opens like a mouth" used twice, near-duplicate sentences
+        if word_count >= 200:
+            sentences = [s.strip() for s in re.split(r'[.!?]+', text) if len(s.strip()) > 30]
+            _norm = lambda s: re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', s.lower().replace('\n', ' '))).strip()
+            phrase_sent_idx = {}  # phrase -> set of sentence indices where it appears
+            for i, sent in enumerate(sentences):
+                words = _norm(sent).split()
+                if len(words) < 6:
+                    continue
+                for wlen in (6, 8):  # 6-8 word phrases: distinctive enough to catch echoing
+                    for j in range(len(words) - wlen + 1):
+                        phrase = " ".join(words[j:j + wlen])
+                        if len(phrase) > 30:  # Skip trivial/short
+                            phrase_sent_idx.setdefault(phrase, set()).add(i)
+            # If any phrase appears in 2+ different sentences, flag
+            for phrase, indices in phrase_sent_idx.items():
+                if len(indices) >= 2:
+                    issues["echoing_text"] = True
+                    logger.warning(f"Echoing text: phrase repeated in {len(indices)} places: '{phrase[:50]}...'")
+                    break
+
+        # Phrase caps: configurable per-manuscript limits (from config.phrase_caps)
+        # Format: {"phrase or regex": max_count, ...} — count across prior scenes + current
+        phrase_caps = self.state.config.get("phrase_caps") if self.state and self.state.config else None
+        if phrase_caps and isinstance(phrase_caps, dict) and word_count >= 50:
+            prior_text = ""
+            for s in (self.state.scenes or []):
+                if isinstance(s, dict) and s.get("content"):
+                    prior_text += " " + (s.get("content") or "")
+            combined = (prior_text + " " + text).lower()
+            for pattern, max_count in phrase_caps.items():
+                if not isinstance(max_count, (int, float)):
+                    continue
+                max_count = int(max_count)
+                try:
+                    # Treat as regex; escape if no special chars for literal match
+                    pat = pattern if any(c in pattern for c in r"[](){}|*+?\.^$") else re.escape(pattern)
+                    count = len(re.findall(pat, combined, re.IGNORECASE))
+                    if count > max_count:
+                        issues["phrase_cap_exceeded"] = True
+                        logger.warning(
+                            f"Phrase cap exceeded: '{pattern[:40]}...' has {count} uses (max {max_count})"
+                        )
+                        break
+                except re.error:
+                    logger.debug("Invalid phrase_caps regex '%s': %s", pattern[:30], pattern)
+
         # Prompt echo/leak detector: FORMAT_CONTRACT fragments in prose
         _PROMPT_LEAK_FINGERPRINTS = [
             "ABSOLUTE RULES",
@@ -7057,6 +7534,211 @@ RULES:
                 issues["dialogue_ratio_high"] = True
                 logger.debug(f"Dialogue ratio very high: {dialogue_ratio:.0%}")
 
+        # --- Continuity content validation (alive/dead, setting, info gates) ---
+        if continuity_state is not None and scene_meta:
+            scene_id = scene_meta.get("scene_id", "")
+            pov = scene_meta.get("pov", "")
+            if scene_id and text:
+                try:
+                    cv = continuity_state.validate_content(
+                        scene_id=scene_id,
+                        text=text,
+                        pov=pov,
+                    )
+                    if not cv["ok"]:
+                        logger.info(
+                            "Continuity validation failed for %s: %s",
+                            scene_id, "; ".join(cv["errors"]),
+                        )
+                        for err in cv["errors"]:
+                            if "Dead character" in err:
+                                issues["dead_character_present"] = err
+                            elif "Setting violation" in err:
+                                issues["setting_violation"] = err
+                            elif "Info leak" in err:
+                                issues["info_leak"] = err
+                            elif "Design drift" in err:
+                                issues["design_drift"] = err
+                            else:
+                                issues["continuity_error"] = err
+                        # Store retry notes for targeted feedback
+                        if cv.get("retry_notes"):
+                            issues["_continuity_retry_notes"] = cv["retry_notes"]
+                except Exception as e:
+                    logger.debug("Continuity validation failed (non-blocking): %s", e)
+
+                # Location continuity check (Fix I)
+                try:
+                    participants = []
+                    if scene_meta.get("pov"):
+                        participants.append(scene_meta["pov"].split()[0])
+                    # Add other participants from scene info if available
+                    for p in scene_meta.get("participants", []):
+                        if isinstance(p, str) and p.split()[0] not in [x.split()[0] for x in participants]:
+                            participants.append(p.split()[0])
+                    if participants:
+                        loc_result = continuity_state.validate_location_continuity(
+                            scene_id=scene_id,
+                            text=text,
+                            participants=participants,
+                        )
+                        if not loc_result["pass"]:
+                            issues["location_continuity"] = loc_result["issues"]
+                except Exception as e:
+                    logger.debug("Location continuity check failed (non-blocking): %s", e)
+
+        # --- Fix 2: avoid content enforcement (config.avoid → banned keywords) ---
+        if word_count >= 50:
+            avoid_str = str(self.state.config.get("avoid", "")).lower()
+            _avoid_keywords = []
+            if "supernatural" in avoid_str or "monster" in avoid_str:
+                _avoid_keywords.extend([
+                    r'\b(?:monster|creature|tentacle|claw|claws|fangs|inhuman|undead|zombie|'
+                    r'demon|ghost|apparition|specter|wraith|supernatural|eldritch|lovecraft|'
+                    r'milky.{0,10}eye|bloated.{0,10}hand|joints.{0,20}shouldn\'?t)\b',
+                ])
+            if "dream" in avoid_str and "sequence" in avoid_str:
+                _avoid_keywords.extend([
+                    r'\bwoke up (?:from|and|to find) (?:a |the )?dream\b',
+                    r'\bit was (?:all |just )?a dream\b',
+                ])
+            if "deus" in avoid_str:
+                _avoid_keywords.extend([
+                    r'\b(?:miraculous(?:ly)?|inexplicab(?:le|ly)|suddenly.{0,20}saved)\b',
+                ])
+            avoid_hits = 0
+            avoid_examples = []
+            for pat in _avoid_keywords:
+                matches = re.findall(pat, text, re.IGNORECASE)
+                avoid_hits += len(matches)
+                avoid_examples.extend(matches[:2])
+            if avoid_hits >= 2:
+                issues["avoid_violation"] = True
+                logger.warning(
+                    f"Avoid violation: {avoid_hits} hit(s) matching config.avoid "
+                    f"({', '.join(avoid_examples[:4])})"
+                )
+
+        # --- Fix 3: Tense enforcement (writing_style → target tense) ---
+        if word_count >= 100:
+            writing_style_cfg = str(self.state.config.get("writing_style", "")).lower()
+            target_tense = None
+            if "present" in writing_style_cfg and "past" not in writing_style_cfg:
+                target_tense = "present"
+            elif "past" in writing_style_cfg and "present" not in writing_style_cfg:
+                target_tense = "past"
+            if target_tense:
+                # Quick tense heuristic: count common verb endings
+                # Strip dialogue (text inside quotes) to avoid false positives
+                narration = re.sub(r'["\u201c][^"\u201d]*["\u201d]', '', text)
+                _past_markers = len(re.findall(
+                    r'\b(?:was|were|had|said|walked|turned|looked|moved|pulled|pushed|'
+                    r'stood|felt|knew|saw|heard|took|came|went|made|found|thought|told|'
+                    r'grabbed|pressed|leaned|stared|reached|stepped|stopped|started|'
+                    r'watched|realized|noticed|remembered)\b', narration
+                ))
+                _present_markers = len(re.findall(
+                    r'\b(?:is|are|am|has|says?|walks?|turns?|looks?|moves?|pulls?|pushes?|'
+                    r'stands?|feels?|knows?|sees?|hears?|takes?|comes?|goes?|makes?|finds?|'
+                    r'thinks?|tells?|grabs?|presses?|leans?|stares?|reaches?|steps?|'
+                    r'stops?|starts?|watches?|realizes?|notices?|remembers?)\b', narration
+                ))
+                total_verbs = _past_markers + _present_markers
+                # Policy-driven threshold (default 0.30, was 0.40)
+                _tense_threshold = 0.30
+                if self.policy and hasattr(self.policy, 'validation') and hasattr(self.policy.validation, 'tense_threshold_scene'):
+                    _tense_threshold = self.policy.validation.tense_threshold_scene
+                if total_verbs >= 10:
+                    wrong_ratio = (_past_markers / total_verbs) if target_tense == "present" else (_present_markers / total_verbs)
+                    if wrong_ratio > _tense_threshold:
+                        issues["tense_violation"] = True
+                        logger.warning(
+                            f"Tense violation: target={target_tense}, "
+                            f"wrong_ratio={wrong_ratio:.0%} (threshold={_tense_threshold:.0%}) "
+                            f"(past={_past_markers}, present={_present_markers})"
+                        )
+
+                # Per-paragraph tense leak check (catches mid-scene drift)
+                _para_threshold = 0.50
+                _leak_count_threshold = 2
+                if self.policy and hasattr(self.policy, 'validation'):
+                    _para_threshold = getattr(self.policy.validation, 'tense_threshold_para', 0.50)
+                    _leak_count_threshold = getattr(self.policy.validation, 'tense_leak_para_count', 2)
+                paragraphs = [p.strip() for p in text.split("\n\n") if p.strip() and len(p.strip().split()) >= 15]
+                tense_leak_paras = 0
+                for para in paragraphs:
+                    para_narration = re.sub(r'["\u201c][^"\u201d]*["\u201d]', '', para)
+                    para_past = len(re.findall(
+                        r'\b(?:was|were|had|walked|turned|looked|moved|pulled|pushed|stood|felt|knew|saw|heard|took)\b',
+                        para_narration
+                    ))
+                    para_present = len(re.findall(
+                        r'\b(?:is|are|am|walks?|turns?|looks?|moves?|pulls?|pushes?|stands?|feels?|knows?|sees?|hears?|takes?)\b',
+                        para_narration
+                    ))
+                    para_total = para_past + para_present
+                    if para_total >= 5:
+                        para_wrong = (para_past / para_total) if target_tense == "present" else (para_present / para_total)
+                        if para_wrong > _para_threshold:
+                            tense_leak_paras += 1
+                if tense_leak_paras >= _leak_count_threshold:
+                    issues["tense_leak"] = True
+                    logger.warning(
+                        f"Tense leak: {tense_leak_paras} paragraphs have >%d%% wrong-tense verbs "
+                        f"(target={target_tense})",
+                        int(_para_threshold * 100)
+                    )
+
+        # --- Fix 4: Character roster validation (detect phantom characters) ---
+        if word_count >= 100 and scene_meta:
+            _known_names = set()
+            # Build roster from config
+            for field in ("protagonist", "antagonist", "other_characters"):
+                field_val = str(self.state.config.get(field, ""))
+                for name in re.findall(r'\b([A-Z][a-z]{2,})\b', field_val):
+                    _known_names.add(name)
+            # Also add from characters list
+            for char in (self.state.characters or []):
+                if isinstance(char, dict):
+                    for name_part in (char.get("name") or "").split():
+                        if len(name_part) >= 3 and name_part[0].isupper():
+                            _known_names.add(name_part)
+            # Add common non-character proper nouns to whitelist
+            _whitelist = {
+                "MOTHER", "Mother", "Aethelgard", "Atlantic", "North", "Art", "Deco",
+                "Chapter", "Act", "God", "Christ", "Jesus", "Sir", "Doctor", "Captain",
+                "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+                "January", "February", "March", "April", "May", "June", "July", "August",
+                "September", "October", "November", "December", "American", "English",
+                "French", "German", "Italian", "Spanish", "Chinese", "Japanese", "Russian",
+            }
+            _known_names.update(_whitelist)
+            # Extract names from text (capitalized words not at sentence start, appearing 2+ times)
+            _text_names = re.findall(r'(?<=[a-z.!?]\s)([A-Z][a-z]{2,})\b', text)
+            _name_counts = {}
+            for n in _text_names:
+                _name_counts[n] = _name_counts.get(n, 0) + 1
+            phantom_names = [
+                n for n, count in _name_counts.items()
+                if count >= 2 and n not in _known_names
+            ]
+            if phantom_names:
+                issues["phantom_character"] = True
+                logger.warning(
+                    f"Phantom characters detected (not in roster): "
+                    f"{', '.join(phantom_names)}"
+                )
+
+        # --- Fix H: Crisis device repetition validation ---
+        if word_count >= 100 and scene_meta:
+            chapter_num = scene_meta.get("chapter", 0) if isinstance(scene_meta, dict) else 0
+            if chapter_num and isinstance(chapter_num, int):
+                device_check = self._validate_crisis_device_repetition(
+                    text, chapter_num, self.state.scenes or []
+                )
+                if not device_check["pass"]:
+                    issues["crisis_device_repetition"] = device_check["repeated_devices"]
+
         return {
             "pass": len(issues) == 0,
             "issues": issues,
@@ -7067,6 +7749,15 @@ RULES:
                                   validation: dict, is_retry: bool = False):
         """Record artifact detection metrics for diagnostics."""
         metrics = self.state.artifact_metrics
+
+        # Ensure keys exist (may be missing after state reset or checkpoint load)
+        metrics.setdefault("total_scenes_generated", 0)
+        metrics.setdefault("scenes_with_meta_text", 0)
+        metrics.setdefault("scenes_with_preamble", 0)
+        metrics.setdefault("scenes_with_duplicate_marker", 0)
+        metrics.setdefault("scenes_with_pov_drift", 0)
+        metrics.setdefault("scenes_retried", 0)
+        metrics.setdefault("per_stage", {})
 
         metrics["total_scenes_generated"] += 1
 
@@ -7257,11 +7948,16 @@ RULES:
             return None
 
     async def _generate_prose(self, client, prompt: str, stage_name: str,
-                               scene_meta: dict = None, **kwargs) -> tuple:
+                               scene_meta: dict = None,
+                               continuity_state=None, **kwargs) -> tuple:
         """Generate prose with format contract, stop sequences, critic gate, and metrics.
 
         Centralizes the generate → validate → retry → postprocess pipeline.
         Returns (processed_content: str, tokens_used: int).
+
+        Args:
+            continuity_state: Optional ContinuityState for content validation
+                (alive/dead enforcement, setting rules, info gating).
         """
         scene_meta = dict(scene_meta) if scene_meta else {}
         # Inject format contract as system prompt (stage can override)
@@ -7300,7 +7996,7 @@ RULES:
             )
 
         # Run critic gate on raw output
-        validation = self._validate_scene_output(response.content, scene_meta)
+        validation = self._validate_scene_output(response.content, scene_meta, continuity_state)
         self._record_artifact_metrics(stage_name, scene_meta or {}, validation)
 
         # Output length guard: catch silent scene collapse (rewrite shrinks >15%)
@@ -7321,8 +8017,8 @@ RULES:
                 )
 
         # If critic gate fails on fixable issues, retry once with issue-specific feedback
-        fixable_issues = {"preamble", "truncation_marker", "alternate_version", "analysis_commentary", "prompt_leak", "language_drift", "pov_pronoun_confusion", "mid_sentence_cutoff", "phrase_loop", "scene_collapse"}
-        detected = set(validation.get("issues", {}).keys())
+        fixable_issues = {"preamble", "truncation_marker", "alternate_version", "analysis_commentary", "prompt_leak", "language_drift", "pov_pronoun_confusion", "mid_sentence_cutoff", "phrase_loop", "scene_collapse", "dead_character_present", "setting_violation", "info_leak", "design_drift", "avoid_violation", "tense_violation", "phantom_character", "physical_tic_repetition", "tense_leak", "echoing_text", "location_continuity", "phrase_cap_exceeded"}
+        detected = set(validation.get("issues", {}).keys()) - {"_continuity_retry_notes"}
 
         # Budget guard: check retry budget before attempting
         stage_retries = self._budget_tracker["retries_per_stage"].get(stage_name, 0)
@@ -7335,6 +8031,13 @@ RULES:
 
             # Build targeted feedback telling the model exactly what went wrong
             specific_feedback = []
+            # Use continuity-specific retry notes when available (more targeted than generic feedback)
+            continuity_notes = validation.get("issues", {}).get("_continuity_retry_notes", "")
+            if continuity_notes:
+                if isinstance(continuity_notes, list):
+                    specific_feedback.extend(continuity_notes)
+                else:
+                    specific_feedback.append(continuity_notes)
             for issue in detected & fixable_issues:
                 if issue in ISSUE_SPECIFIC_FEEDBACK:
                     specific_feedback.append(ISSUE_SPECIFIC_FEEDBACK[issue])
@@ -7352,7 +8055,7 @@ RULES:
             total_tokens += retry_tokens
             self._budget_tracker["defense_tokens"] += retry_tokens
 
-            validation2 = self._validate_scene_output(response2.content, scene_meta)
+            validation2 = self._validate_scene_output(response2.content, scene_meta, continuity_state)
             self._record_artifact_metrics(stage_name, scene_meta or {}, validation2, is_retry=True)
 
             # Score both outputs: hard penalties for artifacts, soft bonuses for quality
@@ -7362,13 +8065,30 @@ RULES:
                 # Hard penalties (artifacts that ruin the output)
                 score -= 100 * len({"preamble", "truncation_marker", "alternate_version",
                                      "analysis_commentary", "prompt_leak", "mid_sentence_cutoff", "phrase_loop", "scene_collapse"} & set(issues.keys()))
+                # Content correctness penalties (continuity errors)
+                score -= 80 * len({"dead_character_present", "setting_violation", "info_leak", "design_drift", "avoid_violation"} & set(issues.keys()))
+                # Craft penalties (pronoun, tense, phantom characters, tics, echoing)
+                if issues.get("pov_pronoun_confusion"):
+                    score -= 50
+                if issues.get("tense_violation"):
+                    score -= 40
+                if issues.get("phantom_character"):
+                    score -= 30
+                if issues.get("physical_tic_repetition"):
+                    score -= 25
+                if issues.get("tense_leak"):
+                    score -= 30
+                if issues.get("echoing_text"):
+                    score -= 35
+                if issues.get("location_continuity"):
+                    score -= 25
+                if issues.get("phrase_cap_exceeded"):
+                    score -= 30
                 # Soft penalties
                 if issues.get("too_short"):
                     score -= 30
                 if issues.get("pov_drift"):
                     score -= 20
-                if issues.get("pov_pronoun_confusion"):
-                    score -= 25
                 if issues.get("emotional_summary_ending"):
                     score -= 15
                 # Quality bonuses
@@ -7793,6 +8513,60 @@ RULES:
 
         return "\n".join(lines)
 
+    def _load_reference_bible_block(self, max_chars: int = 6000) -> str:
+        """Load project reference bible (reference_bible.md or reference.md) for prompt injection.
+
+        Used when present to inject character bible, repetition blacklist, location context.
+        Truncates to max_chars to avoid token overflow.
+        """
+        for name in ("reference_bible.md", "reference.md"):
+            path = self.project_path / name
+            if path.exists():
+                try:
+                    content = path.read_text(encoding="utf-8")
+                    if len(content) > max_chars:
+                        content = content[:max_chars] + "\n\n[Reference bible truncated...]"
+                    return (
+                        "\n=== REFERENCE BIBLE (OBEY) ===\n"
+                        "Use this document for character speech patterns, repetition limits, "
+                        "and continuity rules. Do not contradict it.\n\n"
+                        f"{content}\n"
+                    )
+                except Exception as e:
+                    logger.warning("Could not load reference bible %s: %s", path, e)
+        return ""
+
+    def _build_continuity_block(self, continuity_state, scene_id: str,
+                                 pov_char: str, scenes: list,
+                                 outline_outcome: str = "") -> str:
+        """Build continuity state block (alive/dead, knowledge gates, setting rules).
+
+        Uses ContinuityState if available, otherwise returns empty string.
+        This is the pre-draft content guard that prevents hallucinated deaths,
+        setting violations, and premature reveals.
+        """
+        if continuity_state is None:
+            return ""
+        try:
+            # Get previous scene tail for continuity
+            prev_tail = ""
+            if scenes:
+                last_content = scenes[-1].get("content", "")
+                if last_content:
+                    sentences = re.split(r'(?<=[.!?])\s+', last_content.strip())
+                    sentences = [s.strip() for s in sentences if s.strip()]
+                    prev_tail = " ".join(sentences[-3:])[:200] if sentences else ""
+
+            return continuity_state.build_context_block(
+                scene_id=scene_id,
+                pov=pov_char,
+                prev_tail=prev_tail,
+                outline_outcome=outline_outcome,
+            )
+        except Exception as e:
+            logger.debug("Continuity block build failed (non-blocking): %s", e)
+            return ""
+
     def _build_entity_anchor(self, scene_info: dict, chapter: dict, pov_char: str) -> str:
         """Build a compact MANDATORY FACTS block for entity continuity.
 
@@ -7852,19 +8626,230 @@ RULES:
                     matches = re.findall(pattern, backstory, re.IGNORECASE)
                     death_facts.extend(m.strip() for m in matches[:2])
 
-            if name and (role or death_facts):
+            # Competence boundary — prevents skill creep
+            competence_limit = char.get("competence_limit", "")
+
+            if name and (role or death_facts or competence_limit):
                 fact_line = f"- {name}"
                 if role:
                     fact_line += f" ({role})"
                 if death_facts:
                     fact_line += f" — KEY FACT: {death_facts[0][:80]}"
+                if competence_limit:
+                    fact_line += f" — LIMIT: {competence_limit[:100]}"
                 lines.append(fact_line)
 
         if len(lines) <= 1:
             return ""  # No facts to anchor
 
-        lines.append("These facts are IMMUTABLE. Never invent alternate names, change relationships, or contradict backstory.")
+        lines.append("These facts are IMMUTABLE. Never invent alternate names, change relationships, contradict backstory, or exceed competence limits.")
         return "\n".join(lines)
+
+    def _build_ending_contract_block(self, chapter_num: int, total_chapters: int) -> str:
+        """For final 2 chapters, inject explicit resolution checklist.
+
+        Extracts threads from beat_sheet act_3 and forces the LLM to resolve
+        them on-page rather than leaving them implied or dangling.
+
+        Args:
+            chapter_num: Current chapter number.
+            total_chapters: Total chapters in novel.
+
+        Returns:
+            Prompt block with resolution requirements, or empty string.
+        """
+        if total_chapters < 3 or chapter_num < total_chapters - 1:
+            return ""
+
+        # Extract resolution threads from beat_sheet
+        threads = []
+        beat_sheet = getattr(self.state, "beat_sheet", None) or {}
+        if isinstance(beat_sheet, dict):
+            # Try explicit "threads" field first
+            if "threads" in beat_sheet:
+                raw_threads = beat_sheet["threads"]
+                if isinstance(raw_threads, list):
+                    threads = [str(t).strip() for t in raw_threads if t]
+            # Fallback: extract from act_3
+            if not threads and "act_3" in beat_sheet:
+                act3 = beat_sheet["act_3"]
+                resolution_text = ""
+                if isinstance(act3, dict):
+                    resolution_text = act3.get("resolution", "") or act3.get("climax", "") or str(act3)
+                elif isinstance(act3, str):
+                    resolution_text = act3
+                if resolution_text:
+                    for line in resolution_text.split("\n"):
+                        line = line.strip()
+                        if line and (line.startswith("-") or line.startswith("*") or re.match(r"^\d+\.", line)):
+                            threads.append(line.lstrip("-*0123456789. ").strip())
+            # Fallback: look for "resolution" key at top level
+            if not threads and "resolution" in beat_sheet:
+                res = beat_sheet["resolution"]
+                if isinstance(res, str):
+                    threads.append(res[:200])
+
+        if not threads:
+            # Generic fallback
+            threads = [
+                "Central conflict resolution (protagonist vs antagonist)",
+                "Primary relationship status (resolved or explicitly ongoing)",
+                "Character arc completion (internal transformation shown, not stated)",
+                "Major subplot closure (any significant secondary thread)",
+            ]
+
+        is_final = chapter_num == total_chapters
+        label = "FINAL CHAPTER" if is_final else "PENULTIMATE CHAPTER"
+        lines = [f"\n=== ENDING RESOLUTION CONTRACT ({label}) ==="]
+        lines.append("You MUST explicitly resolve these threads on-page (not implied, not off-screen):")
+        for i, thread in enumerate(threads[:6], 1):
+            lines.append(f"  {i}. {thread}")
+        lines.append("")
+        if is_final:
+            lines.append("Reader satisfaction requires CONCRETE closure. Show outcomes — not ellipses, not 'only time will tell.'")
+            lines.append("The reader must close this book feeling the story is COMPLETE.")
+        else:
+            lines.append("Begin setting up resolution. At least 2 of the above must be addressed or escalated to crisis point.")
+        return "\n".join(lines)
+
+    def _build_antagonist_reveal_checkpoint(self, scene_id: str) -> str:
+        """If this scene is an antagonist reveal checkpoint, inject requirements.
+
+        Checks state.master_outline_raw (full outline dict) for antagonist reveal
+        timeline fields set during outline generation. Only applies to thriller/mystery.
+
+        Args:
+            scene_id: Current scene ID.
+
+        Returns:
+            Prompt block with reveal requirements, or empty string.
+        """
+        outline_raw = getattr(self.state, "master_outline_raw", None)
+        if not isinstance(outline_raw, dict) or not scene_id:
+            return ""
+
+        reveal_type = None
+        requirement = ""
+        if scene_id == outline_raw.get("antagonist_first_suspected"):
+            reveal_type = "FIRST SUSPICION"
+            requirement = (
+                "By the end of this scene, the protagonist must have concrete evidence "
+                "that something is wrong (not paranoia). Show the breadcrumb — a physical clue, "
+                "an overheard line, a document, a pattern that can't be coincidence."
+            )
+        elif scene_id == outline_raw.get("antagonist_hierarchy_revealed"):
+            reveal_type = "HIERARCHY REVEAL"
+            requirement = (
+                "By the end of this scene, the reader must understand WHO ordered WHAT. "
+                "Make the chain of command explicit in 2-3 lines of dialogue or discovery. "
+                "Example: 'Kade reports to the board' or 'the sabotage was commissioned.' "
+                "Do NOT leave this ambiguous. The reader needs the org chart NOW."
+            )
+        elif scene_id == outline_raw.get("antagonist_identity_revealed"):
+            reveal_type = "IDENTITY REVEAL"
+            requirement = (
+                "By the end of this scene, the antagonist's true identity must be DIRECTLY "
+                "stated or shown. No more ambiguity. The protagonist confronts or discovers "
+                "the truth. Name names. This is the reveal the reader has been waiting for."
+            )
+
+        if not reveal_type:
+            return ""
+
+        return f"""
+=== ANTAGONIST REVEAL CHECKPOINT: {reveal_type} ===
+{requirement}
+This is PLOT-CRITICAL. Do NOT be subtle. The reader needs this information in this scene."""
+
+    def _load_reference_bible_excerpt(
+        self, chapter_num: int = 0, scene_id: str = "", max_chars: int = 2500
+    ) -> str:
+        """Load reference_bible.md from project and extract relevant sections for prompt injection.
+
+        When present, injects: repetition blacklist, character locations for chapter,
+        protagonist competence limits. Keeps excerpt under max_chars for token budget.
+        """
+        project_path = getattr(self.state, "project_path", None) or self.project_path
+        if not project_path:
+            return ""
+        path = Path(project_path) / "reference_bible.md"
+        if not path.exists():
+            return ""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception as e:
+            logger.debug("Could not load reference_bible.md: %s", e)
+            return ""
+        if not content.strip():
+            return ""
+        blocks = []
+
+        # Extract REPETITION BLACKLIST section
+        if "## 6. REPETITION BLACKLIST" in content or "## 6. REPETITION" in content:
+            start = content.find("## 6. REPETITION")
+            end = content.find("\n## 7.", start) if start >= 0 else -1
+            if start >= 0:
+                bl_section = content[start:end if end > 0 else len(content)]
+                # Truncate to ~1200 chars (tables can be long)
+                bl_section = bl_section[:1200] + "..." if len(bl_section) > 1200 else bl_section
+                blocks.append(bl_section)
+
+        # Extract character locations for current chapter from section 5
+        if chapter_num > 0 and "Character locations" in content:
+            ch_marker = f"### Chapter {chapter_num}:"
+            if ch_marker in content:
+                start = content.find(ch_marker)
+                end = content.find("\n### Chapter", start + 5)
+                chunk = content[start:end if end > 0 else start + 3000]
+                loc_idx = chunk.find("**Character locations")
+                if loc_idx >= 0:
+                    loc_block = chunk[loc_idx:loc_idx + 450].split("\n\n")[0]
+                    blocks.append(f"\n\n=== CHARACTER LOCATIONS (Ch{chapter_num}) ===\n{loc_block}")
+
+        # Extract protagonist competence (DOES NOT, expertise limits) from character bible
+        protagonist_name = (self._get_protagonist_name() or "").split()[0]
+        if protagonist_name:
+            # Look for "DOES NOT:" or "protagonist_limits" style blocks
+            for line in content.split("\n"):
+                if "DOES NOT" in line or "does not" in line:
+                    idx = content.find(line)
+                    para = content[idx:idx + 500].split("\n\n")[0]
+                    if protagonist_name.lower() in para.lower() or "Elena" in para:
+                        blocks.append(f"\n\n=== PROTAGONIST COMPETENCE (stay in lane) ===\n{para[:500]}")
+                        break
+
+        if not blocks:
+            return ""
+        combined = "\n".join(blocks).strip()
+        if len(combined) > max_chars:
+            combined = combined[:max_chars] + "\n[...truncated]"
+        return f"\n\n=== REFERENCE BIBLE (project-specific rules) ===\n{combined}\n"
+
+    def _build_protagonist_competence_block(self, config: dict, pov_char: str) -> str:
+        """Build block constraining protagonist to their stated expertise. Prevents competence creep."""
+        expertise = config.get("protagonist_expertise")
+        limits = config.get("protagonist_limits")
+        if not expertise and not limits:
+            return ""
+        prot_name = (self._get_protagonist_name() or "").split()[0] or "protagonist"
+        pov_first = (pov_char or "").split()[0].lower()
+        if prot_name.lower() != pov_first:
+            return ""
+        lines = [
+            "\n=== PROTAGONIST COMPETENCE (stay in lane) ===",
+            f"{prot_name} has LIMITED expertise. When technical/specialized info is needed,",
+            "obtain it from other characters (ask Aris/Mara/Linnea/etc.) — do not perform it solo.",
+        ]
+        if isinstance(expertise, list):
+            lines.append(f"CAN do: {', '.join(expertise[:6])}.")
+        elif isinstance(expertise, str):
+            lines.append(f"Expertise: {expertise[:200]}.")
+        if isinstance(limits, list):
+            lines.append(f"CANNOT do alone: {', '.join(limits[:6])}.")
+        elif isinstance(limits, str):
+            lines.append(f"Limits: {limits[:200]}.")
+        return "\n".join(lines) + "\n"
 
     def _build_roster_reminder_block(self, scene_info: dict, chapter: dict, pov_char: str) -> str:
         """Build CHARACTER ROSTER block — only use characters from outline/roster. Prevents hallucination."""
@@ -7891,10 +8876,23 @@ Allowed named characters: {", ".join(n.title() for n in names)}
 Do NOT introduce new named characters. If someone speaks or acts, they must be in this list.
 Minor walk-ons: "a vendor," "the waiter" — fine. Named characters not listed: FORBIDDEN."""
 
-    def _build_scene_transition_grounding_block(self, scene_position: int) -> str:
-        """When not first scene in chapter: require TIME/PLACE/CAST in first 50 words."""
-        if scene_position == 0:
-            return ""
+    def _build_scene_transition_grounding_block(self, scene_position: int, is_first_in_chapter: bool = False) -> str:
+        """Require TIME/PLACE/CAST grounding for ALL scenes — novel opener, chapter opener, mid-chapter."""
+        if scene_position == 0 and not is_first_in_chapter:
+            # Very first scene of the entire novel — lighter guidance
+            return """
+=== OPENING SCENE GROUNDING ===
+Within the first 100 words, orient the reader: WHO is present, WHERE they are, and WHEN (time of day or context).
+Do NOT open with disembodied dialogue or abstract thoughts — ground the reader in a concrete place first."""
+
+        if is_first_in_chapter:
+            # First scene of a new chapter (readers just turned a page)
+            return """
+=== CHAPTER OPENING GROUNDING (new chapter — readers just turned a page) ===
+Within the first 50 words, re-anchor the reader: include at least 2 of 3 — TIME (hours later/next morning/that evening), PLACE (specific location name), WHO IS PRESENT (name the POV character + anyone with them).
+Give concrete bearings before diving into action or dialogue."""
+
+        # Mid-chapter scene (existing behavior)
         return """
 === SCENE TRANSITION (you are mid-chapter) ===
 Within the first 50 words, orient the reader: include at least 2 of 3 — TIME (morning/evening/later), PLACE (courtyard/office/terrace), WHO IS PRESENT (Marco, Sofia, etc.).
@@ -8156,6 +9154,126 @@ In crisis, {pov_char} should sound like {pov_char}, not like Generic Anxious Nar
 
         return "\n".join(lines)
 
+    def _track_crisis_devices(self, scenes: List[Dict], lookback_chapters: int = 2) -> str:
+        """Track crisis devices used in recent chapters to prevent repetition.
+
+        Scans the last N chapters for crisis mechanism patterns (blackout,
+        lockdown, flooding, etc.) and returns a prompt block instructing the
+        LLM to avoid reusing them.
+
+        Args:
+            scenes: All scenes drafted so far.
+            lookback_chapters: How many chapters back to scan (default 2).
+
+        Returns:
+            Prompt block listing devices to avoid, or empty string if none found.
+        """
+        if not scenes or len(scenes) < 3:
+            return ""
+
+        # Check policy
+        if self.policy and hasattr(self.policy, 'crisis_device'):
+            cd_policy = self.policy.crisis_device
+            if not cd_policy.enabled:
+                return ""
+            lookback_chapters = cd_policy.lookback_chapters
+
+        # Group scenes by chapter
+        chapter_groups: Dict[int, List[Dict]] = {}
+        for s in scenes:
+            if not isinstance(s, dict):
+                continue
+            ch = s.get("chapter", 0)
+            if isinstance(ch, int):
+                chapter_groups.setdefault(ch, []).append(s)
+
+        if not chapter_groups:
+            return ""
+
+        # Get last N chapter numbers
+        all_chapter_nums = sorted(chapter_groups.keys())
+        recent_chapters = all_chapter_nums[-lookback_chapters:] if len(all_chapter_nums) >= lookback_chapters else all_chapter_nums
+
+        # Scan for devices in recent chapters
+        used_devices: Dict[str, List[int]] = {}
+        for ch_num in recent_chapters:
+            for scene in chapter_groups[ch_num]:
+                content = (scene.get("content") or "").lower()
+                if not content:
+                    continue
+                for device_name, pattern in _CRISIS_DEVICE_PATTERNS.items():
+                    if re.search(pattern, content, re.IGNORECASE):
+                        used_devices.setdefault(device_name, []).append(ch_num)
+
+        if not used_devices:
+            return ""
+
+        # Build prompt block
+        lines = ["\n=== CRISIS DEVICE VARIETY (prevent repetition) ==="]
+        lines.append(f"Recent chapters ({min(recent_chapters)}-{max(recent_chapters)}) used these crisis mechanisms:")
+        for device, chapters in sorted(used_devices.items()):
+            unique_chs = sorted(set(chapters))
+            lines.append(f"  - {device} (ch {', '.join(str(c) for c in unique_chs)})")
+        lines.append("")
+        lines.append("DO NOT reuse these devices in the current scene. Invent FRESH tension:")
+        lines.append("character conflict, information reveals, moral dilemmas, physical obstacles, or time pressure NOT listed above.")
+        return "\n".join(lines)
+
+    def _validate_crisis_device_repetition(self, text: str, chapter_num: int, scenes_so_far: List[Dict]) -> dict:
+        """Post-draft validation: check if scene reuses a crisis device from recent chapters.
+
+        Args:
+            text: Current scene content.
+            chapter_num: Current chapter number.
+            scenes_so_far: All previously drafted scenes.
+
+        Returns:
+            dict with 'pass' bool and 'repeated_devices' list.
+        """
+        lookback = 3
+        if self.policy and hasattr(self.policy, 'crisis_device'):
+            lookback = self.policy.crisis_device.lookback_chapters + 1
+
+        # Detect devices in current scene
+        current_devices = []
+        content_lower = text.lower()
+        for device_name, pattern in _CRISIS_DEVICE_PATTERNS.items():
+            if re.search(pattern, content_lower, re.IGNORECASE):
+                current_devices.append(device_name)
+
+        if not current_devices:
+            return {"pass": True, "repeated_devices": []}
+
+        # Get devices from recent chapters
+        chapter_groups: Dict[int, List[Dict]] = {}
+        for s in scenes_so_far:
+            if not isinstance(s, dict):
+                continue
+            ch = s.get("chapter", 0)
+            if isinstance(ch, int):
+                chapter_groups.setdefault(ch, []).append(s)
+
+        recent_chapters = [ch for ch in sorted(chapter_groups.keys())
+                           if ch >= chapter_num - lookback and ch < chapter_num]
+        recent_devices: set = set()
+        for ch_num in recent_chapters:
+            for scene in chapter_groups.get(ch_num, []):
+                content = (scene.get("content") or "").lower()
+                for device_name, pattern in _CRISIS_DEVICE_PATTERNS.items():
+                    if re.search(pattern, content, re.IGNORECASE):
+                        recent_devices.add(device_name)
+
+        repeated = [d for d in current_devices if d in recent_devices]
+        if repeated:
+            logger.warning(
+                "Crisis device repetition in ch%d: %s (also used in ch %s)",
+                chapter_num, ", ".join(repeated),
+                ", ".join(str(c) for c in recent_chapters)
+            )
+            return {"pass": False, "repeated_devices": repeated}
+
+        return {"pass": True, "repeated_devices": []}
+
     def _get_chapter_openings_to_avoid(self, scenes: List[Dict], current_chapter: int) -> str:
         """Collect first ~30 words + OPENING MOVE TYPE of each of the last 3 chapters.
 
@@ -8304,6 +9422,23 @@ In crisis, {pov_char} should sound like {pov_char}, not like Generic Anxious Nar
             except Exception as e:
                 logger.debug("Profile completeness check failed (non-blocking): %s", e)
 
+        # --- Continuity state: alive/dead roster, knowledge gates, setting rules ---
+        _continuity_state = None
+        try:
+            from quality.continuity_state import ContinuityState
+            _continuity_state = ContinuityState.from_outline(
+                self.state.master_outline or [],
+                config,
+                self.state.characters or [],
+            )
+            logger.info(
+                "ContinuityState: %d alive, %d hard rules, %d info gates, %d scenes tracked",
+                len(_continuity_state.alive), len(_continuity_state.hard_rules),
+                len(_continuity_state.info_gates), len(_continuity_state.scene_order),
+            )
+        except Exception as e:
+            logger.debug("ContinuityState init failed (non-blocking): %s", e)
+
         _world_bible_json = json.dumps(self.state.world_bible, indent=2) if self.state.world_bible else ''
 
         # Load hot phrases from previous run (feedback loop: miner → drafting)
@@ -8328,6 +9463,21 @@ In crisis, {pov_char} should sound like {pov_char}, not like Generic Anxious Nar
         except Exception as e:
             logger.debug("Could not load hot phrases for feedback: %s", e)
 
+        # --- Reference Bible: load once for all scenes ---
+        _bible = None
+        _bible_cfg = config.get("reference_bible", {})
+        if _bible_cfg.get("enabled"):
+            try:
+                from stages.bible_loader import ReferenceBible
+                _bible_path = self.project_path / config.get("reference_bible_path", "reference_bible.md")
+                if _bible_path.exists():
+                    _bible = ReferenceBible(_bible_path)
+                    logger.info("Reference bible loaded for scene_drafting: %s", _bible_path.name)
+                else:
+                    logger.warning("Reference bible path not found: %s", _bible_path)
+            except Exception as e:
+                logger.debug("Reference bible load failed (non-blocking): %s", e)
+
         # Extract key config elements for drafting
         writing_style = config.get("writing_style", "")
         tone = config.get("tone", "")
@@ -8343,6 +9493,9 @@ In crisis, {pov_char} should sound like {pov_char}, not like Generic Anxious Nar
         if "spice" in market_positioning.lower() or "chili" in market_positioning.lower():
             spice_info = f"HEAT LEVEL: {market_positioning}"
 
+        _global_scene_idx = -1  # Flat index across all scenes (for rewrite_scenes_indices gating)
+        _existing_scenes = list(self.state.scenes or [])  # Pre-existing scenes for carry-over
+
         for chapter in (self.state.master_outline or []):
             if not isinstance(chapter, dict):
                 continue
@@ -8351,9 +9504,16 @@ In crisis, {pov_char} should sound like {pov_char}, not like Generic Anxious Nar
             for scene_info in chapter.get("scenes", []):
                 if not isinstance(scene_info, dict):
                     continue
+                _global_scene_idx += 1
                 scene_num = int(scene_info.get("scene", scene_info.get("scene_number", 1)))
                 stable_id = scene_info.get("scene_id", f"ch{chapter_num:02d}_s{scene_num:02d}")
                 pov_char = scene_info.get("pov", "protagonist")
+
+                # Rewrite-scenes gate: skip regeneration for non-targeted scenes
+                if not self._should_process_scene(_global_scene_idx):
+                    if _global_scene_idx < len(_existing_scenes):
+                        scenes.append(_existing_scenes[_global_scene_idx])
+                    continue
                 try:
                     spice_level = int(scene_info.get("spice_level", 0))
                 except (ValueError, TypeError):
@@ -8534,13 +9694,89 @@ Hook in the first 100 words.
                 # Build entity anchor (mandatory facts at top of prompt)
                 entity_anchor = self._build_entity_anchor(scene_info, chapter, pov_char)
                 roster_reminder = self._build_roster_reminder_block(scene_info, chapter, pov_char)
-                scene_transition_block = self._build_scene_transition_grounding_block(scene_position)
+                # Reference bible injection: structured (ReferenceBible) or fallback (naive)
+                reference_bible_block = ""
+                _bible_scene_block = ""  # Additional scene-specific bible context
+                if _bible and _bible.loaded and _bible_cfg.get("enabled"):
+                    _rb_parts = []
+                    # Character rules for characters in this scene
+                    if _bible_cfg.get("inject_character_rules", True):
+                        _scene_chars = [
+                            c.get("name", "") for c in (scene_info.get("characters") or [])
+                            if isinstance(c, dict) and c.get("name")
+                        ]
+                        if not _scene_chars:
+                            # Fallback: extract from _characters_json or scene_info
+                            _scene_chars = [pov_char] + [
+                                c.get("name", "") for c in (self.state.characters or [])
+                                if isinstance(c, dict) and c.get("name")
+                            ]
+                        _char_rules = _bible.get_character_rules(_scene_chars)
+                        if _char_rules:
+                            _rb_parts.append(_char_rules)
+                    # POV rules
+                    if _bible_cfg.get("inject_pov_constraints", True):
+                        _pov_rules = _bible.get_pov_rules()
+                        if _pov_rules:
+                            _rb_parts.append(_pov_rules)
+                    # Tense rules
+                    if _bible_cfg.get("inject_tense_rules", True):
+                        _tense_rules = _bible.get_tense_rules()
+                        if _tense_rules:
+                            _rb_parts.append(_tense_rules)
+                    if _rb_parts:
+                        reference_bible_block = "\n".join(_rb_parts)
+
+                    # Scene-specific blocks (injected later in prompt)
+                    _sb_parts = []
+                    if _bible_cfg.get("inject_scene_outline", True):
+                        _outline = _bible.get_scene_outline(chapter_num, scene_num)
+                        if _outline:
+                            _sb_parts.append(_outline)
+                    if _bible_cfg.get("inject_ending_type", True):
+                        _ending = _bible.get_ending_type(chapter_num)
+                        if _ending:
+                            _sb_parts.append(_ending)
+                    _truth_mode = _bible_cfg.get("inject_truth_file", "redacted")
+                    if _truth_mode:
+                        _truth = _bible.get_truth_file_redacted(chapter_num)
+                        if _truth:
+                            _sb_parts.append(_truth)
+                    # Romance-specific: touch progression, emotional breadcrumbs, vulnerability index
+                    if config.get("genre_mode") == "romance":
+                        for method in ("get_touch_progression", "get_emotional_breadcrumbs", "get_vulnerability_index"):
+                            if hasattr(_bible, method):
+                                part = getattr(_bible, method)(chapter_num)
+                                if part:
+                                    _sb_parts.append(part)
+                    if _sb_parts:
+                        _bible_scene_block = "\n".join(_sb_parts)
+                else:
+                    reference_bible_block = self._load_reference_bible_excerpt(
+                        chapter_num=chapter_num, scene_id=stable_id
+                    )
+                protagonist_competence = self._build_protagonist_competence_block(config, pov_char)
+                # Determine if this is the first scene drafted in this chapter
+                _is_first_in_chapter = scene_position == 0 and len(scenes) > 0
+                scene_transition_block = self._build_scene_transition_grounding_block(scene_position, is_first_in_chapter=_is_first_in_chapter)
                 voice_pressure_block = self._build_voice_under_pressure_block(pov_char, tension_level, config)
                 scene_index = len(scenes)  # Global scene index for rotating grounding palette
                 grounding_block = self._build_grounding_detail_block(
                     scene_info, scene_index, getattr(self.state, "motif_map", None),
                     scenes_so_far=scenes,
                 )
+                # Crisis device variety tracker (Fix B: prevent repeated mechanisms)
+                crisis_device_block = self._track_crisis_devices(scenes)
+                # Ending resolution contract (Fix C: explicit closure for final chapters)
+                ending_contract = self._build_ending_contract_block(chapter_num, self.state.target_chapters)
+                # Antagonist reveal checkpoint (Fix J)
+                antagonist_checkpoint = self._build_antagonist_reveal_checkpoint(stable_id)
+                # Genre mode (romance: intimacy escalation, emotional gates, breathing room)
+                try:
+                    from stages.genre_mode import build_escalation_prompt_block
+                    genre_block = build_escalation_prompt_block(config)
+                except ImportError:
+                    genre_block = ""
 
                 prompt = f"""Write Chapter {chapter_num}, Scene {scene_num}: "{scene_name}"
 POSITION: Scene {scene_position + 1} of {total_scenes_in_chapter} in this chapter.
@@ -8554,8 +9790,14 @@ YOU ARE {pov_char.upper()}. You are writing AS {pov_char}, in first person. "I" 
 
 {entity_anchor}
 {roster_reminder}
+{reference_bible_block}
+{protagonist_competence}
+{genre_block}
 {scene_transition_block}
 {voice_pressure_block}
+{crisis_device_block}
+{ending_contract}
+{antagonist_checkpoint}
 
 === MASTER CRAFT PRINCIPLES ===
 1. SHOW vs TELL:
@@ -8601,6 +9843,12 @@ INFLUENCES TO CHANNEL: {influences}
 {tension_instruction}
 {first_chapter_hook}
 {romance_block}
+
+=== DESIGN FIDELITY (plot discipline) ===
+- The antagonist and premise are FIXED in config. Do NOT invent new antagonists, clones, doubles, or doppelgängers.
+- Only use characters from the roster. Do NOT introduce new named characters (e.g. random crew, "Marcus") unless in the outline.
+- Every major twist must be in the outline. Do NOT add clone/double/identical-face reveals—they cause genre drift.
+- If the outline does not specify it, do not write it. Stay within the outlined plot.
 
 === ABSOLUTE RESTRICTIONS (NEVER INCLUDE) ===
 {avoid_list}
@@ -8649,14 +9897,17 @@ Every sentence must be filtered through {pov_char}'s voice.
 CRITICAL POV ERRORS TO AVOID (the AI makes these constantly):
 WRONG: "she whispered, my voice barely audible" — "my voice" is wrong, it's HER voice
 WRONG: "She rolled my eyes" — she rolled HER eyes, not mine
+WRONG: "He wiped my palms" — he wiped HIS palms, not the narrator's
+WRONG: "his hands folded behind my back" — his hands behind HIS back (describing his posture)
+WRONG: "My eyes were on me" — HIS/HER eyes were on me (another character's gaze)
 WRONG: "I smiled warmly, gazing at me" — this is nonsensical, should be "She smiled"
 WRONG: "she said, my eyes sparkling" — HER eyes are sparkling, not mine
 WRONG: "I turned to face me" — should be "She turned to face me"
 RIGHT: "she whispered, her voice barely audible"
-RIGHT: "She rolled her eyes"
-RIGHT: "She smiled warmly, gazing at me"
-When "she" does something, everything in that clause (voice, eyes, face, lips, hands)
-belongs to HER, not to "my".
+RIGHT: "She rolled her eyes" / "He wiped his palms"
+RIGHT: "She smiled warmly, gazing at me" / "His eyes were on me"
+When "she/he" does something, everything in that clause (voice, eyes, face, lips, hands)
+belongs to THEM, not to "my".
 
 === DIALOGUE RULES ===
 - Every dialogue tag MUST have a subject: "I said" or "she said" — NEVER just "said softly"
@@ -8736,10 +9987,14 @@ TENSION LEVEL: {tension_level}/10
 
 {f"=== CULTURAL AUTHENTICITY ==={chr(10)}{cultural_notes}" if cultural_notes else ""}
 
+{_bible_scene_block}
+
 {self._format_voice_constraints()}
 
 === STORY STATE (what has happened so far — READ THIS CAREFULLY) ===
 {self._build_story_state(scenes, chapter_num, scene_num)}
+
+{self._build_continuity_block(_continuity_state, stable_id, pov_char, scenes, outcome)}
 
 === CONTINUITY (previous scene endings — continue from here) ===
 {previous_context}
@@ -8786,8 +10041,26 @@ Write the complete scene as {pov_char} ("I"):"""
                     temp = self.get_temperature_for_stage("scene_drafting")
                     content, tokens = await self._generate_prose(
                         client, prompt, "scene_drafting",
-                        scene_meta={"chapter": chapter_num, "scene": scene_num, "pov": pov_char},
+                        scene_meta={"chapter": chapter_num, "scene": scene_num, "scene_id": stable_id, "pov": pov_char},
+                        continuity_state=_continuity_state,
                         max_tokens=max_tokens, temperature=temp)
+                    # --- Persistence guardrail: refuse to store truncated scenes ---
+                    _content_wc = len(content.split()) if content else 0
+                    if _content_wc < 200:
+                        logger.error(
+                            "Persistence guardrail: refusing to store truncated scene %s "
+                            "(%d words). Carrying over previous content instead.",
+                            stable_id, _content_wc
+                        )
+                        # Carry over existing scene content if available
+                        _prev = next((s for s in self.state.scenes if s.get("scene_id") == stable_id), None)
+                        if _prev and len((_prev.get("content", "")).split()) > _content_wc:
+                            content = _prev["content"]
+                            logger.info("Restored previous content for %s (%d words)", stable_id, len(content.split()))
+                        else:
+                            # No better previous content — flag for re-draft
+                            content = f"[TRUNCATED — {_content_wc} words, needs re-draft]\n\n{content}"
+                            logger.warning("No previous content to restore for %s — flagged for re-draft", stable_id)
                     scene_dict = {
                         "chapter": chapter_num,
                         "scene_number": scene_num,
@@ -8884,6 +10157,42 @@ Write the complete scene as {pov_char} ("I"):"""
                     logger.info("Bond drift check: no drifts")
         except Exception as e:
             logger.debug("Bond drift check failed (non-blocking): %s", e)
+
+        # --- Tension Density Gate ---
+        try:
+            td_mode = "warn"
+            td_min = 2
+            if self.policy and hasattr(self.policy, "tension_density"):
+                td_mode = self.policy.tension_density.mode
+                td_min = self.policy.tension_density.min_score
+            if td_mode != "off":
+                from quality.tension_density import run_tension_density
+                td_report = run_tension_density(scenes, mode=td_mode, min_score=td_min)
+                flagged = td_report.get("flagged", [])
+                summary = td_report.get("summary", {})
+                logger.info(
+                    "Tension density: %d/%d scenes pass (avg %.1f/4), %d flagged",
+                    summary.get("scored_scenes", 0) - len(flagged),
+                    summary.get("scored_scenes", 0),
+                    summary.get("average_score", 0),
+                    len(flagged),
+                )
+                for f in flagged:
+                    logger.warning(
+                        "Tension density: %s scores %d/4 — %s",
+                        f.get("scene_id", "?"), f.get("tension_score", 0),
+                        f.get("recommendation", "")
+                    )
+                # Save report
+                proj = getattr(self.state, "project_path", None)
+                if proj and Path(proj).exists():
+                    out_dir = Path(proj) / "output"
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    with open(out_dir / "tension_density.json", "w", encoding="utf-8") as f:
+                        json.dump(td_report, f, indent=2)
+                self.state.tension_density_report = td_report
+        except Exception as e:
+            logger.debug("Tension density check failed (non-blocking): %s", e)
 
         return scenes, total_tokens
 
@@ -9564,12 +10873,33 @@ Return the paragraph with exactly one *italic thought* added:"""
         expanded_scenes = []
         total_tokens = 0
         scenes_expanded = 0
+        config = self.state.config or {}
+
+        # Build continuity state for validation + prompt injection (same as scene_drafting)
+        _continuity_state = None
+        try:
+            from quality.continuity_state import ContinuityState
+            _continuity_state = ContinuityState.from_outline(
+                self.state.master_outline or [],
+                config,
+                self.state.characters or [],
+            )
+            logger.debug(
+                "scene_expansion ContinuityState: %d alive, %d hard rules, %d info gates",
+                len(_continuity_state.alive), len(_continuity_state.hard_rules),
+                len(_continuity_state.info_gates),
+            )
+        except Exception as e:
+            logger.debug("scene_expansion ContinuityState init failed (non-blocking): %s", e)
 
         target_words = self.state.words_per_scene
         min_words = int(target_words * 0.8)
 
-        for scene in (self.state.scenes or []):
+        for idx, scene in enumerate(self.state.scenes or []):
             if not isinstance(scene, dict):
+                expanded_scenes.append(scene)
+                continue
+            if not self._should_process_scene(idx):
                 expanded_scenes.append(scene)
                 continue
             validation = validate_scene_length(scene, target_words)
@@ -9589,6 +10919,17 @@ Return the paragraph with exactly one *italic thought* added:"""
 
             # Pass previous EXPANDED scenes as context so LLM doesn't "retry" the same beat
             previous_context = self._get_previous_scenes_context(expanded_scenes, count=3)
+
+            ch = scene.get("chapter", 0)
+            sn = scene.get("scene_number", scene.get("scene", 0))
+            stable_id = scene.get("scene_id") or f"ch{ch:02d}_s{sn:02d}"
+            pov_char = scene.get("pov", "protagonist")
+            outline_sc = self._get_outline_for_scene(ch, sn)
+            outcome = outline_sc.get("outcome", "") or outline_sc.get("purpose", "")
+
+            continuity_block = self._build_continuity_block(
+                _continuity_state, stable_id, pov_char, expanded_scenes, outcome
+            )
 
             prompt = f"""This scene is {validation['actual']} words but should be approximately {target_words} words.
 Expand it by adding {shortfall}+ words.
@@ -9623,6 +10964,8 @@ DO NOT:
 - Rewrite the scene from scratch (EXPAND, don't replace)
 - Pad with repetitive descriptions or looping paragraphs
 
+{continuity_block}
+
 === SCENE TO EXPAND ===
 Chapter {scene.get('chapter')}, Scene {scene.get('scene_number')}
 POV: FIRST PERSON — {scene.get('pov', 'protagonist')}
@@ -9633,9 +10976,16 @@ POV: FIRST PERSON — {scene.get('pov', 'protagonist')}
 Output the COMPLETE expanded scene. Keep all existing content, add depth:"""
 
             exp_max = self.get_max_tokens_for_stage("scene_expansion", 3000)
+            scene_meta = {
+                "chapter": scene.get("chapter"),
+                "scene": scene.get("scene_number"),
+                "scene_id": stable_id,
+                "pov": scene.get("pov", ""),
+            }
             expanded_content, exp_tokens = await self._generate_prose(
                 client, prompt, "scene_expansion",
-                scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", "")},
+                scene_meta=scene_meta,
+                continuity_state=_continuity_state,
                 max_tokens=exp_max)
 
             # GUARD: Check if the LLM actually expanded (vs rewrote from scratch)
@@ -10291,6 +11641,30 @@ Output ONLY the revised scene—no notes, no commentary, no checklist:"""
             for s in (self.state.scenes or [])
         ])
 
+        # --- Reference Bible: thread tracking + truth file for continuity audit ---
+        _ca_bible_block = ""
+        _ca_bible_cfg = self.state.config.get("reference_bible", {})
+        if _ca_bible_cfg.get("enabled"):
+            try:
+                from stages.bible_loader import ReferenceBible
+                _ca_bible_path = self.project_path / self.state.config.get("reference_bible_path", "reference_bible.md")
+                if _ca_bible_path.exists():
+                    _ca_bible = ReferenceBible(_ca_bible_path)
+                    if _ca_bible.loaded:
+                        _ca_parts = []
+                        _threads = _ca_bible.get_thread_tracking()
+                        if _threads:
+                            _ca_parts.append(_threads)
+                        # Full truth file for continuity (auditor needs to know everything)
+                        _truth = _ca_bible.get_truth_file_redacted(chapter=99)
+                        if _truth:
+                            _ca_parts.append(_truth)
+                        if _ca_parts:
+                            _ca_bible_block = "\n".join(_ca_parts)
+                            logger.info("Reference bible injected into continuity_audit: threads + truth file")
+            except Exception as e:
+                logger.debug("Reference bible load failed for continuity_audit (non-blocking): %s", e)
+
         prompt = f"""You are a continuity editor. Analyze this complete manuscript for consistency issues.
 
 WORLD RULES:
@@ -10300,6 +11674,8 @@ CHARACTERS:
 {json.dumps(self.state.characters, indent=2) if self.state.characters else 'Not available'}
 
 EXPECTED POV: First person ("I") throughout the entire manuscript.
+
+{_ca_bible_block}
 
 FULL MANUSCRIPT:
 {all_content}
@@ -10670,6 +12046,40 @@ FIXED SCENE:"""
         tone = config.get("tone", "")
         aesthetic = guidance.get("aesthetic_guide", "")
 
+        # --- Reference Bible: load for voice pass enforcement ---
+        _vhp_bible = None
+        _vhp_bible_cfg = config.get("reference_bible", {})
+        if _vhp_bible_cfg.get("enabled"):
+            try:
+                from stages.bible_loader import ReferenceBible
+                _vhp_bible_path = self.project_path / config.get("reference_bible_path", "reference_bible.md")
+                if _vhp_bible_path.exists():
+                    _vhp_bible = ReferenceBible(_vhp_bible_path)
+                    logger.info("Reference bible loaded for voice_human_pass: %s", _vhp_bible_path.name)
+            except Exception as e:
+                logger.debug("Reference bible load failed for voice_human_pass (non-blocking): %s", e)
+
+        # Bible repetition blacklist (hard-capped tics from bible section 6)
+        _bible_blacklist_block = ""
+        if _vhp_bible and _vhp_bible.loaded and _vhp_bible_cfg.get("inject_repetition_blacklist", True):
+            _bible_blacklist_block = _vhp_bible.get_repetition_blacklist()
+
+        # --- Info gate data (for deterministic Dr./title stripping) ---
+        _vhp_info_gates = []  # list of (reveal_scene_id, trigger_phrases)
+        _vhp_scene_order = {}  # scene_id → index
+        try:
+            from quality.continuity_state import ContinuityState
+            _cs = ContinuityState.from_outline(
+                self.state.master_outline or [], config,
+                self.state.characters or []
+            )
+            _vhp_scene_order = {sid: i for i, sid in enumerate(_cs.scene_order)}
+            _vhp_info_gates = [
+                (g.reveal_at, g.trigger_phrases) for g in (_cs.info_gates or [])
+            ]
+        except Exception as e:
+            logger.debug("Info gate load failed for voice_human_pass (non-blocking): %s", e)
+
         # Build AI tell patterns list for the prompt
         ai_tells_sample = AI_TELL_PATTERNS[:20]
 
@@ -10758,8 +12168,11 @@ FIXED SCENE:"""
             if overused:
                 negative_anchors[pov_key] = overused[:8]
 
-        for scene in (self.state.scenes or []):
+        for idx, scene in enumerate(self.state.scenes or []):
             if not isinstance(scene, dict):
+                enhanced_scenes.append(scene)
+                continue
+            if not self._should_process_scene(idx):
                 enhanced_scenes.append(scene)
                 continue
             pov = scene.get("pov", "protagonist")
@@ -10774,6 +12187,16 @@ FIXED SCENE:"""
                     + "\n".join(f'- "{a}"' for a in anchors)
                     + "\n"
                 )
+
+            # Bible: character DO NOT enforcement for this scene
+            _bible_donot_block = ""
+            if _vhp_bible and _vhp_bible.loaded and _vhp_bible_cfg.get("inject_character_rules", True):
+                _scene_char_names = [pov]
+                # Add other characters from scene data
+                for c in (scene.get("characters") or []):
+                    if isinstance(c, dict) and c.get("name"):
+                        _scene_char_names.append(c["name"])
+                _bible_donot_block = _vhp_bible.get_character_donots_for_scene(_scene_char_names)
 
             # Stakes injector: high-tension scenes without concrete stakes read hollow
             stakes_block = ""
@@ -10898,12 +12321,17 @@ Change HOW it's written, not WHAT happens.
 === HARD RULES (break these = fail) ===
 1. POV: FIRST PERSON ("I") only. If any sentence uses third person
    ("{pov} felt", "{pov} thought", "she noticed"), rewrite as "I".
+1b. PRONOUN POSSESSION: "my" refers ONLY to the POV character's own body,
+   voice, eyes, hands, and perceptions. When describing another character's
+   attributes, use THEIR pronouns. Fix: "His voice is flat" NOT "My voice
+   is flat" when Aris speaks. "His eyes" NOT "My eyes" when describing
+   Jax's appearance. "His shoulder brushing mine" NOT "my shoulder".
 2. NO EMOTIONAL SUMMARIES: Never end a paragraph by explaining what
    the moment means. End on action, dialogue, or sensory observation.
 3. NO REPEATED TICS: If a physical action (hair taming, jaw clenching,
    finger tightening) or catchphrase appears more than once, keep only
    the first. Replace repeats with different body language.
-{anchor_block}{stakes_block}{repetition_block}{dialogue_tidy_block}{ending_block}{avoid_block}{optional_dialogue_block}
+{anchor_block}{stakes_block}{repetition_block}{dialogue_tidy_block}{ending_block}{avoid_block}{optional_dialogue_block}{_bible_donot_block}{_bible_blacklist_block}
 
 {PRESERVATION_CONSTRAINTS}
 
@@ -10989,6 +12417,23 @@ Output the revised scene:"""
                     client, prompt, "voice_human_pass",
                     scene_meta={"chapter": scene.get("chapter"), "scene": scene.get("scene_number"), "pov": scene.get("pov", ""), "original_word_count": orig_wc},
                     max_tokens=max_tok, temperature=0.7)
+
+                # --- Info gate enforcement (deterministic) ---
+                # Strip gated titles/names before their reveal scene.
+                _sid = scene.get("scene_id", "")
+                if _vhp_info_gates and _sid:
+                    _scene_idx = _vhp_scene_order.get(_sid, -1)
+                    for _gate_reveal, _gate_triggers in _vhp_info_gates:
+                        _reveal_idx = _vhp_scene_order.get(_gate_reveal, -1)
+                        if _reveal_idx < 0 or _scene_idx >= _reveal_idx:
+                            continue
+                        for tp in _gate_triggers:
+                            if tp.lower().startswith("dr"):
+                                _before = content.count("Dr")
+                                content = re.sub(r'\bDr\.?\s+', '', content)
+                                if _before > content.count("Dr"):
+                                    logger.info("Info gate: stripped 'Dr.' title from %s (gated until %s)", _sid, _gate_reveal)
+
                 enhanced_scenes.append({
                     **scene,
                     "content": content,
@@ -11455,12 +12900,19 @@ Respond in JSON format:
                          "twist revealed, a decision with consequences")
             hook_warning = ""
 
+        global_idx = 0
         for chapter_num in sorted(chapters.keys()):
             chapter_scenes = chapters[chapter_num]
 
             for i, scene in enumerate(chapter_scenes):
                 if not isinstance(scene, dict):
                     hooked_scenes.append(scene)
+                    global_idx += 1
+                    continue
+
+                if not self._should_process_scene(global_idx):
+                    hooked_scenes.append(scene)
+                    global_idx += 1
                     continue
 
                 is_chapter_start = (i == 0)

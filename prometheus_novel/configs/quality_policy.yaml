@@ -76,6 +76,11 @@ presets:
       - emotion_diversification
       - cliche_repair
       - sensory_motif_swap
+    crisis_device:
+      enabled: false  # not relevant for romance
+    chapter_count:
+      enforce_mode: warn
+      retry_on_shortfall: true
 
   thriller:
     outline_diversity:
@@ -148,6 +153,13 @@ presets:
       - dialogue_trimming
       - cliche_repair
       - sensory_motif_swap
+    crisis_device:
+      enabled: true
+      lookback_chapters: 2  # thrillers need tight device variety
+    chapter_count:
+      enforce_mode: strict  # thrillers need full arc
+      shortfall_threshold_pct: 20.0
+      retry_on_shortfall: true
 
   literary:
     outline_diversity:
@@ -222,6 +234,11 @@ presets:
       - emotion_diversification
       - cliche_repair
       - sensory_motif_swap
+    crisis_device:
+      enabled: false  # not relevant for literary fiction
+    chapter_count:
+      enforce_mode: strict
+      retry_on_shortfall: true
 
   fantasy:
     outline_diversity:
@@ -295,3 +312,9 @@ presets:
       - emotion_diversification
       - cliche_repair
       - sensory_motif_swap
+    crisis_device:
+      enabled: true
+      lookback_chapters: 3  # fantasy has longer arcs, wider window
+    chapter_count:
+      enforce_mode: warn
+      retry_on_shortfall: true

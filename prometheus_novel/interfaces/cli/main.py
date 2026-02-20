@@ -387,11 +387,27 @@ def cmd_generate(args):
             print_error(f"Failed to load pipeline state: {e}")
             return 1
 
+    # Parse --rewrite-scenes (0-based indices)
+    rewrite_scenes_indices = None
+    if getattr(args, "rewrite_scenes", None) and args.rewrite_scenes.strip():
+        try:
+            indices = [int(x.strip()) for x in args.rewrite_scenes.split(",") if x.strip()]
+            if indices:
+                rewrite_scenes_indices = sorted(set(i for i in indices if i >= 0))
+                print_info(f"Rewrite-scenes mode: only processing {len(rewrite_scenes_indices)} scene(s): {rewrite_scenes_indices}")
+        except ValueError:
+            print_error("--rewrite-scenes must be comma-separated integers (e.g. 3,7,12)")
+            return 1
+
     # Run
     print(f"\n{Colors.CYAN}Starting pipeline...{Colors.END}\n")
 
     async def _run():
-        return await orchestrator.run(stages=stages_to_run, resume=resume)
+        return await orchestrator.run(
+            stages=stages_to_run,
+            resume=resume,
+            rewrite_scenes_indices=rewrite_scenes_indices,
+        )
 
     try:
         final_state = asyncio.run(_run())
@@ -938,6 +954,8 @@ def main():
     gen_parser.add_argument("--stage", help="Run a single specific stage")
     gen_parser.add_argument("--start-stage", dest="start_stage", help="Start from this stage (inclusive)")
     gen_parser.add_argument("--end-stage", dest="end_stage", help="Stop after this stage (inclusive)")
+    gen_parser.add_argument("--rewrite-scenes", dest="rewrite_scenes",
+                            help="Only process these scene indices (0-based, comma-separated, e.g. 3,7,12). Use with --stage for targeted fixes.")
     gen_parser.add_argument("--list-stages", dest="list_stages", action="store_true", help="List all pipeline stages and exit")
     gen_parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint")
     gen_parser.add_argument("--pre-polish-sample", dest="pre_polish_sample", action="store_true",

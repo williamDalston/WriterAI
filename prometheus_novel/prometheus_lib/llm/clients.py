@@ -723,11 +723,19 @@ class OllamaClient(BaseLLMClient):
         rp = kwargs.get("repeat_penalty")
         if rp is None and is_prose:
             rp = 1.3  # Increased from 1.2 — stronger loop suppression
+        extra = dict(create_kwargs.get("extra_body") or {})
         if rp is not None:
-            extra = dict(create_kwargs.get("extra_body") or {})
             opts = dict(extra.get("options") or {})
             opts["repeat_penalty"] = rp
             extra["options"] = opts
+        # Disable thinking for Qwen3/DeepSeek — avoids 20+ min timeouts from internal CoT
+        model_lower = (self.model_name or "").lower()
+        if "qwen3" in model_lower or "deepseek-r1" in model_lower:
+            extra["think"] = False
+            logger.debug(f"Ollama: disabled thinking for {self.model_name}")
+        elif "gpt-oss" in model_lower:
+            extra["think"] = "low"  # GPT-OSS only accepts low/medium/high, not false
+        if extra:
             create_kwargs["extra_body"] = extra
 
         # Retry loop with exponential backoff

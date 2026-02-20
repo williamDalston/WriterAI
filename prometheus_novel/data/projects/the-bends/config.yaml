@@ -2,7 +2,7 @@
 project_name: the-bends
 title: "The Bends"
 genre: thriller
-target_length: "standard (60k)"   # micro (5k), novelette (15k), novella (30k), standard (60k), long (90k), epic (120k)
+target_length: "compact (18k)"   # micro (5k), novelette (15k), compact (18k), novella (30k), standard (60k), long (90k), epic (120k)
 status: seeded
 
 # === STORY CORE ===
@@ -30,6 +30,8 @@ synopsis: >
 
 premise: "A crisis PR fixer and her disgraced influencer client are trapped in a failing luxury underwater habitat with a saboteur. Survival requires stripping away the curated self."
 protagonist: "Elena Vance, 34, crisis PR manager. Hyper-competent, emotionally avoidant, addicted to control. Flaw: she confuses optics with morality."
+protagonist_expertise: ["persuasion", "narrative control", "reading people", "media handling", "asking the right questions"]
+protagonist_limits: ["forensic analysis", "engineering", "life support diagnostics", "circuit board inspection"]
 antagonist: "Dr. Aris Kade (hidden saboteur) + the ocean/pressure/time (external)."
 central_conflict: "Elena must identify the saboteur and keep the group alive while the habitat's systems fail and old secrets turn lethal."
 central_question: "Who are you when nobody is watching, and the only currency left is breath?"
@@ -50,16 +52,28 @@ motifs: "mirrors/reflections; breath/CO₂ headache; crushing pressure; red reco
 other_characters: "Jax Vale (disgraced influencer), Captain Mara Sato (habitat commander), Linnea Shaw (architect), Priya Nand (med tech), Silas Greer (billionaire sponsor), 'MOTHER' (habitat AI/house system)"
 avoid: "supernatural monsters; deus-ex-rescue; villain monologues; dream-sequence reveals; cheap shock twists"
 
-# === MODEL ROUTING (HYBRID: local draft + Opus polish) ===
+# Configurable phrase caps (max uses across manuscript; triggers retry when exceeded)
+phrase_caps:
+  "adjust my sleeves": 4
+  "I adjust my sleeves": 4
+  "blood thuds in my ears": 2
+  "knuckles bone-white": 2
+  "jaw (work|clench|tighten)s?": 8
+  "the kind of .+ that .+": 3
+
+# Genre lock: when true, expands design_forbidden to block supernatural/creature elements
+genre_lock: true
+
+# === MODEL ROUTING (Sonnet draft + Sonnet polish) ===
 model_defaults:
-  api_model: qwen3:14b                  # default / planning (local, free)
-  critic_model: qwen3:14b               # critic (local, free)
-  fallback_model: qwen3:14b             # fallback (local, free)
-  local_model: qwen3:14b                # local
-  structure_gate_model: qwen3:14b        # structure validation (local, free)
-  draft_model: qwen3:14b                # scene_drafting, scene_expansion (local, free)
-  rewrite_model: claude-sonnet-4-5-20250929  # self_refinement, voice_human_pass, dialogue_polish, prose_polish, chapter_hooks (Sonnet 4.5, best value)
-budget_usd: 15   # Sonnet polish budget (~$8-12 estimated for 24 scenes)
+  api_model: qwen3-nothink                     # local — structure/planning stages
+  critic_model: claude-sonnet-4-5-20250929     # paid — quality gate
+  fallback_model: qwen3-nothink
+  local_model: qwen3-nothink
+  structure_gate_model: claude-sonnet-4-5-20250929  # paid — structure validation
+  draft_model: claude-sonnet-4-5-20250929      # paid — scene drafting (POV stability, info gate obedience)
+  rewrite_model: claude-sonnet-4-5-20250929    # self_refinement, voice_human_pass, dialogue_polish, prose_polish, chapter_hooks
+budget_usd: 25   # Sonnet draft + polish budget
 
 model_tuning:
   stage_max_tokens:
@@ -85,6 +99,18 @@ enhancements:
     enabled: true
     warn_if_exceed: true
   human_review_gates: []
+
+# === REFERENCE BIBLE (surgical rewrite mode) ===
+reference_bible_path: reference_bible.md
+reference_bible:
+  enabled: true
+  inject_character_rules: true     # Character speech + physical vocabulary + DO NOT
+  inject_pov_constraints: true     # POV and knowledge rules
+  inject_scene_outline: true       # Per-scene blueprint from bible
+  inject_tense_rules: true         # Tense enforcement
+  inject_repetition_blacklist: true  # Hard-capped tics + sensory phrases
+  inject_truth_file: redacted      # "redacted" = chapter-appropriate knowledge, "full" = everything
+  inject_ending_type: true         # Chapter ending variety enforcement
 
 defense:
   thresholds:

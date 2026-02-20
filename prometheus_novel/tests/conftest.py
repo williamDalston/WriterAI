@@ -58,6 +58,7 @@ def sample_config() -> dict:
         "themes": ["technology", "humanity"],
         "conflicts": ["man vs machine"],
         "archetypes": ["scientist", "AI"],
+        "writing_style": "close first-person present",
         "budget_usd": 10,
         "model_defaults": {
             "local_model": "gpt-4o-mini",

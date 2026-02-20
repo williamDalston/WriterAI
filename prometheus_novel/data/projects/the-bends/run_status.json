@@ -1,6 +1,6 @@
 {
-  "timestamp": null,
-  "last_stage": "trope_integration",
+  "timestamp": "2026-02-19T23:31:54.863197",
+  "last_stage": "scene_drafting",
   "last_status": "completed",
   "completed_stages": [
     "high_concept",
@@ -10,16 +10,35 @@
     "character_profiles",
     "motif_embedding",
     "master_outline",
-    "trope_integration"
+    "trope_integration",
+    "scene_drafting",
+    "roster_gate",
+    "scene_expansion",
+    "structure_gate",
+    "continuity_audit",
+    "continuity_fix",
+    "continuity_recheck",
+    "voice_human_pass",
+    "continuity_audit_2",
+    "continuity_fix_2",
+    "pov_enforcer",
+    "chapter_hooks",
+    "final_deai",
+    "quality_polish",
+    "quality_meters",
+    "targeted_refinement",
+    "developmental_audit",
+    "quality_audit",
+    "output_validation"
   ],
-  "total_stages": 8,
-  "total_tokens": 0,
-  "total_cost_usd": 0,
-  "scene_count": 0,
+  "total_stages": 27,
+  "total_tokens": 1563036,
+  "total_cost_usd": 15.6304,
+  "scene_count": 24,
   "incidents": 0,
   "budget": {
-    "defense_tokens": 0,
-    "generation_tokens": 0,
+    "defense_tokens": 21562,
+    "generation_tokens": 22169,
     "rewritten_scenes": 0
   }
 }

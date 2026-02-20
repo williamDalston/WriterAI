@@ -26,6 +26,7 @@ MODEL_CLIENT_MAP: Dict[str, Type[BaseLLMClient]] = {
     "qwen2.5:7b": OllamaClient,
     "qwen2.5:14b": OllamaClient,
     "qwen3:14b": OllamaClient,
+    "qwen3-nothink": OllamaClient,
     "qwen2.5": OllamaClient,
     "llama3.2": OllamaClient,
     "llama3.1": OllamaClient,

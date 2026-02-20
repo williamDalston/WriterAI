@@ -41,7 +41,9 @@
       "Bash(cmd.exe /c \"start /min \"\"\"\" \"\"C:\\\\Users\\\\farad\\\\AppData\\\\Local\\\\Programs\\\\Ollama\\\\ollama app.exe\"\"\")",
       "Bash(Start-Process \"ollama\" -ArgumentList \"serve\" -WindowStyle Hidden)",
       "Bash(Start-Sleep -Seconds 5)",
-      "Bash(ollama ps:*)"
+      "Bash(ollama ps:*)",
+      "Bash(ollama show:*)",
+      "Bash(more:*)"
     ]
   }
 }

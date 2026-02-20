@@ -1,0 +1,42 @@
+# Romance Genre Config Template
+# Copy to your project's config.yaml and adapt. See docs/ROMANCE_PREP_GUIDE.md.
+
+# === IDENTITY ===
+project_name: my-romance
+title: "Title"
+genre: romance
+genre_mode: romance          # thriller | romance | romantic_suspense | dark_academia
+target_length: "standard (60k)"   # Romance often needs 60-80k for slow burn
+status: seeded
+
+# === ROMANCE-SPECIFIC ===
+romance:
+  escalation_mode: intimacy    # danger (thriller) | intimacy (romance)
+  gate_type: emotional        # info (thriller) | emotional (romance)
+  pacing_mode: slow_burn       # thriller | slow_burn
+  subgenre: contemporary      # contemporary | dark_academia | romantic_suspense | historical
+  heat_level: 3               # 0=closed door, 5=explicit
+  intimacy_gate:
+    first_kiss_after_chapter: 6
+    consummation_after_chapter: 10   # or "off_page" for closed door
+
+# === STORY CORE (romance framing) ===
+# Central question in romance: "Will they choose each other?"
+central_question: "Will [Lead A] and [Lead B] risk their hearts when [obstacle]?"
+central_conflict: "[External obstacle] + [internal wound each must overcome]"
+
+# === CONTENT ELEMENTS ===
+# Romance needs breathing room; tone is different from thriller
+tone: "warm, yearning, emotionally sharp, interior longing"
+writing_style: "dual POV alternating (or single POV), present tense, sensory-emotional focus"
+
+# Romance-specific avoid
+avoid: "instalove; emotion before earned trust; contrived third-act breakup; chemistry that skips steps"
+
+# === REFERENCE BIBLE ===
+# Create reference_bible.md with:
+# - TOUCH PROGRESSION MAP
+# - EMOTIONAL BREADCRUMB TRACKER
+# - VULNERABILITY INDEX
+# - INTIMACY GATES
+# See docs/ROMANCE_PREP_GUIDE.md for section templates.

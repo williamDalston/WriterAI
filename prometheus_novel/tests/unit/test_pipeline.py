@@ -177,3 +177,35 @@ class TestPipelineOrchestrator:
 
         assert result.status == StageStatus.COMPLETED
         assert mock_llm_client.call_count > 0
+
+    @pytest.mark.asyncio
+    async def test_validate_scene_output_flags_pov_slip(self, project_with_config):
+        """POV slip patterns (my eyes on me, his hands behind my back) trigger retry."""
+        orchestrator = PipelineOrchestrator(project_with_config)
+        await orchestrator.initialize()
+        # Ensure config has first-person for POV check
+        orchestrator.state.config = orchestrator.state.config or {}
+        orchestrator.state.config["writing_style"] = "close first-person present (Elena)"
+        orchestrator.state.config["protagonist"] = "Elena Vance"
+        orchestrator.state.characters = [
+            {"name": "Dr. Aris Kade"},
+            {"name": "Elena Vance"},
+        ]
+
+        # Pattern: his hands folded behind my back
+        bad1 = "Dr. Kade stood near the console, his hands folded behind my back. He looked at me."
+        r1 = orchestrator._validate_scene_output(
+            bad1,
+            {"scene_id": "ch04_s01", "pov": "Elena Vance", "chapter": 4, "scene": 1},
+        )
+        assert not r1["pass"], "Should fail validation"
+        assert "pov_pronoun_confusion" in r1.get("issues", {})
+
+        # Pattern: my eyes were on me
+        bad2 = "My eyes were already on me when I entered the room."
+        r2 = orchestrator._validate_scene_output(
+            bad2,
+            {"scene_id": "ch01_s01", "pov": "Elena Vance", "chapter": 1, "scene": 1},
+        )
+        assert not r2["pass"]
+        assert "pov_pronoun_confusion" in r2.get("issues", {})

@@ -7,6 +7,8 @@ Spec: genre-agnostic, testable, high-signal.
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from stages.pipeline import _clean_scene_content
@@ -193,3 +195,52 @@ def test_scene_id_derives_when_missing():
     """Validator derives ch02_s01 format when scene_id missing."""
     scene_no_id = {"chapter": 2, "scene_number": 1, "content": "x"}
     assert _scene_id(scene_no_id, 0) == "ch02_s01"
+
+
+# --- POV slip detection (critic gate triggers retry) ---
+
+
+@pytest.mark.asyncio
+async def test_pov_slip_his_hands_behind_my_back_triggers_retry(project_with_config):
+    """High-confidence POV slip 'his hands folded behind my back' triggers pov_pronoun_confusion."""
+    from stages.pipeline import PipelineOrchestrator
+
+    orch = PipelineOrchestrator(project_with_config)
+    await orch.initialize()
+    orch.state.config = orch.state.config or {}
+    orch.state.config["writing_style"] = "close first-person present (Elena)"
+    orch.state.config["protagonist"] = "Elena Vance"
+    orch.state.characters = [
+        {"name": "Dr. Aris Kade"},
+        {"name": "Elena Vance"},
+    ]
+    bad_text = "Dr. Kade stood near the console, his hands folded behind my back. He looked at me."
+    result = orch._validate_scene_output(
+        bad_text,
+        {"scene_id": "ch04_s01", "pov": "Elena Vance", "chapter": 4, "scene": 1},
+    )
+    assert not result["pass"]
+    assert "pov_pronoun_confusion" in result.get("issues", {})
+
+
+@pytest.mark.asyncio
+async def test_pov_slip_my_eyes_on_me_triggers_retry(project_with_config):
+    """High-confidence POV slip 'My eyes were on me' triggers pov_pronoun_confusion."""
+    from stages.pipeline import PipelineOrchestrator
+
+    orch = PipelineOrchestrator(project_with_config)
+    await orch.initialize()
+    orch.state.config = orch.state.config or {}
+    orch.state.config["writing_style"] = "close first-person present (Elena)"
+    orch.state.config["protagonist"] = "Elena Vance"
+    orch.state.characters = [
+        {"name": "Dr. Aris Kade"},
+        {"name": "Elena Vance"},
+    ]
+    bad_text = "My eyes were already on me when I entered. I could feel the weight of his stare."
+    result = orch._validate_scene_output(
+        bad_text,
+        {"scene_id": "ch01_s01", "pov": "Elena Vance", "chapter": 1, "scene": 1},
+    )
+    assert not result["pass"]
+    assert "pov_pronoun_confusion" in result.get("issues", {})
